@@ -1,0 +1,21 @@
+%%{init: {"sequence": {"wrap": true, "width": 210, "noteMargin": 8}}}%%
+%% Checkout submit: one CAS plus an outbox row. Never touches Redis or the PSP.
+%% Source of docs/diagrams/checkout-submit.svg. The reserve step is in reserve-checkout.mmd.
+sequenceDiagram
+  autonumber
+  actor B as Browser
+  participant A as api
+  participant P as Postgres
+
+  Note over B,A: Checkout page. Idempotency-Key C created once per order, kept in sessionStorage per orderId, so a reload replays
+  B->>A: POST /api/v1/orders/:orderId/checkout, Idempotency-Key C, shipping and paymentMethod
+  A->>P: BEGIN, CAS RESERVED → PENDING_PAYMENT WHERE owner and not expired, expires_at = now + payment window
+  alt CAS won
+    A->>P: INSERT outbox order.placed, pg_notify outbox, COMMIT
+    A-->>B: 202 PENDING_PAYMENT
+  else CAS lost
+    A->>P: ROLLBACK, SELECT order
+    A-->>B: 200 replay if same key and hash · 422 if hash differs · 409 ALREADY_SUBMITTED if another key · 410 if expired
+  end
+  Note over B: 409 ALREADY_SUBMITTED → go to /orders/:orderId
+  Note over A,P: Checkout never calls Redis or the PSP. The HTTP request ends at the PG commit

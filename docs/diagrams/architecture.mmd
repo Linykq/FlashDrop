@@ -1,0 +1,43 @@
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%% FlashDrop container view. Source of docs/diagrams/architecture.svg
+%% Async-tier edges are written data-store-first so the layout keeps Data above Async above External.
+flowchart TB
+  CL["Clients: buyer and admin browsers, k6"]
+  CADDY["caddy :8080 - edge<br/>/ → web<br/>/api, /uploads, /ws → api<br/>/ws/1 → api-1 · /ws/2 → api-2<br/>/_internal → 404"]
+  CL -->|"HTTP + WS (TLS in prod)"| CADDY
+
+  subgraph REQ["Request tier (stateless)"]
+    WEB["web: Next.js 16 + React 19<br/>SSR, live room,<br/>checkout, admin UI<br/>/_internal/revalidate<br/>(Compose network only)"]
+    API["api-1, api-2: Fastify 5<br/>REST /api/v1 + WS gateway"]
+  end
+  CADDY -->|"pages"| WEB
+  CADDY -->|"REST + WS"| API
+  WEB -->|"SSR fetch, Server Actions"| API
+
+  subgraph DATA["Data stores"]
+    RD[("Redis 8<br/>flashdrop Functions,<br/>stock gate, pub/sub")]
+    PG[("PostgreSQL 17<br/>orders, inventory, outbox,<br/>projections, psp schema")]
+    KF[("Kafka 4 KRaft<br/>orders.v1 · 6 partitions<br/>key productId")]
+  end
+  API <-->|"fd_reserve, pub/sub"| RD
+  API -->|"order txn + outbox"| PG
+
+  subgraph ASYNC["Async tier: one node image, role flags"]
+    WK["worker<br/>relay · sweeper + scheduler<br/>reconciler · listing"]
+    CON["consumers ×2<br/>payment · settlement · dashboard<br/>poison events → orders.v1.dlq"]
+  end
+  PG <-->|"outbox, expiry, safety net, drop lock"| WK
+  KF <-->|"produce"| WK
+  RD <-->|"rebuild, settle, set status, PUBLISH"| WK
+  KF -->|"orders.v1"| CON
+  PG <-->|"CAS, projection"| CON
+  RD <-->|"confirm/release, PUBLISH"| CON
+  WK -.->|"revalidate tag, internal HTTP"| WEB
+
+  subgraph EXT["Simulated / external"]
+    PSP["payment-mock<br/>charges, close-by-reference"]
+    LLM["Anthropic Messages API<br/>or fixture provider"]
+  end
+  CON -->|"charge, close"| PSP
+  PG <-->|"psp schema ledger"| PSP
+  WK -->|"vision + structured output"| LLM

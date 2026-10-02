@@ -1,0 +1,2225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlashDrop design flow</title>
+<meta name="description" content="A walkthrough of the FlashDrop system design as a flow: architecture, the order flow from SSR page to PAID, inventory and reservations, Kafka, real-time, the LLM listing generator, invariants, testing and the M0 to M10 roadmap.">
+<meta name="color-scheme" content="light dark">
+<script>
+(function () {
+  var d = document.documentElement;
+  try {
+    var t = localStorage.getItem('flashdrop-design-theme');
+    if (t === 'light' || t === 'dark') d.setAttribute('data-theme', t);
+  } catch (e) { /* storage unavailable: follow the system theme */ }
+})();
+</script>
+<style>
+/* ---------- Tokens ---------- */
+:root {
+  color-scheme: light;
+  --bg: #f6f6f3;
+  --bg-blur: rgba(246, 246, 243, 0.9);
+  --surface: #ffffff;
+  --surface-2: #efefea;
+  --text: #1a1c20;
+  --text-muted: #545a64;
+  --border: #dddcd4;
+  --border-strong: #b9b8ae;
+  --accent: #1f57b5;
+  --accent-strong: #163f85;
+  --accent-soft: #e6edfa;
+  --on-accent: #ffffff;
+  --success: #1b6b3e;
+  --success-soft: #e5f2ea;
+  --warning: #855000;
+  --warning-soft: #faefdc;
+  --danger: #ad2419;
+  --danger-soft: #fae8e6;
+  --code-bg: #eeede7;
+  --paper: #ffffff;
+  --paper-edge: #dddcd4;
+  --focus: #1f57b5;
+  --scroll-shadow: rgba(23, 25, 30, 0.14);
+  --shadow: 0 1px 2px rgba(23, 25, 30, 0.05), 0 6px 20px rgba(23, 25, 30, 0.04);
+  --radius: 12px;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", "Cascadia Mono", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111316;
+    --bg-blur: rgba(17, 19, 22, 0.9);
+    --surface: #181b20;
+    --surface-2: #20242b;
+    --text: #e7e9ed;
+    --text-muted: #a5acb7;
+    --border: #2c313a;
+    --border-strong: #4a515d;
+    --accent: #8db4ff;
+    --accent-strong: #b5ceff;
+    --accent-soft: #1a2944;
+    --on-accent: #0d1320;
+    --success: #72d49c;
+    --success-soft: #13261b;
+    --warning: #f0b65c;
+    --warning-soft: #2b2113;
+    --danger: #ff9389;
+    --danger-soft: #301817;
+    --code-bg: #1f232a;
+    --paper: #ffffff;
+    --paper-edge: #3b424d;
+    --focus: #8db4ff;
+    --scroll-shadow: rgba(0, 0, 0, 0.6);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
+  }
+  :root:not([data-theme="light"]) .paper { filter: brightness(0.92); }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111316;
+  --bg-blur: rgba(17, 19, 22, 0.9);
+  --surface: #181b20;
+  --surface-2: #20242b;
+  --text: #e7e9ed;
+  --text-muted: #a5acb7;
+  --border: #2c313a;
+  --border-strong: #4a515d;
+  --accent: #8db4ff;
+  --accent-strong: #b5ceff;
+  --accent-soft: #1a2944;
+  --on-accent: #0d1320;
+  --success: #72d49c;
+  --success-soft: #13261b;
+  --warning: #f0b65c;
+  --warning-soft: #2b2113;
+  --danger: #ff9389;
+  --danger-soft: #301817;
+  --code-bg: #1f232a;
+  --paper: #ffffff;
+  --paper-edge: #3b424d;
+  --focus: #8db4ff;
+  --scroll-shadow: rgba(0, 0, 0, 0.6);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+:root[data-theme="dark"] .paper { filter: brightness(0.92); }
+
+/* ---------- Base ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-padding-top: 80px; }
+@media (max-width: 719px) { html { scroll-padding-top: 112px; } }
+@media (prefers-reduced-motion: no-preference) { html.smooth-scroll { scroll-behavior: smooth; } }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+img, svg { max-width: 100%; }
+a { color: var(--accent); text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
+a:hover { color: var(--accent-strong); text-decoration-thickness: 2px; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+/* Controls inside horizontal scrollers draw their ring inward so the scroller can't clip it. */
+.tab:focus-visible, .steptab:focus-visible, .sections-nav a:focus-visible { outline-offset: -3px; }
+.nowrap { white-space: nowrap; }
+main:focus { outline: none; }
+h1, h2, h3, h4 { line-height: 1.2; margin: 0; letter-spacing: -0.01em; }
+p { margin: 0 0 0.9em; }
+ul, ol { margin: 0 0 1em; }
+code, pre { font-family: var(--font-mono); }
+code { font-size: 0.86em; }
+:not(pre) > code { background: var(--code-bg); padding: 0.08em 0.36em; border-radius: 5px; overflow-wrap: anywhere; }
+pre {
+  margin: 10px 0 0;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+pre code { font-size: inherit; }
+.sr-only {
+  position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.skip-link {
+  position: absolute; left: 12px; top: -200px; z-index: 100;
+  background: var(--surface); color: var(--text); font-weight: 600;
+  padding: 10px 16px; border-radius: 8px; border: 2px solid var(--focus);
+}
+.skip-link:focus { top: 12px; }
+.wrap { width: 100%; max-width: 1180px; margin-inline: auto; padding-inline: 16px; }
+@media (min-width: 640px) { .wrap { padding-inline: 24px; } }
+@media (min-width: 1024px) { .wrap { padding-inline: 32px; } }
+.label {
+  display: inline-block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+
+/* ---------- Top bar and section nav ---------- */
+.topbar {
+  position: sticky; top: 0; z-index: 40;
+  background: var(--bg-blur);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.topbar-inner { display: flex; align-items: center; gap: 12px; min-height: 58px; }
+.brand {
+  display: inline-flex; align-items: center; gap: 10px; flex: none;
+  font-weight: 750; color: var(--text); text-decoration: none; white-space: nowrap; letter-spacing: -0.01em;
+}
+.brand:hover { color: var(--text); }
+.brand-mark { width: 11px; height: 11px; background: var(--accent); transform: rotate(45deg); border-radius: 2px; }
+.sections-nav {
+  position: relative; flex: 1 1 auto; min-width: 0; overflow-x: auto;
+  scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
+}
+.sections-nav ul { display: flex; gap: 2px; list-style: none; margin: 0; padding: 9px 2px; width: max-content; }
+.sections-nav a {
+  display: block; padding: 6px 10px; border-radius: 999px; font-size: 0.84rem; font-weight: 500;
+  color: var(--text-muted); text-decoration: none; white-space: nowrap;
+}
+.sections-nav a:hover { color: var(--text); background: var(--surface-2); }
+.sections-nav a[aria-current="true"] { color: var(--accent-strong); background: var(--accent-soft); }
+.theme-toggle {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+}
+.theme-toggle:hover { background: var(--surface-2); }
+.theme-toggle svg { width: 20px; height: 20px; transition: transform 0.25s ease; }
+.theme-toggle[aria-pressed="true"] svg { transform: rotate(180deg); }
+@media (max-width: 1279px) {
+  /* The nav scrolls sideways here: fade the right edge so the cut-off links read as "more". */
+  .sections-nav {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
+  .sections-nav ul { padding-right: 28px; }
+  .sections-nav a { padding: 6px 8px; }
+}
+@media (max-width: 719px) {
+  .topbar-inner { flex-wrap: wrap; gap: 0 12px; padding-top: 6px; }
+  .brand { order: 1; flex: 1 1 auto; }
+  .theme-toggle { order: 2; }
+  .sections-nav { order: 3; flex-basis: 100%; margin-inline: -4px; scrollbar-width: none; }
+  .sections-nav::-webkit-scrollbar { display: none; }
+  .sections-nav ul { padding: 2px 28px 8px 2px; }
+}
+
+/* ---------- Sections ---------- */
+.block { padding-block: clamp(56px, 8vw, 104px); border-top: 1px solid var(--border); }
+.section-head { max-width: 780px; margin-bottom: 36px; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent); font-weight: 600; margin: 0 0 12px;
+}
+.section-head h2 { font-size: clamp(1.6rem, 1.2rem + 1.6vw, 2.3rem); letter-spacing: -0.02em; margin-bottom: 14px; }
+.section-head h2, .sub { text-wrap: balance; }
+.hero-lede, .lede { text-wrap: pretty; }
+.lede { font-size: 1.075rem; }
+.source { font-size: 0.875rem; color: var(--text-muted); margin: 0; }
+.sub { font-size: 1.3rem; margin: 56px 0 8px; letter-spacing: -0.015em; }
+.sub-lede { color: var(--text-muted); max-width: 72ch; margin-bottom: 20px; }
+.prose { max-width: 72ch; }
+.note { font-size: 0.92rem; color: var(--text-muted); max-width: 80ch; }
+
+/* ---------- Hero ---------- */
+.hero { padding-block: clamp(44px, 8vw, 104px) clamp(48px, 7vw, 88px); }
+.hero h1 { font-size: clamp(2.7rem, 1.6rem + 5vw, 4.6rem); letter-spacing: -0.04em; line-height: 1; margin-bottom: 22px; }
+.hero-lede { font-size: clamp(1.15rem, 1rem + 0.6vw, 1.4rem); line-height: 1.5; max-width: 44ch; margin-bottom: 16px; }
+.hero-sub { color: var(--text-muted); max-width: 64ch; }
+.rule-title {
+  font-family: var(--font-mono); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-muted); margin: 48px 0 14px;
+}
+.rule-tiles { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 620px) { .rule-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1040px) { .rule-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; } }
+.tile {
+  position: relative; display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 20px; box-shadow: var(--shadow);
+}
+@media (min-width: 1040px) {
+  .tile:not(:last-child)::after {
+    content: "\2192"; content: "\2192" / "";
+    position: absolute; right: -19px; top: 50%; transform: translateY(-50%);
+    color: var(--text-muted); font-size: 1rem;
+  }
+}
+@supports (grid-template-rows: subgrid) {
+  /* Tiles side by side share row tracks, so the dashed tag separators line up. */
+  @media (min-width: 620px) { .tile { display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 0; } }
+}
+.tile-n { font-family: var(--font-mono); color: var(--accent); font-size: 0.8rem; font-weight: 700; }
+.tile h3 { font-size: 1.18rem; margin: 6px 0 8px; }
+.tile p:not(.tile-tag) { color: var(--text-muted); font-size: 0.94rem; flex: 1; }
+.tile-tag { font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); border-top: 1px dashed var(--border); padding-top: 10px; margin: 0; }
+.hero-meta { display: grid; gap: 28px; margin-top: 40px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) { .hero-meta { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 40px; } }
+.mini-title { font-family: var(--font-mono); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); margin: 0 0 12px; }
+.chips { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; }
+.chips li { font-size: 0.86rem; padding: 5px 12px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); }
+.facts {
+  list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+}
+.facts li { background: var(--surface); padding: 16px 18px; }
+.fact-n { display: block; font-size: 1.7rem; font-weight: 750; letter-spacing: -0.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.fact-l { display: block; color: var(--text-muted); font-size: 0.875rem; margin-top: 2px; }
+
+/* ---------- Cards ---------- */
+.cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+.card h3, .card h4 { font-family: var(--font-mono); font-size: 1rem; letter-spacing: 0; }
+.card > p.label { font-size: 0.72rem; margin-bottom: 6px; }
+.card h3 > code { font-size: 1.05rem; background: none; padding: 0; }
+.card .mini-h { font-family: var(--font-sans); font-size: 0.74rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; }
+.card > .label { margin-bottom: 6px; }
+.card .tech { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-muted); margin: 4px 0 10px; }
+.card p:last-child { margin-bottom: 0; }
+.card p { font-size: 0.94rem; }
+.bullets { padding-left: 1.2em; max-width: 80ch; }
+.bullets li { margin: 0 0 8px; }
+.bullets li::marker { color: var(--text-muted); }
+
+/* ---------- Diagrams on paper ---------- */
+.diagram { margin: 0; }
+.paper {
+  position: relative; background: var(--paper); border: 1px solid var(--paper-edge);
+  border-radius: var(--radius); padding: 14px; overflow-x: auto; box-shadow: var(--shadow);
+}
+@media (min-width: 720px) { .paper { padding: 16px 24px 24px; } }
+.paper .zoom { display: block; border-radius: 6px; text-decoration: none; }
+.paper .zoom:focus-visible { outline-color: #1f57b5; outline-offset: 4px; }
+.paper img {
+  display: block; width: 100%; height: auto; margin-inline: auto;
+  max-width: var(--w, 100%); min-width: min(var(--w, 560px), var(--min, 560px));
+}
+.zoom-badge {
+  display: table; margin: 0 0 10px auto; font-family: var(--font-sans); font-size: 0.75rem; line-height: 1.4;
+  background: #3a3d43; color: #fff; padding: 3px 10px; border-radius: 999px;
+}
+.zoom:hover .zoom-badge, .zoom:focus-visible .zoom-badge { background: #1f57b5; }
+@media (max-width: 719px) {
+  /* Phones: fit the whole diagram to the width; the full-size link gives the detail. */
+  .paper { overflow-x: visible; padding: 10px; }
+  .paper img { min-width: 0; }
+  .zoom-badge { font-size: 0.8rem; padding: 4px 12px; }
+}
+@media (min-width: 1280px) {
+  /* Very wide diagrams may spill past the text column on large screens. */
+  .diagram.wide .paper { margin-inline: calc(-1 * min(120px, (100vw - 1200px) / 2)); }
+}
+.diagram figcaption { font-size: 0.875rem; color: var(--text-muted); margin-top: 10px; max-width: 90ch; }
+.split { display: grid; gap: 28px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 960px) {
+  .split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 36px; }
+}
+/* Tall flowcharts need their natural width: stack them under their points. */
+#realtime .split, #listing-generator .split { grid-template-columns: minmax(0, 1fr); }
+#realtime .points, #listing-generator .points { grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
+#listing-generator .points li:last-child { grid-column: 1 / -1; } /* the 7th point would sit alone in its row */
+.points { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.points li { padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 0.94rem; }
+.points li > strong:first-child { display: block; margin-bottom: 3px; font-size: 1rem; }
+
+/* ---------- Disclosures ---------- */
+details.disclosure { margin-top: 28px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+details.disclosure > summary {
+  cursor: pointer; padding: 14px 18px; font-weight: 650; list-style: none;
+  display: flex; align-items: center; gap: 12px; border-radius: var(--radius);
+}
+details.disclosure > summary::-webkit-details-marker { display: none; }
+details.disclosure > summary::before {
+  content: ""; flex: none; width: 8px; height: 8px; margin-left: 2px;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg); transition: transform 0.15s ease;
+}
+details.disclosure[open] > summary::before { transform: rotate(45deg); }
+details.disclosure > summary:hover { color: var(--accent-strong); }
+.disclosure-body { padding: 4px 18px 20px; }
+.disclosure-body .diagram + .diagram { margin-top: 20px; }
+details.snippet { margin-top: 12px; }
+details.snippet > summary { cursor: pointer; font-size: 0.875rem; color: var(--accent); font-weight: 600; width: fit-content; border-radius: 4px; }
+
+/* ---------- Tables ---------- */
+.table-wrap {
+  overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius);
+  /* Scroll hint: a right-edge shadow that the "local" cover hides once the table is scrolled to its end. */
+  background:
+    linear-gradient(to left, var(--surface) 30%, transparent) right / 40px 100% no-repeat local,
+    linear-gradient(to left, var(--scroll-shadow), transparent) right / 14px 100% no-repeat scroll,
+    var(--surface);
+}
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+.table-wrap table { min-width: 640px; }
+th, td { text-align: left; vertical-align: top; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+thead th {
+  font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted);
+  background: var(--surface-2); font-weight: 700; white-space: nowrap;
+}
+tbody th { font-weight: 650; }
+tbody tr:last-child > * { border-bottom: 0; }
+td code, th code { overflow-wrap: normal; }
+tbody th code { white-space: nowrap; }
+
+/* ---------- Order flow stepper ---------- */
+.flow-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin-bottom: 16px; }
+.flow-hint { font-size: 0.875rem; color: var(--text-muted); margin: 0; }
+.flow:not(.is-stepper) .flow-hint { visibility: hidden; }
+@media (hover: none) { .flow-hint { display: none; } }
+.segmented { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); }
+.segmented button {
+  border: 0; background: transparent; padding: 6px 12px; border-radius: 7px; min-height: 34px;
+  font: inherit; font-size: 0.875rem; color: var(--text-muted); cursor: pointer;
+}
+.segmented button:hover { color: var(--text); }
+.segmented button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
+.actors {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 14px; padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.actors .label { margin-right: 4px; }
+.actors ul { list-style: none; display: contents; }
+.actors li {
+  font-family: var(--font-mono); font-size: 0.78rem; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-muted); transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.actors li.is-active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-strong); font-weight: 600; }
+.steptabs { display: flex; overflow-x: auto; margin: 0 0 16px; padding: 2px 2px 8px; scrollbar-width: thin; position: relative; }
+@media (max-width: 879px) {
+  .steptabs {
+    padding-right: 32px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  }
+}
+.steptab {
+  position: relative; flex: 1 0 72px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 6px 4px; background: none; border: 0; border-radius: 10px; font: inherit; color: var(--text-muted); cursor: pointer;
+}
+.steptab::before, .steptab::after {
+  content: ""; position: absolute; top: 21px; height: 2px; width: calc(50% - 16px); background: var(--border-strong);
+}
+.steptab::before { left: 0; }
+.steptab::after { right: 0; }
+.steptab:first-child::before, .steptab:last-child::after { display: none; }
+.steptab-n {
+  position: relative; z-index: 1; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
+  border: 2px solid var(--border-strong); background: var(--surface); color: var(--text-muted);
+  font-family: var(--font-mono); font-size: 0.85rem; font-weight: 700;
+}
+.steptab-l { font-size: 0.8rem; line-height: 1.25; text-align: center; }
+.steptab:hover .steptab-n { border-color: var(--accent); }
+.steptab.is-done .steptab-n { border-color: var(--accent); color: var(--accent); }
+.steptab.is-done::before, .steptab.is-done::after, .steptab[aria-selected="true"]::before { background: var(--accent); }
+.steptab[aria-selected="true"] .steptab-n { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.steptab[aria-selected="true"] .steptab-l { color: var(--text); font-weight: 650; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.step-card {
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: clamp(18px, 3vw, 28px); box-shadow: var(--shadow);
+}
+/* "Read more" is the card's footer, so a card stretched to the tallest step keeps its links at the bottom. */
+.step-card > .more { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border); }
+.step-body { margin-bottom: 18px; }
+.flow.is-stepper .step-card { animation: step-in 0.22s ease-out; height: 100%; }
+@keyframes step-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.step-kicker { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); font-weight: 600; margin: 0 0 6px; }
+.step-card h4 { font-size: clamp(1.2rem, 1.05rem + 0.6vw, 1.45rem); letter-spacing: -0.015em; margin-bottom: 12px; }
+.who { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.875rem; margin-bottom: 18px; }
+.who .label { margin-right: 4px; }
+.actor { font-family: var(--font-mono); font-size: 0.8rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 1px 8px; }
+.arrow { color: var(--text-muted); }
+.step-body { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 880px) { .step-body { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 28px; } }
+.step-body .what p:last-child { margin-bottom: 0; }
+.txn { margin: 8px 0 12px; padding-left: 1.5em; }
+.txn li { margin: 4px 0; }
+.guarantee {
+  align-self: start; background: var(--success-soft); border: 1px solid var(--border); border-left: 3px solid var(--success);
+  border-radius: 10px; padding: 14px 16px;
+}
+.guarantee .label { color: var(--success); }
+.guarantee p { margin: 6px 0 0; font-size: 0.94rem; }
+.more { margin: 18px 0 0; font-size: 0.875rem; color: var(--text-muted); }
+.stepnav { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
+.step-status { font-size: 0.875rem; color: var(--text-muted); text-align: center; margin: 0; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 8px 14px;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+  border-radius: 10px; font: inherit; font-size: 0.9rem; cursor: pointer; white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent-strong); }
+.btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+.btn[aria-disabled="true"]:hover { border-color: var(--border-strong); color: var(--text); }
+.flow-end {
+  margin-top: 16px; padding: 14px 18px; border: 1px dashed var(--success); border-radius: var(--radius);
+  background: var(--success-soft); font-size: 0.94rem;
+}
+.flow-end .label { color: var(--success); margin-right: 6px; }
+
+/* ---------- Branch cards ---------- */
+.branches { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); }
+.branch {
+  display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border);
+  border-top: 3px solid var(--tone); border-radius: var(--radius); padding: 18px 20px;
+}
+.tone-warning { --tone: var(--warning); --tone-soft: var(--warning-soft); }
+.tone-danger { --tone: var(--danger); --tone-soft: var(--danger-soft); }
+.tag {
+  align-self: flex-start; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--tone); background: var(--tone-soft); padding: 3px 8px; border-radius: 6px; margin: 0 0 10px;
+}
+.branch h4 { font-size: 1.06rem; margin-bottom: 8px; }
+.branch p { font-size: 0.92rem; }
+.branch .tag { font-size: 0.7rem; }
+.branch .outcome { margin: auto 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.outcome .label { color: var(--success); margin-right: 6px; }
+.branch .more { margin-top: 10px; }
+
+/* ---------- Diagram tabs ---------- */
+.dtabs .tablist { position: relative; display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.tab {
+  flex: none; background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 10px 14px; font: inherit; font-size: 0.9rem; color: var(--text-muted); cursor: pointer; white-space: nowrap;
+  border-radius: 6px 6px 0 0;
+}
+.tab:hover { color: var(--text); background: var(--surface-2); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 650; }
+.tab-panel + .tab-panel { margin-top: 32px; }
+.dtabs.is-enhanced .tab-panel + .tab-panel { margin-top: 0; }
+.panel-title { font-size: 1.02rem; margin-bottom: 10px; }
+.dtabs.is-enhanced .panel-title {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* ---------- Inventory ---------- */
+.rule-quote {
+  margin: 0 0 24px; padding: 22px 26px; border-left: 4px solid var(--accent); background: var(--accent-soft);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.rule-quote p { margin: 0; font-size: clamp(1.1rem, 1rem + 0.6vw, 1.35rem); font-weight: 650; line-height: 1.4; letter-spacing: -0.01em; }
+.two-up { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) { .two-up { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.fn-list {
+  display: grid; gap: 1px; margin: 0; background: var(--border); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.fn-list > div { background: var(--surface); padding: 14px 18px; display: grid; gap: 4px 20px; }
+@media (min-width: 720px) { .fn-list > div { grid-template-columns: 150px minmax(0, 1fr); } }
+.fn-list dt { font-family: var(--font-mono); font-weight: 700; color: var(--accent-strong); }
+.fn-list dd { margin: 0; font-size: 0.94rem; }
+
+/* ---------- Correctness ---------- */
+.inv-grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr)); }
+.inv { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+.inv-id {
+  align-self: flex-start; font-family: var(--font-mono); font-size: 0.78rem; font-weight: 700;
+  color: var(--accent-strong); background: var(--accent-soft); padding: 2px 8px; border-radius: 6px; margin: 0;
+}
+.inv-name { font-weight: 750; font-size: 1.06rem; margin: 10px 0 6px; }
+.inv-rule { font-size: 0.92rem; }
+.inv-where { margin: auto 0 0; padding-top: 10px; border-top: 1px dashed var(--border); font-size: 0.85rem; color: var(--text-muted); }
+.fm { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.fm li { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px 28px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; }
+@media (min-width: 880px) { .fm li { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.7fr) minmax(0, 1fr); } }
+.fm p { margin: 0; font-size: 0.92rem; }
+.fm .sit { font-weight: 700; font-size: 0.98rem; }
+.fm .why .label { color: var(--success); }
+
+/* ---------- Testing ---------- */
+.layers { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); }
+.layer { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+.layer h3 { font-size: 1.06rem; }
+.layer .tech { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-muted); margin: 4px 0 10px; }
+.layer p { font-size: 0.92rem; }
+.layer p:last-child { margin-bottom: 0; }
+
+/* ---------- Roadmap ---------- */
+.timeline { list-style: none; margin: 0; padding: 0; position: relative; }
+.timeline::before { content: ""; position: absolute; left: 11px; top: 14px; bottom: 14px; width: 2px; background: var(--border); }
+.ms { position: relative; padding: 0 0 18px 42px; }
+.ms::before {
+  content: ""; position: absolute; left: 4px; top: 18px; width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--border-strong); background: var(--bg);
+}
+.ms[data-state="done"]::before { background: var(--success); border-color: var(--success); }
+.ms[data-state="next"]::before { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 5px var(--accent-soft); }
+.ms-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; }
+.ms[data-state="next"] .ms-card { border-color: var(--accent); box-shadow: var(--shadow); }
+.ms-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 10px; }
+.ms-id { font-family: var(--font-mono); font-weight: 750; font-size: 0.95rem; }
+.ms-head h3 { font-size: 1.06rem; flex: 1 1 220px; }
+.ms-est { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-muted); white-space: nowrap; }
+.ms-bar { height: 4px; border-radius: 4px; background: var(--surface-2); margin: 0 0 12px; overflow: hidden; }
+.ms-bar span { display: block; height: 100%; width: calc(var(--d) / 8 * 100%); background: var(--accent); border-radius: 4px; opacity: 0.75; }
+.ms p { font-size: 0.92rem; }
+.ms p:last-child { margin-bottom: 0; }
+.ms .demo .label { color: var(--accent-strong); margin-right: 6px; }
+.ms ul { font-size: 0.92rem; padding-left: 1.2em; margin-bottom: 10px; }
+.badge {
+  display: inline-block; font-size: 0.68rem; font-weight: 750; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; line-height: 1.5;
+}
+.badge-done { color: var(--success); }
+.badge-next { color: var(--accent-strong); background: var(--accent-soft); }
+.badge-owner { color: var(--accent-strong); }
+.badge-design { color: var(--text-muted); }
+.badge-open { color: var(--warning); }
+.badge-deferred { color: var(--text-muted); border-style: dashed; }
+.callout {
+  margin-top: 8px; padding: 16px 20px; border-radius: var(--radius); border: 1px solid var(--border);
+  border-left: 3px solid var(--warning); background: var(--warning-soft); font-size: 0.94rem; max-width: 90ch;
+}
+.timeline + .callout { margin-left: 42px; max-width: none; }
+.callout .label { color: var(--warning); margin-right: 6px; }
+.callout p:last-child { margin-bottom: 0; }
+.total { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin: 4px 0 18px 42px; }
+.total strong { font-size: 1.3rem; letter-spacing: -0.01em; }
+
+/* ---------- Decisions ---------- */
+.decisions { display: grid; gap: 32px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 960px) { .decisions { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 40px; } }
+.decisions h3 { font-size: 1.15rem; margin-bottom: 14px; }
+.dlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.dlist li { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.d-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: 0 0 4px; }
+.d-title { font-weight: 700; }
+.dlist p { margin: 0; font-size: 0.92rem; }
+.dlist .d-head { font-size: 1rem; }
+
+/* ---------- Process ---------- */
+.process { list-style: none; margin: 0; padding: 0; display: grid; gap: 30px; grid-template-columns: minmax(0, 1fr); }
+.process li { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
+.process li:not(:last-child)::after {
+  content: "\2193"; content: "\2193" / "";
+  position: absolute; left: 50%; bottom: -27px; transform: translateX(-50%); color: var(--text-muted); font-size: 1.1rem; line-height: 24px;
+}
+@media (min-width: 1040px) {
+  .process { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 24px; }
+  .process li:not(:last-child)::after {
+    content: "\2192"; content: "\2192" / "";
+    left: auto; right: -20px; top: 50%; bottom: auto; transform: translateY(-50%);
+  }
+  .process li { padding: 14px; }
+  .process .p-title { font-size: 0.95rem; }
+}
+.p-count { display: block; font-size: 1.6rem; font-weight: 750; line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
+.p-title { display: block; font-weight: 700; margin: 8px 0 6px; }
+.process p { font-size: 0.86rem; color: var(--text-muted); margin: 0; }
+
+/* ---------- Footer ---------- */
+.site-footer { border-top: 1px solid var(--border); padding-block: 40px 56px; font-size: 0.9rem; color: var(--text-muted); }
+.site-footer ul { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 0; margin: 0 0 14px; }
+.site-footer p { margin: 0 0 6px; }
+
+/* ---------- Motion and print ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+@media print {
+  .topbar, .skip-link, .flow-controls, .actors, .steptabs, .stepnav, .dtabs .tablist, .zoom-badge { display: none !important; }
+  .steps > li[hidden], .tab-panel[hidden] { display: block !important; }
+  .dtabs.is-enhanced .panel-title { position: static; width: auto; height: auto; margin: 0 0 10px; clip: auto; clip-path: none; white-space: normal; }
+  .block { break-inside: auto; }
+  .paper, .card, .step-card { box-shadow: none; }
+}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true"></span>FlashDrop</a>
+    <nav class="sections-nav" aria-label="Sections">
+      <ul>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#order-flow">Order flow</a></li>
+        <li><a href="#inventory">Inventory</a></li>
+        <li><a href="#events">Kafka</a></li>
+        <li><a href="#realtime">Real-time</a></li>
+        <li><a href="#listing-generator">Listings</a></li>
+        <li><a href="#correctness">Correctness</a></li>
+        <li><a href="#testing">Testing</a></li>
+        <li><a href="#roadmap">Roadmap</a></li>
+        <li><a href="#decisions">Decisions</a></li>
+        <li><a href="#process">Process</a></li>
+      </ul>
+    </nav>
+    <button type="button" class="theme-toggle" id="theme-toggle" aria-pressed="false" title="Toggle dark theme" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg>
+      <span class="sr-only">Dark theme</span>
+    </button>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+
+<!-- 1. Hero -->
+<section id="overview" class="hero" aria-labelledby="overview-title">
+  <div class="wrap">
+    <p class="eyebrow">System design v1 · 2026-10-01</p>
+    <h1 id="overview-title">FlashDrop</h1>
+    <p class="hero-lede">A live-shopping flash-sale platform that sells a limited drop to a burst of buyers without overselling, double-charging or losing an event, and proves it with machine-checked invariants.</p>
+    <p class="hero-sub">This page walks through the design as a flow, from the first page view to a paid order and every way that path can break. It summarises <a href="system-design.md">system-design.md</a>, which stays the source of truth.</p>
+
+    <h2 class="rule-title">The core rule</h2>
+    <ol class="rule-tiles">
+      <li class="tile">
+        <span class="tile-n" aria-hidden="true">01</span>
+        <h3>Redis admits</h3>
+        <p>A Redis Function, <code>fd_reserve</code>, atomically checks the drop window, the per-user limit and the stock and takes a hold, so losers get a read-only O(1) answer and never touch Postgres.</p>
+        <p class="tile-tag">fd_reserve · Lua · O(1)</p>
+      </li>
+      <li class="tile">
+        <span class="tile-n" aria-hidden="true">02</span>
+        <h3>Postgres decides</h3>
+        <p>Every winner becomes an <code>orders</code> row in one transaction with its quota, stock counters and outbox row under CHECK constraints, so Postgres arbitrates every reservation's fate and owns every deadline.</p>
+        <p class="tile-tag">orders · drop_inventory · CHECK</p>
+      </li>
+      <li class="tile">
+        <span class="tile-n" aria-hidden="true">03</span>
+        <h3>Kafka carries the news</h3>
+        <p>Checkout ends at a compare-and-set plus an outbox row, and a relay publishes to <code>orders.v1</code>, keyed by <code>productId</code>, where idempotent consumers run payment, settlement and the live dashboard.</p>
+        <p class="tile-tag">outbox · orders.v1 · 3 groups</p>
+      </li>
+      <li class="tile">
+        <span class="tile-n" aria-hidden="true">04</span>
+        <h3>Timers clean up</h3>
+        <p>Postgres-driven sweepers expire unpaid orders and return stock even if Kafka loses or poison-pills events, and a reconciler rebuilds Redis from Postgres after a restart or wipe.</p>
+        <p class="tile-tag">sweeper · safety net · reconciler</p>
+      </li>
+    </ol>
+
+    <div class="hero-meta">
+      <div>
+        <p class="mini-title">Stack</p>
+        <ul class="chips" aria-label="Technology stack">
+          <li>TypeScript</li>
+          <li>Next.js 16</li>
+          <li>React 19</li>
+          <li>Node 22</li>
+          <li>Fastify 5</li>
+          <li>Redis 8</li>
+          <li>Kafka 4</li>
+          <li>PostgreSQL 17</li>
+          <li>Drizzle</li>
+          <li>Docker</li>
+        </ul>
+      </div>
+      <div>
+        <p class="mini-title">Key facts</p>
+        <ul class="facts">
+          <li><span class="fact-n">4</span><span class="fact-l">deployables from 2 images (<code>node</code>, <code>web</code>)</span></li>
+          <li><span class="fact-n">9</span><span class="fact-l">machine-checked invariants, INV-1 to INV-9</span></li>
+          <li><span class="fact-n">M0–M10</span><span class="fact-l">milestones, each ending in a demo</span></li>
+          <li><span class="fact-n">≈ 41</span><span class="fact-l">focused days, or 10–12 weeks part-time</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 2. Architecture -->
+<section id="architecture" class="block" aria-labelledby="architecture-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">02 · Architecture</p>
+      <h2 id="architecture-title">A modular monolith: four deployables, two images</h2>
+      <p class="lede">A pnpm + Turborepo monorepo on PostgreSQL 17, Redis 8 and Kafka 4. Request handling, background loops and Kafka consumers run as separate processes built from the same <code>node</code> image and switched by role flags. One <code>docker compose</code> command starts everything, locally and in GitHub Actions.</p>
+      <p class="source">Source: <a href="system-design.md#2-architecture-overview">§2 Architecture overview</a></p>
+    </header>
+
+    <figure class="diagram" style="--w: 1462px">
+      <div class="paper">
+        <a class="zoom" href="diagrams/architecture.svg" target="_blank" rel="noopener">
+          <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+          <img src="diagrams/architecture.svg" width="1462" height="1398" loading="lazy" decoding="async"
+               alt="Container diagram. Clients reach caddy on port 8080, which sends pages to web and REST plus WebSocket traffic to api-1 and api-2; web also calls api for SSR fetches and Server Actions. api calls Redis (fd_reserve, pub/sub) and Postgres (order transaction plus outbox). The async tier, worker (relay, sweeper and scheduler, reconciler, listing) and consumers x2 (payment, settlement, dashboard), connects Postgres, Redis and Kafka orders.v1, calls payment-mock for charges and close-by-reference, and calls the Anthropic Messages API or a fixture provider.">
+          <span class="sr-only">(Full size, opens in a new tab)</span>
+        </a>
+      </div>
+      <figcaption>Container view. Solid arrows are calls and data flow; the dotted arrow is the worker asking <code>web</code> to revalidate a cache tag over the Compose network.</figcaption>
+    </figure>
+
+    <h3 class="sub">Deployables and their jobs</h3>
+    <p class="sub-lede"><code>worker</code> and <code>consumers</code> are one deployable run as two Compose services; the one-shot <code>migrate</code> job uses the same <code>node</code> image.</p>
+    <ul class="cards">
+      <li class="card">
+        <h4>web</h4>
+        <p class="tech">Next.js 16.3 · React 19.3 · Tailwind 4</p>
+        <p>Storefront, SSR product pages, live room, checkout, order page and admin UI. No database or Redis credentials: it reads and writes only through <code>api</code>.</p>
+      </li>
+      <li class="card">
+        <h4>api-1, api-2</h4>
+        <p class="tech">Node 22 · Fastify 5 · ws</p>
+        <p>REST <code>/api/v1</code> plus the WebSocket gateway at <code>/ws</code> (<code>API_ROLES=http,ws</code>) and rate limiting. Two stateless replicas prove cross-instance pub/sub fan-out.</p>
+      </li>
+      <li class="card">
+        <h4>worker</h4>
+        <p class="tech">WORKER_ROLES=relay,<wbr>sweeper,<wbr>reconciler,<wbr>listing</p>
+        <p>Outbox relay to Kafka; Postgres-driven expiry, safety net and drop scheduler; Redis reconciler and rebuild; LLM listing jobs. Leader-elected per loop with Postgres advisory locks.</p>
+      </li>
+      <li class="card">
+        <h4>consumers ×2</h4>
+        <p class="tech">WORKER_ROLES=payment,<wbr>settlement,<wbr>dashboard</p>
+        <p>Consumer groups <code>payment</code>, <code>inventory-settlement</code> and <code>sales-dashboard</code> across 6 partitions. Two replicas demonstrate rebalancing when one is killed.</p>
+      </li>
+      <li class="card">
+        <h4>payment-mock</h4>
+        <p class="tech">Node 22 · Fastify 5</p>
+        <p>A simulated PSP behind a real socket: charges with <code>Idempotency-Key</code>, close-by-reference (refund plus fence), a ledger in the <code>psp</code> schema, and configurable latency, errors, declines and timeout-after-success.</p>
+      </li>
+      <li class="card">
+        <h4>caddy</h4>
+        <p class="tech">Caddy 2 · edge on :8080</p>
+        <p><code>/</code> to <code>web</code>; <code>/api/*</code>, <code>/ws</code> and <code>/uploads/*</code> round-robin to <code>api-1</code>/<code>api-2</code>; <code>/ws/1</code> and <code>/ws/2</code> pinned for deterministic tests; 404 for <code>/_internal/*</code>.</p>
+      </li>
+      <li class="card">
+        <h4>infra</h4>
+        <p class="tech">postgres:17.11 · redis:8.10.2 · apache/kafka:4.3.1</p>
+        <p>Single-node data stores, the one-shot <code>kafka-init</code> and <code>migrate</code> jobs, and an optional <code>kafka-ui</code>. Compose Postgres is published on 5433 because a native PostgreSQL 17 owns 5432.</p>
+      </li>
+    </ul>
+
+    <h3 class="sub">Why this split</h3>
+    <ul class="bullets">
+      <li><strong>The WebSocket gateway lives outside Next.js</strong>, because Route Handlers can't hold WebSocket upgrades, but inside <code>api</code> behind a role flag: one fewer deployable, and it can still become its own pool with no code change.</li>
+      <li><strong><code>worker</code> is separate from <code>api</code></strong> so background loops never compete with request latency, and singletons (relay, sweeper, reconciler) stay out of the scaled request tier.</li>
+      <li><strong>One worker image with roles, not microservices.</strong> Consumer groups already give independent offsets, failure isolation and scaling.</li>
+      <li><strong><code>payment-mock</code> runs across a network boundary</strong>, the only way to test timeouts, unknown outcomes and the ledger that proves "no double charge".</li>
+      <li><strong>One Postgres with package-level domain boundaries.</strong> One developer, one transaction boundary.</li>
+    </ul>
+
+    <details class="disclosure">
+      <summary>Data model: the tables behind the flow</summary>
+      <div class="disclosure-body">
+        <p class="prose">Core tables: <code>users</code>, <code>rooms</code>, <code>products</code>, <code>drops</code>, <code>drop_inventory</code> (the stock of record and the hard oversell backstop), <code>user_drop_quota</code>, <code>orders</code> (a reservation <em>is</em> an order in status <code>RESERVED</code>) and <code>payments</code>. Support tables: <code>outbox</code>, <code>processed_events</code>, <code>sales_minute</code>, <code>drop_sales_totals</code>, <code>listing_jobs</code>, <code>system_state</code>, <code>sweeper_quarantine</code>, and the <code>psp</code> schema (<code>psp.charges</code>, <code>psp.references</code>).</p>
+        <p class="prose">The schema is TypeScript with Drizzle (<code>drizzle-orm</code> 0.45.3, <code>drizzle-kit</code> 0.31.11). Every statement that carries a guarantee stays hand-written SQL through Drizzle's <code>sql</code> template. Global lock order: <code>orders</code> row(s) → <code>user_drop_quota</code> row → <code>drop_inventory</code> row, always last.</p>
+        <figure class="diagram" style="--w: 1731px">
+          <div class="paper">
+            <a class="zoom" href="diagrams/data-model.svg" target="_blank" rel="noopener">
+              <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+              <img src="diagrams/data-model.svg" width="1731" height="2024" loading="lazy" decoding="async"
+                   alt="Entity-relationship diagram of the core tables: users, rooms, products, drops, drop_inventory, user_drop_quota, orders and payments, with their columns and keys.">
+              <span class="sr-only">(Full size, opens in a new tab)</span>
+            </a>
+          </div>
+          <figcaption>Core tables: stock, limits, orders, payments.</figcaption>
+        </figure>
+        <figure class="diagram" style="--w: 1771px">
+          <div class="paper">
+            <a class="zoom" href="diagrams/data-model-support.svg" target="_blank" rel="noopener">
+              <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+              <img src="diagrams/data-model-support.svg" width="1771" height="2857" loading="lazy" decoding="async"
+                   alt="Entity-relationship diagram of the support tables: outbox, processed_events, sales_minute, drop_sales_totals, listing_jobs, the psp references and charges ledger, sweeper_quarantine and system_state, with core tables shown as key stubs.">
+              <span class="sr-only">(Full size, opens in a new tab)</span>
+            </a>
+          </div>
+          <figcaption>Support tables: outbox and dedupe, dashboard projection, listing jobs, PSP ledger, quarantine. Source: <a href="system-design.md#3-data-model-postgresql-17">§3 Data model</a>.</figcaption>
+        </figure>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- 3. The order flow -->
+<section id="order-flow" class="block" aria-labelledby="order-flow-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">03 · The order flow</p>
+      <h2 id="order-flow-title">From product page to PAID, step by step</h2>
+      <p class="lede">Follow one buyer through the happy path. Each step names the component that acts, what it does, and the guarantee it adds. The request path ends at step 4; everything after it is asynchronous.</p>
+      <p class="source">Source: <a href="system-design.md#5-checkout--order-lifecycle">§5 Checkout &amp; order lifecycle</a> and <a href="system-design.md#6-kafka">§6 Kafka</a></p>
+    </header>
+
+    <h3 class="sub" id="happy-path-title">The happy path</h3>
+    <div class="flow" id="flow">
+      <div class="flow-controls" hidden>
+        <p class="flow-hint">Use the step buttons, the arrow keys, or Previous and Next.</p>
+        <div class="segmented" role="group" aria-label="Order flow view">
+          <button type="button" data-mode="steps" aria-pressed="true">Step through</button>
+          <button type="button" data-mode="all" aria-pressed="false">Show all steps</button>
+        </div>
+      </div>
+      <div class="actors" aria-hidden="true" hidden>
+        <span class="label">Active</span>
+        <ul>
+          <li data-actor="browser">Browser</li>
+          <li data-actor="web">web</li>
+          <li data-actor="api">api + WS</li>
+          <li data-actor="redis">Redis</li>
+          <li data-actor="postgres">Postgres</li>
+          <li data-actor="worker">worker</li>
+          <li data-actor="kafka">Kafka</li>
+          <li data-actor="consumers">consumers</li>
+          <li data-actor="psp">payment-mock</li>
+        </ul>
+      </div>
+      <div class="steptabs" role="tablist" aria-label="Order flow steps" hidden></div>
+
+      <ol class="steps">
+        <li id="step-1" data-short="Browse" data-actors="browser web api">
+          <div class="step-card" id="step-1-panel">
+            <p class="step-kicker">Step 1 of 9</p>
+            <h4 id="step-1-title">Browse the SSR product page</h4>
+            <p class="who"><span class="label">Who</span><span class="actor">web</span><span class="arrow" aria-hidden="true">→</span><span class="sr-only">calls</span><span class="actor">api</span></p>
+            <div class="step-body">
+              <div class="what">
+                <p>The browser opens <code>/p/[slug]</code>. The product shell comes from a <code>'use cache'</code> helper called at request time (<code>cacheTag('product:' + id)</code>), and a dynamic <code>&lt;Suspense&gt;</code> hole, <code>&lt;LiveStock&gt;</code>, fetches the stock snapshot uncached and streams it in the same response.</p>
+                <p><code>web</code> holds no database or Redis credentials: Server Components call <code>api</code> over <code>API_INTERNAL_URL</code>, forwarding the session cookie. No page fetches <code>api</code> at build time.</p>
+              </div>
+              <div class="guarantee">
+                <span class="label">Guarantee</span>
+                <p>The raw HTML response contains the title and the current stock number (<code>ssr.spec</code> asserts it on the raw response). SSR embeds <code>{avail, held, gen, seq}</code>, so hydration never goes backwards.</p>
+              </div>
+            </div>
+            <p class="more">Read more: <a href="system-design.md#81-routes-and-rendering">§8.1 Routes and rendering</a></p>
+          </div>
+        </li>
+
+        <li id="step-2" data-short="Live stock" data-actors="browser api redis">
+          <div class="step-card" id="step-2-panel">
+            <p class="step-kicker">Step 2 of 9</p>
+            <h4 id="step-2-title">Live stock over WebSocket</h4>
+            <p class="who"><span class="label">Who</span><span class="actor">api WS gateway</span><span class="arrow" aria-hidden="true">←</span><span class="sr-only">subscribed to</span><span class="actor">Redis pub/sub</span></p>
+            <div class="step-body">
+              <div class="what">
+                <p>One <code>RealtimeClient</code> per tab opens <code>/ws</code> (same-origin through Caddy) and sends <code>sub</code> for <code>stock:&lt;dropId&gt;</code>. The gateway subscribes to <code>fd:ch:stock:{d:&lt;dropId&gt;}</code> first, then reads <code>HMGET inv</code> and sends a <code>snapshot</code>.</p>
+                <p>Every stock Function (<code>fd_reserve</code>, <code>fd_confirm</code>, <code>fd_release</code>, <code>fd_rebuild</code>, <code>fd_set_status</code>) publishes the new level on each mutation. The gateway keeps the latest level per topic and flushes dirty topics every 100 ms as <code>delta</code> frames.</p>
+              </div>
+              <div class="guarantee">
+                <span class="label">Guarantee</span>
+                <p>The client applies a frame only if its <code>(gen, seq)</code> is newer, so the SSR snapshot and the first frame can't race in either direction. Each socket gets at most 10 stock frames per second.</p>
+              </div>
+            </div>
+            <p class="more">Read more: <a href="system-design.md#7-real-time">§7 Real-time</a> · <a href="system-design.md#82-live-stock-client">§8.2 Live stock client</a></p>
+          </div>
+        </li>
+
+        <li id="step-3" data-short="Reserve" data-actors="browser api redis postgres">
+          <div class="step-card" id="step-3-panel">
+            <p class="step-kicker">Step 3 of 9</p>
+            <h4 id="step-3-title">Reserve: Redis admits, Postgres decides</h4>
+            <p class="who"><span class="label">Who</span><span class="actor">api</span><span class="arrow" aria-hidden="true">→</span><span class="sr-only">then</span><span class="actor">Redis fd_reserve</span><span class="arrow" aria-hidden="true">→</span><span class="sr-only">then</span><span class="actor">Postgres</span></p>
+            <div class="step-body">
+              <div class="what">
+                <p>Buy creates a uuidv7 <code>Idempotency-Key</code>, kept in <code>sessionStorage</code> per drop, and calls <code>POST /api/v1/drops/:dropId/reservations</code>. The API derives <code>rid = uuidv5(userId:dropId:Idempotency-Key)</code>.</p>
+                <p><code>fd_reserve</code> atomically checks the drop window, the per-user limit (<code>uq</code>) and <code>avail</code>, then takes a hold (<code>avail −q</code>, <code>held +q</code>, <code>rsv</code> entry HELD) and publishes the new level. Losers stop there with a 409. Winners run one Postgres transaction, in lock order:</p>
+                <ol class="txn">
+                  <li><code>INSERT orders</code> (<code>id = rid</code>, status <code>RESERVED</code>) <code>ON CONFLICT DO NOTHING</code></li>
+                  <li>claim <code>user_drop_quota</code> under <code>within_limit</code></li>
+                  <li><code>INSERT outbox</code> <code>order.reserved</code></li>
+                  <li><code>takeStock</code>: <code>UPDATE drop_inventory</code>, last, guarded by <code>redis_gen</code>, stock and the drop window</li>
+                </ol>
+                <p>Commit, then <strong>201</strong> with <code>orderId</code>, <code>expiresAt</code> and <code>serverNow</code>. If Postgres refuses with <code>SOLD_OUT</code>, <code>LIMIT</code> or <code>NOT_LIVE</code>, the API writes a <code>REJECTED</code> tombstone and its <code>order.rejected</code> event in one statement; a stale generation answers 503 instead, retried with the same key.</p>
+                <details class="snippet">
+                  <summary>Show the takeStock statement</summary>
+<pre tabindex="0"><code>UPDATE drop_inventory di SET reserved = di.reserved + $q, updated_at = now()
+FROM drops d
+WHERE di.drop_id = $dropId AND d.id = di.drop_id
+  AND di.redis_gen = $gen                                  -- generation fence (§4.7)
+  AND di.total - di.sold - di.reserved &gt;= $q               -- stock backstop (INV-1)
+  AND d.status IN ('SCHEDULED','LIVE') AND now() &gt;= d.starts_at AND now() &lt; d.ends_at
+RETURNING di.reserved;</code></pre>
+                </details>
+              </div>
+              <div class="guarantee">
+                <span class="label">Guarantee</span>
+                <p>No oversell (INV-1) and no user over the limit (INV-3): Lua is the fast gate, the CHECK constraints are the hard backstop. Postgres sees only winners. The same request always maps to the same <code>rsv</code> field and <code>orders.id</code>, so a retry replays with 200 instead of creating a second order.</p>
+              </div>
+            </div>
+            <p class="more">Read more: <a href="system-design.md#52-reserve--checkout--outbox">§5.2 Reserve → checkout → outbox</a> · <a href="system-design.md#45-per-user-limits-and-idempotency">§4.5 Per-user limits and idempotency</a></p>
+          </div>
+        </li>
+
+        <li id="step-4" data-short="Checkout" data-actors="browser api postgres">
+          <div class="step-card" id="step-4-panel">
+            <p class="step-kicker">Step 4 of 9</p>
+            <h4 id="step-4-title">Checkout submit: one CAS, then 202</h4>
+            <p class="who"><span class="label">Who</span><span class="actor">api</span><span class="arrow" aria-hidden="true">→</span><span class="sr-only">then</span><span class="actor">Postgres</span></p>
+            <div class="step-body">
+              <div class="what">
+                <p>The checkout form creates its own <code>Idempotency-Key</code> once per order and keeps it in <code>sessionStorage</code> under the order id. <code>POST /api/v1/orders/:orderId/checkout</code> runs one transaction: a CAS from <code>RESERVED</code> to <code>PENDING_PAYMENT</code> (owner only, not expired, <code>expires_at = now() + payment_seconds</code>), an <code>order.placed</code> outbox row and <code>pg_notify('outbox')</code>.</p>
+                <p>The request ends at the commit with <strong>202</strong> <code>PENDING_PAYMENT</code>, and the UI shows "Processing…". If the CAS loses, the API re-reads: same key and hash → 200 replay, different hash → 422, another key → 409 <code>ALREADY_SUBMITTED</code>, expired → 410.</p>
+                <details class="snippet">
+                  <summary>Show the checkout CAS</summary>
+<pre tabindex="0"><code>UPDATE orders SET status = 'PENDING_PAYMENT', checkout_key = $key, checkout_hash = $hash,
+       shipping = $shipping, payment_method = $pm,
+       expires_at = now() + make_interval(secs =&gt; $paymentSeconds), version = version + 1, updated_at = now()
+WHERE id = $orderId AND user_id = $userId AND status = 'RESERVED' AND expires_at &gt; now()
+RETURNING *;</code></pre>
+                </details>
+              </div>
+              <div class="guarantee">
+                <span class="label">Guarantee</span>
+                <p>Checkout never touches Redis or the PSP, so PSP latency and outages never hold HTTP handlers or database connections. With Kafka and <code>payment-mock</code> stopped, submit still returns 202 (the <code>checkout-decoupled</code> test).</p>
+              </div>
+            </div>
+            <p class="more">Read more: <a href="system-design.md#52-reserve--checkout--outbox">§5.2 Reserve → checkout → outbox</a></p>
+          </div>
+        </li>
+
+        <li id="step-5" data-short="Relay" data-actors="postgres worker kafka">
+          <div class="step-card" id="step-5-panel">
+            <p class="step-kicker">Step 5 of 9</p>
+            <h4 id="step-5-title">Outbox relay</h4>
+            <p class="who"><span class="label">Who</span><span class="actor">worker (relay)</span><span class="arrow" aria-hidden="true">→</span><span class="sr-only">publishes to</span><span class="actor">Kafka</span></p>
+            <div class="step-body">
+              <div class="what">
+                <p>The relay wakes on <code>LISTEN outbox</code> (checkout, cancel and expiry batches notify) or on a 250 ms poll. Each batch is one transaction on one connection:</p>
+                <ol class="txn">
+                  <li><code>pg_try_advisory_xact_lock(hashtext('fd.relay'))</code>, so one publisher at a time</li>
+                  <li>select up to 500 rows <code>WHERE published_at IS NULL ORDER BY id</code>, <code>FOR UPDATE SKIP LOCKED</code></li>
+                  <li><code>producer.send</code> with headers <code>event-id</code>, <code>event-type</code>, <code>schema-version</code>, <code>trace-id</code>; resolves on broker acks</li>
+                  <li>mark <code>published_at</code> and commit</li>
+                </ol>
+                <p>On a send failure it rolls back and backs off (1 s → 30 s, full jitter).</p>
+              </div>
+              <div class="guarantee">
+                <span class="label">Guarantee</span>
+                <p>No lost events (INV-5). Status polling, not an id cursor, so a late-committing row is never skipped. A crash after send but before the mark republishes the batch, and consumers dedupe.</p>
+              </div>
+            </div>
+            <p class="more">Read more: <a href="system-design.md#54-transactional-outbox-and-relay-worker-relay-role">§5.4 Transactional outbox and relay</a></p>
+          </div>
+        </li>
+
+        <li id="step-6" data-short="Kafka" data-actors="worker kafka consumers">
+          <div class="step-card" id="step-6-panel">
+            <p class="step-kicker">Step 6 of 9</p>
+            <h4 id="step-6-title">Kafka <code>orders.v1</code>, keyed by <code>productId</code></h4>
+            <p class="who"><span class="label">Who</span><span class="actor">Kafka 4 (KRaft)</span></p>
+            <div class="step-body">
+              <div class="what">
+                <p><code>orders.v1</code> has 6 partitions and 7-day retention and carries the whole order lifecycle. The producer (<code>@confluentinc/kafka-javascript</code>) runs with <code>enable.idempotence=true</code>, <code>acks=all</code> and <code>partitioner=murmur2_random</code>, so a key lands on the partition a Java producer would choose.</p>
+                <p>Envelopes are Zod-validated before the outbox insert and again on consume. Events are "fat" (they carry <code>qty</code> and the ids) and keep shipping addresses out.</p>
+              </div>
+              <div class="guarantee">
+                <span class="label">Guarantee</span>
+                <p>All events of one order share a partition, so per-order causal order holds end to end, and each product's aggregate has a single writer. The <code>partitioning</code> test asserts partition = <code>murmur2(productId) % 6</code>.</p>
+              </div>
+            </div>
+            <p class="more">Read more: <a href="system-design.md#61-topics">§6.1 Topics</a> · <a href="system-design.md#62-event-envelope-zod-packagescontractssrceventsts">§6.2 Event envelope</a></p>
+          </div>
+        </li>
+
+        <li id="step-7" data-short="Payment" data-actors="kafka consumers psp postgres">
+          <div class="step-card" id="step-7-panel">
+            <p class="step-kicker">Step 7 of 9</p>
+            <h4 id="step-7-title">Payment consumer charges, then CAS to PAID</h4>
+            <p class="who"><span class="label">Who</span><span class="actor">consumers: payment</span><span class="arrow" aria-hidden="true">→</span><span class="sr-only">calls</span><span class="actor">payment-mock</span></p>
+            <div class="step-body">
+              <div class="what">
+                <p>On <code>order.placed</code> the handler re-reads the order. If it is <code>PENDING_PAYMENT</code>, it calls <code>POST /v1/charges</code> with <code>Idempotency-Key: charge:&lt;orderId&gt;</code>. On <code>succeeded</code>, one transaction does the CAS to <code>PAID</code>, writes a <code>SUCCEEDED</code> payments row and <code>order.paid</code>, and moves the inventory (<code>reserved −q</code>, <code>sold +q</code>, last). The status is then pushed on <code>fd:ch:user:&lt;userId&gt;</code> to the buyer's order page.</p>
+                <p>Batches are grouped by <code>orderId</code> (sequential within an order) with up to 32 orders in flight, so a hot product partition still pays quickly.</p>
+              </div>
+              <div class="guarantee">
+                <span class="label">Guarantee</span>
+                <p>No double charge (INV-4). A PSP timeout or 5xx pauses the partition and retries the same key, never the DLQ. If the CAS loses to expiry or cancel, close-by-reference refunds the charge.</p>
+              </div>
+            </div>
+            <p class="more">Read more: <a href="system-design.md#65-handlers">§6.5 Handlers</a> · <a href="system-design.md#63-consumer-groups">§6.3 Consumer groups</a></p>
+          </div>
+        </li>
+
+        <li id="step-8" data-short="Settle" data-actors="kafka consumers postgres redis">
+          <div class="step-card" id="step-8-panel">
+            <p class="step-kicker">Step 8 of 9</p>
+            <h4 id="step-8-title">Inventory settlement confirms the hold in Redis</h4>
+            <p class="who"><span class="label">Who</span><span class="actor">consumers: inventory-settlement</span><span class="arrow" aria-hidden="true">→</span><span class="sr-only">calls</span><span class="actor">Redis fd_confirm</span></p>
+            <div class="step-body">
+              <div class="what">
+                <p>On <code>order.paid</code>, <code>settleRedis</code> re-reads the Postgres status, calls <code>fd_confirm</code> (the <code>rsv</code> entry goes HELD → COMMITTED, <code>held −q</code>, <code>sold +q</code>, <code>seq +1</code>, publish) and then sets <code>redis_settled_at</code>. Every viewer sees the new level through the gateways.</p>
+              </div>
+              <div class="guarantee">
+                <span class="label">Guarantee</span>
+                <p>Redis applies an outcome only after Postgres committed it, so Redis is never optimistic (INV-7) and agrees with Postgres (INV-8). A redelivery is skipped once <code>redis_settled_at</code> is set, and the Lua state machine answers <code>NOOP</code> if it reaches Redis again; a <code>CONFLICT</code> is an INV-8 breach that goes to the DLQ with an alert.</p>
+              </div>
+            </div>
+            <p class="more">Read more: <a href="system-design.md#65-handlers">§6.5 Handlers</a> · <a href="system-design.md#43-the-arbiter-rule">§4.3 The arbiter rule</a></p>
+          </div>
+        </li>
+
+        <li id="step-9" data-short="Dashboard" data-actors="kafka consumers postgres redis api browser">
+          <div class="step-card" id="step-9-panel">
+            <p class="step-kicker">Step 9 of 9</p>
+            <h4 id="step-9-title">Sales dashboard projection and live push</h4>
+            <p class="who"><span class="label">Who</span><span class="actor">consumers: sales-dashboard</span><span class="arrow" aria-hidden="true">→</span><span class="sr-only">publishes through</span><span class="actor">api WS gateway</span></p>
+            <div class="step-body">
+              <div class="what">
+                <p>Per batch, one transaction inserts the event ids into <code>processed_events</code>, folds only the new events into <code>sales_minute</code> (by event-time minute) and <code>drop_sales_totals</code> with <code>version + 1</code>. After the commit and the Kafka offset commit, it publishes <code>fd:ch:dash:&lt;dropId&gt;</code> with <code>{version, totals}</code>; the admin dashboard follows <code>dash:&lt;dropId&gt;</code> and <code>stock:&lt;dropId&gt;</code>.</p>
+              </div>
+              <div class="guarantee">
+                <span class="label">Guarantee</span>
+                <p>Exactly-once effects for the projection. Totals (not deltas) and a strictly newer <code>version</code> make duplicate and out-of-order publishes harmless. Dashboard totals equal Postgres truth (INV-5), and <code>pnpm dash:rebuild</code> converges to identical numbers.</p>
+              </div>
+            </div>
+            <p class="more">Read more: <a href="system-design.md#9-live-sales-dashboard">§9 Live sales dashboard</a></p>
+          </div>
+        </li>
+      </ol>
+
+      <div class="stepnav" hidden>
+        <button type="button" class="btn" data-step="prev" aria-controls="flow"><span aria-hidden="true">←</span> Previous</button>
+        <p class="step-status" aria-live="polite"></p>
+        <button type="button" class="btn" data-step="next" aria-controls="flow">Next <span aria-hidden="true">→</span></button>
+      </div>
+    </div>
+
+    <p class="flow-end"><span class="label">End state</span>The order is <code>PAID</code>; the units count as sold in Postgres and Redis; the charge sits in the PSP ledger; the dashboard has counted it. <code>verify:invariants</code> checks exactly this after every load and chaos run.</p>
+
+    <h3 class="sub">Side branches and failures</h3>
+    <p class="sub-lede">The happy path is the easy part. These are the branches the design is built around; each ends with stock and money back in a consistent state.</p>
+    <ul class="branches">
+      <li class="branch tone-warning">
+        <p class="tag">Timer</p>
+        <h4>Hold or payment expiry</h4>
+        <p><code>expire-orders</code> runs every 1 s as an advisory-lock leader. In one transaction, in lock order, it moves up to 200 due <code>RESERVED</code> or <code>PENDING_PAYMENT</code> rows to <code>EXPIRED</code>, gives back quota and <code>reserved</code>, and writes <code>order.expired</code>. Settlement calls <code>fd_release</code>; the payment group calls close-by-reference, which refunds a charge that raced the expiry and fences later ones. If the event is lost, <code>settle-safety-net</code> settles the order directly.</p>
+        <p class="outcome"><span class="label">Outcome</span>Stock returns, within about 15 s even through the safety net alone; net capture is 0.</p>
+        <p class="more"><a href="system-design.md#46-expiry-and-the-safety-net-sweeper-role">§4.6 Expiry and the safety net</a></p>
+      </li>
+      <li class="branch tone-danger">
+        <p class="tag">Payment</p>
+        <h4>Payment declined</h4>
+        <p>The PSP answers <code>declined</code> (for example <code>pm_decline</code>) or <code>reference_closed</code>. The payment consumer's CAS moves <code>PENDING_PAYMENT</code> to <code>PAYMENT_FAILED</code> and, in the same transaction, writes a <code>FAILED</code> payments row, gives back quota and <code>reserved</code>, and emits <code>order.payment_failed</code>. Settlement then releases the Redis hold.</p>
+        <p class="outcome"><span class="label">Outcome</span>The units go back on sale and the buyer's quota is returned.</p>
+        <p class="more"><a href="system-design.md#65-handlers">§6.5 Handlers</a></p>
+      </li>
+      <li class="branch tone-warning">
+        <p class="tag">Buyer</p>
+        <h4>Cancel</h4>
+        <p><code>POST /api/v1/orders/:orderId/cancel</code> is a CAS from <code>RESERVED</code> or <code>PENDING_PAYMENT</code> to <code>CANCELLED</code>, with quota and <code>reserved</code> given back and <code>order.cancelled</code> written in the same transaction. The checkout page's "Leave checkout?" dialog calls it. Settlement releases the hold; the payment group closes the reference.</p>
+        <p class="outcome"><span class="label">Outcome</span>Stock returns through settlement; a charge that raced the cancel is refunded.</p>
+        <p class="more"><a href="system-design.md#44-reservation-and-order-state-machine">§4.4 State machine</a></p>
+      </li>
+      <li class="branch tone-danger">
+        <p class="tag">Crash</p>
+        <h4><code>api</code> crashes between Lua and Postgres</h4>
+        <p>Redis holds a HELD entry that Postgres never recorded: an orphan. A retry with the same key heals it (<code>EXISTING</code>, no row, so the insert succeeds). Otherwise <code>orphan-scan</code> finds it after expiry + 30 s of grace and writes a <code>REJECTED</code>/<code>ORPHANED</code> tombstone with its <code>order.rejected</code> event in one statement; the primary key decides any race with a late insert. Then the hold is released.</p>
+        <p class="outcome"><span class="label">Outcome</span>Stock is returned late, never lost.</p>
+        <p class="more"><a href="system-design.md#46-expiry-and-the-safety-net-sweeper-role">§4.6 orphan-scan</a> · <a href="system-design.md#45-per-user-limits-and-idempotency">§4.5</a></p>
+      </li>
+      <li class="branch tone-danger">
+        <p class="tag">Redis</p>
+        <h4>Redis restart or wipe</h4>
+        <p>Within 2 s the reconciler sees a changed <code>run_id</code>, a missing <code>fd:epoch</code> or a missing library. It reloads the Functions and, for each tracked drop under the drop lock, sets <code>RECONCILING</code> (reserves get 503 with <code>Retry-After: 1</code>), bumps <code>redis_gen</code> so in-flight reserves fail the generation fence, snapshots Postgres and runs one atomic <code>fd_rebuild</code>.</p>
+        <p class="outcome"><span class="label">Outcome</span>About 1–3 s of 503s per drop. After a wipe, 503s and never wrong answers; after a restart, Redis may be stale for up to 2 s before detection, and the Postgres CHECK covers that window.</p>
+        <p class="more"><a href="system-design.md#47-redis-durability-rebuild-and-reconciliation">§4.7 Rebuild and reconciliation</a></p>
+      </li>
+      <li class="branch tone-danger">
+        <p class="tag">Kafka</p>
+        <h4>Kafka is down</h4>
+        <p>Checkout keeps working because it only writes Postgres. Relay transactions roll back after a send timeout of at most about 10 s, so vacuum isn't blocked; the outbox grows, and an alert fires when the oldest unpublished row is older than 10 s. Payments are delayed; orders past their window expire, and late charges are refunded.</p>
+        <p class="outcome"><span class="label">Outcome</span>Stock returns via the safety net; the 5-minute payment window is the outage budget.</p>
+        <p class="more"><a href="system-design.md#54-transactional-outbox-and-relay-worker-relay-role">§5.4</a> · <a href="system-design.md#17-failure-modes--trade-offs">§17 Failure modes</a></p>
+      </li>
+    </ul>
+
+    <h3 class="sub" id="sequence-title">Sequence diagrams</h3>
+    <p class="sub-lede">The same flow at message level, with every alternative branch.</p>
+    <div class="dtabs" data-tabs>
+      <div class="tablist" role="tablist" aria-labelledby="sequence-title" hidden></div>
+
+      <div class="tab-panel" id="seq-reserve" data-label="Reserve">
+        <h4 class="panel-title">Reserve</h4>
+        <figure class="diagram" style="--w: 1101px">
+          <div class="paper">
+            <a class="zoom" href="diagrams/reserve-checkout.svg" target="_blank" rel="noopener">
+              <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+              <img src="diagrams/reserve-checkout.svg" width="1101" height="2478" loading="lazy" decoding="async"
+                   alt="Sequence diagram of reserve between browser, api, Redis fd_reserve and Postgres. The api computes rid and the fingerprint and calls fd_reserve. RETRY gives 503, NO_DROP gives a replay, a 503 with a rebuild nudge or 409, NOT_LIVE, LIMIT and SOLD_OUT give 409, FP_MISMATCH gives 422. RESERVED or EXISTING continue to one Postgres transaction: insert the order, claim quota, write the outbox, update drop_inventory last; it answers 201, a replay, a 409 with a tombstone, or 503 on a stale generation.">
+              <span class="sr-only">(Full size, opens in a new tab)</span>
+            </a>
+          </div>
+          <figcaption>Browser → <code>api</code> → <code>fd_reserve</code> → Postgres, with every idempotency and refusal branch.</figcaption>
+        </figure>
+      </div>
+
+      <div class="tab-panel" id="seq-checkout" data-label="Checkout submit">
+        <h4 class="panel-title">Checkout submit</h4>
+        <figure class="diagram" style="--w: 843px">
+          <div class="paper">
+            <a class="zoom" href="diagrams/checkout-submit.svg" target="_blank" rel="noopener">
+              <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+              <img src="diagrams/checkout-submit.svg" width="843" height="918" loading="lazy" decoding="async"
+                   alt="Sequence diagram of checkout submit between browser, api and Postgres: one CAS from RESERVED to PENDING_PAYMENT plus an order.placed outbox row and pg_notify, answering 202. A lost CAS re-reads the order and answers 200 replay, 422, 409 ALREADY_SUBMITTED or 410. Checkout never calls Redis or the PSP.">
+              <span class="sr-only">(Full size, opens in a new tab)</span>
+            </a>
+          </div>
+          <figcaption>One CAS plus an outbox row; the HTTP request ends at the Postgres commit.</figcaption>
+        </figure>
+      </div>
+
+      <div class="tab-panel" id="seq-lifecycle" data-label="Relay and payment">
+        <h4 class="panel-title">Relay and payment</h4>
+        <figure class="diagram" style="--w: 1598px">
+          <div class="paper">
+            <a class="zoom" href="diagrams/order-lifecycle.svg" target="_blank" rel="noopener">
+              <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+              <img src="diagrams/order-lifecycle.svg" width="1598" height="1821" loading="lazy" decoding="async"
+                   alt="Sequence diagram of the relay and payment. The worker relay takes the advisory lock, selects pending outbox rows, produces them to Kafka orders.v1 keyed by productId and marks them published. The payment consumer reads the order: a PAID order is a no-op, an ended order gets close-by-reference, a PENDING_PAYMENT order is charged with key charge:orderId and moved by CAS to PAID or PAYMENT_FAILED, with a refund if the CAS lost; the status is published to the buyer's sockets. Other statuses go to the DLQ.">
+              <span class="sr-only">(Full size, opens in a new tab)</span>
+            </a>
+          </div>
+          <figcaption>Order lifecycle, part 1: outbox relay → Kafka → payment consumer → PSP.</figcaption>
+        </figure>
+      </div>
+
+      <div class="tab-panel" id="seq-settlement" data-label="Settlement and dashboard">
+        <h4 class="panel-title">Settlement and dashboard</h4>
+        <figure class="diagram" style="--w: 1594px">
+          <div class="paper">
+            <a class="zoom" href="diagrams/order-settlement.svg" target="_blank" rel="noopener">
+              <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+              <img src="diagrams/order-settlement.svg" width="1594" height="1149" loading="lazy" decoding="async"
+                   alt="Sequence diagram of expiry, settlement and the dashboard. The sweeper expires due orders in Postgres. The settlement consumer reads the status and calls fd_confirm for PAID or fd_release otherwise, publishes the new stock level and sets redis_settled_at. The dashboard consumer dedupes with processed_events, folds events into sales_minute and drop_sales_totals and publishes versioned totals. A Postgres-driven safety net and orphan-scan cover lost events.">
+              <span class="sr-only">(Full size, opens in a new tab)</span>
+            </a>
+          </div>
+          <figcaption>Order lifecycle, part 2: expiry, inventory settlement, live dashboard and the safety net.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 4. Inventory and reservations -->
+<section id="inventory" class="block" aria-labelledby="inventory-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">04 · Inventory and reservations</p>
+      <h2 id="inventory-title">Redis is the gate, Postgres is the arbiter</h2>
+      <p class="lede">Stock lives in two places on purpose. Redis turns 10–100× over-demand into microsecond, read-only rejections and hosts the pub/sub fan-out; Postgres holds the stock of record and decides every reservation's fate. With Postgres-only stock, every loser would queue on one row lock.</p>
+      <p class="source">Source: <a href="system-design.md#4-inventory--reservations">§4 Inventory &amp; reservations</a></p>
+    </header>
+
+    <blockquote class="rule-quote" cite="system-design.md#43-the-arbiter-rule">
+      <p>Postgres decides every reservation's fate. Redis never frees stock on its own clock.</p>
+    </blockquote>
+    <div class="two-up">
+      <div class="card">
+        <h3 class="mini-h">Reserve</h3>
+        <p>Redis takes the stock first, then Postgres records the order. Redis is briefly <em>lower</em>.</p>
+      </div>
+      <div class="card">
+        <h3 class="mini-h">Release or commit</h3>
+        <p>Postgres commits the outcome first, then Redis applies it, through the settlement consumer or the safety net. Redis is briefly <em>lower</em> again.</p>
+      </div>
+    </div>
+    <p class="note" style="margin-top: 16px">So Redis is never higher than Postgres (INV-7). If Redis is ever wrong, the CHECK and the conditional <code>UPDATE</code> still prevent oversell: the worst case is a buyer admitted by Redis who then gets a 409 from Postgres, an under-sell, never an oversell. The drop window is checked twice as well: Lua admits only inside <code>[startsAt, endsAt)</code> while the status is SCHEDULED or LIVE, and the Postgres stock <code>UPDATE</code> repeats the check against <code>drops</code>.</p>
+
+    <h3 class="sub">Redis Functions: library <code>flashdrop</code></h3>
+    <p class="sub-lede">All keys of a drop share the hash tag <code>{d:&lt;dropId&gt;}</code>, so every call touches one slot. Redis does not roll back a Function that errors after a write, so every Function either errors before its first write or does not error at all.</p>
+    <dl class="fn-list">
+      <div><dt>fd_reserve</dt><dd>Validates <code>qty</code>, then checks the drop window, the per-user limit and the stock and takes a hold: <code>avail −q</code>, <code>held +q</code>, <code>uq +q</code>, an <code>rsv</code> entry HELD, an <code>exp</code> entry, then publish. Replays answer <code>EXISTING</code> or <code>FP_MISMATCH</code>.</dd></div>
+      <div><dt>fd_confirm</dt><dd>HELD → COMMITTED after Postgres says PAID: <code>held −q</code>, <code>sold +q</code>. <code>NOOP</code> if already committed, <code>CONFLICT</code> if released.</dd></div>
+      <div><dt>fd_release</dt><dd>HELD → RELEASED after a terminal unpaid or REJECTED order: stock and quota come back, and the entry stays as an idempotency tombstone.</dd></div>
+      <div><dt>fd_rebuild</dt><dd>Atomically replaces a drop's keys from a Postgres snapshot. Validates the whole snapshot before its first write, returns <code>STALE</code> unless its <code>gen</code> is newer, and is the only way out of RECONCILING.</dd></div>
+      <div><dt>fd_set_status</dt><dd>Writes the drop status. RECONCILING creates a complete fail-closed hash if the keys are gone; any other status is refused with <code>RETRY</code> while the drop is RECONCILING.</dd></div>
+      <div><dt>fd_rl_hit</dt><dd>A fixed-window counter (INCR, plus PEXPIRE on the first hit) behind the custom node-redis store for <code>@fastify/rate-limit</code>.</dd></div>
+    </dl>
+
+    <details class="disclosure">
+      <summary>The Redis keys of one drop</summary>
+      <div class="disclosure-body">
+        <div class="table-wrap" role="region" aria-label="Redis keys" tabindex="0">
+          <table>
+            <caption class="sr-only">Redis keys per drop</caption>
+            <thead><tr><th scope="col">Key</th><th scope="col">Type</th><th scope="col">Content</th></tr></thead>
+            <tbody>
+              <tr><th scope="row"><code>fd:{d:&lt;dropId&gt;}:inv</code></th><td>HASH</td><td>Status, window, limit, <code>gen</code>, <code>seq</code>, <code>total</code>, <code>avail</code>, <code>held</code>, <code>sold</code>. One hash, so <code>HMGET</code> gives an atomic snapshot.</td></tr>
+              <tr><th scope="row"><code>fd:{d:&lt;dropId&gt;}:rsv</code></th><td>HASH</td><td><code>&lt;rid&gt;</code> → <code>{u, q, s, fp, k}</code>: the Redis-side idempotency record, kept until <code>retainAt</code> (drop end + 24 h).</td></tr>
+              <tr><th scope="row"><code>fd:{d:&lt;dropId&gt;}:uq</code></th><td>HASH</td><td><code>&lt;userId&gt;</code> → units HELD plus COMMITTED (the per-user limit gate).</td></tr>
+              <tr><th scope="row"><code>fd:{d:&lt;dropId&gt;}:exp</code></th><td>ZSET</td><td>HELD rids scored by hold expiry + 30 s grace. Used only to pick safety-net candidates.</td></tr>
+              <tr><th scope="row"><code>fd:epoch</code></th><td>STRING</td><td>A uuid written after each full rebuild and mirrored in <code>system_state</code>. Missing or different means the keyspace was wiped.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </details>
+
+    <h3 class="sub">Two state machines</h3>
+    <p class="sub-lede">Every Postgres transition is a CAS (<code>UPDATE … WHERE status = &lt;expected&gt;</code>) that changes the counters and writes the outbox row in the same transaction. The orders row lock is the single linearization point for every race on one order.</p>
+    <figure class="diagram wide" style="--w: 1756px">
+      <div class="paper">
+        <a class="zoom" href="diagrams/reservation-states.svg" target="_blank" rel="noopener">
+          <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+          <img src="diagrams/reservation-states.svg" width="1756" height="867" loading="lazy" decoding="async"
+               alt="Two state machines. Postgres orders.status, the arbiter: insert as RESERVED or REJECTED; RESERVED moves to PENDING_PAYMENT, EXPIRED or CANCELLED; PENDING_PAYMENT moves to PAID, PAYMENT_FAILED, EXPIRED or CANCELLED. Redis rsv entry, the admission gate: HELD, COMMITTED or RELEASED; HELD moves to COMMITTED or RELEASED only after Postgres commits.">
+          <span class="sr-only">(Full size, opens in a new tab)</span>
+        </a>
+      </div>
+      <figcaption>Postgres <code>orders.status</code> (the arbiter) next to the Redis <code>rsv</code> entry (the gate). Source: <a href="system-design.md#44-reservation-and-order-state-machine">§4.4</a>.</figcaption>
+    </figure>
+
+    <h3 class="sub">Idempotency, layer by layer</h3>
+    <p class="sub-lede"><code>rid = uuidv5(NS, userId + ':' + dropId + ':' + idempotencyKey)</code> gives both layers one identity, so no separate idempotency table is needed. The <code>Idempotency-Key</code> header is required (8–64 characters, <code>[A-Za-z0-9_-]</code>) and scoped to (user, drop).</p>
+    <div class="table-wrap" role="region" aria-label="Idempotency layers" tabindex="0">
+      <table>
+        <caption class="sr-only">Fast gate in Redis and hard backstop in Postgres for each concern</caption>
+        <thead><tr><th scope="col">Concern</th><th scope="col">Fast gate (Redis)</th><th scope="col">Hard backstop (Postgres)</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Stock</th><td><code>avail &gt;= q</code> in <code>fd_reserve</code></td><td><code>no_oversell</code> CHECK plus conditional <code>UPDATE</code></td></tr>
+          <tr><th scope="row">Per-user limit</th><td><code>uq[user] + q &lt;= limit</code></td><td><code>within_limit</code> CHECK plus conditional upsert</td></tr>
+          <tr><th scope="row">Reserve retry or double click</th><td><code>rsv[rid]</code> exists: <code>EXISTING</code> or <code>FP_MISMATCH</code></td><td><code>orders</code> PK conflict, then compare <code>request_hash</code></td></tr>
+          <tr><th scope="row">Checkout retry</th><td>—</td><td>CAS on <code>status = 'RESERVED'</code>, then compare <code>checkout_key</code> and <code>checkout_hash</code></td></tr>
+          <tr><th scope="row">Charge retry</th><td>—</td><td>PSP <code>Idempotency-Key: charge:&lt;orderId&gt;</code>, <code>payments</code> PK</td></tr>
+          <tr><th scope="row">Event redelivery</th><td>Lua state machine (<code>NOOP</code>)</td><td>Status CAS, <code>redis_settled_at</code>, <code>processed_events</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" style="margin-top: 14px">A double click replays 200 with <code>Idempotency-Replayed: true</code>; the same key with a different body gets 422 <code>IDEMPOTENCY_KEY_REUSED</code>; a retry while the drop is being rebuilt gets 503 with <code>Retry-After: 1</code> and retries with the same key.</p>
+
+    <h3 class="sub">Timers: the sweeper loops</h3>
+    <p class="sub-lede">Expiry is decided by Postgres time on Postgres rows; Redis key TTLs and keyspace notifications are never used. Every loop takes <code>pg_try_advisory_xact_lock</code> per tick, and every loop that iterates drops reads the tracked set from Postgres, never from Redis.</p>
+    <div class="table-wrap" role="region" aria-label="Sweeper loops" tabindex="0">
+      <table>
+        <caption class="sr-only">Sweeper loops, their period and what they do</caption>
+        <thead><tr><th scope="col">Loop</th><th scope="col">Every</th><th scope="col">What it does</th></tr></thead>
+        <tbody>
+          <tr><th scope="row"><code>expire-orders</code></th><td>1 s</td><td>Expires up to 200 due orders per batch in one transaction, in lock order. A failing batch falls back to one transaction per order; an order that still fails is quarantined with an alert.</td></tr>
+          <tr><th scope="row"><code>settle-safety-net</code></th><td>5 s</td><td>Settles terminal orders with <code>redis_settled_at IS NULL</code> that changed more than 10 s ago, covering a lost, slow or DLQ'd settlement event.</td></tr>
+          <tr><th scope="row"><code>orphan-scan</code></th><td>5 s</td><td>Reads <code>exp</code> entries past expiry + 30 s: no Postgres row → <code>REJECTED/ORPHANED</code> tombstone; live → re-score; terminal → forced settle.</td></tr>
+          <tr><th scope="row"><code>drop-scheduler</code></th><td>1 s</td><td>Level-triggered: applies due Postgres transitions (SCHEDULED→LIVE, LIVE or PAUSED→ENDED) and repairs the Redis status with <code>fd_set_status</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <details class="disclosure">
+      <summary>Redis restart or wipe: the rebuild protocol</summary>
+      <div class="disclosure-body">
+        <p class="prose"><code>syncDropFromPostgres(dropId)</code> is the single code path for arming a drop and for recovering it. It runs under one per-drop Postgres advisory lock, shared by admin actions, the scheduler and the reconciler:</p>
+        <ol class="bullets">
+          <li><code>fd_set_status RECONCILING</code>: every Function on the drop now answers <code>RETRY</code>. <code>inv</code> is never deleted, so the guard can't vanish mid-rebuild.</li>
+          <li>Fence: <code>UPDATE drop_inventory SET redis_gen = redis_gen + 1</code>, commit. A reserve carrying the old <code>gen</code> fails, answers 503 and retries with the same key.</li>
+          <li><code>REPEATABLE READ</code> snapshot of the drop, <code>drop_inventory</code>, <code>user_drop_quota</code> and every order of the drop.</li>
+          <li>One atomic <code>fd_rebuild</code>: <code>avail = total − sold − reserved</code>, <code>held = reserved</code>, <code>sold = sold</code>, <code>uq</code> from <code>claimed</code>; RESERVED or PENDING_PAYMENT → HELD, PAID → COMMITTED, everything else → RELEASED; <code>seq</code> resets to 0.</li>
+          <li>Unlock.</li>
+        </ol>
+        <p class="prose">The reconciler checks every 2 s for keyspace loss (<code>fd:epoch</code>, <code>run_id</code>, the library) and structural problems per tracked drop, and every 10 s for drift on stable samples. The rule: <strong>lower Redis promptly on evidence, raise it only when quiescent.</strong></p>
+        <figure class="diagram" style="--w: 1152px">
+          <div class="paper">
+            <a class="zoom" href="diagrams/redis-rebuild.svg" target="_blank" rel="noopener">
+              <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+              <img src="diagrams/redis-rebuild.svg" width="1152" height="1790" loading="lazy" decoding="async"
+                   alt="Sequence diagram of a Redis rebuild. The worker reconciler detects a changed run_id or a missing fd:epoch and reloads the Functions library. For each tracked drop it takes the drop lock, sets RECONCILING, bumps redis_gen from 7 to 8 so an in-flight reserve fails with STALE_GEN and retries, snapshots Postgres, runs fd_rebuild with gen 8 while settlement retries, unlocks, and finally writes a new fd:epoch and stores run_id and epoch in system_state.">
+              <span class="sr-only">(Full size, opens in a new tab)</span>
+            </a>
+          </div>
+          <figcaption>Restart or wipe → reconciler → drop lock, RECONCILING, generation fence, snapshot, atomic rebuild. Source: <a href="system-design.md#47-redis-durability-rebuild-and-reconciliation">§4.7</a>.</figcaption>
+        </figure>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- 5. Events and Kafka -->
+<section id="events" class="block" aria-labelledby="events-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">05 · Events and Kafka</p>
+      <h2 id="events-title">One topic, keyed by product</h2>
+      <p class="lede">Every status change writes its event into <code>outbox</code> in the same transaction. The relay publishes it; three consumer groups turn it into effects, each of them idempotent.</p>
+      <p class="source">Source: <a href="system-design.md#6-kafka">§6 Kafka</a></p>
+    </header>
+
+    <ul class="cards two-up">
+      <li class="card">
+        <p class="label">Topic</p>
+        <h3><code>orders.v1</code></h3>
+        <p class="tech">6 partitions · key productId · 7 days</p>
+        <p>The whole order lifecycle. Topics are created by the one-shot <code>kafka-init</code> job; <code>auto.create.topics.enable=false</code>.</p>
+      </li>
+      <li class="card">
+        <p class="label">Dead-letter topic</p>
+        <h3><code>orders.v1.dlq</code></h3>
+        <p class="tech">1 partition · original key · 30 days</p>
+        <p>Poison messages, with headers <code>x-consumer</code>, <code>x-error</code>, <code>x-attempts</code>, <code>x-orig-partition</code> and <code>x-orig-offset</code>.</p>
+      </li>
+    </ul>
+
+    <h3 class="sub">Seven event types</h3>
+    <div class="table-wrap" role="region" aria-label="Event types" tabindex="0">
+      <table>
+        <caption class="sr-only">Order event types, who writes them and the transition they record</caption>
+        <thead><tr><th scope="col">Event</th><th scope="col">Written by</th><th scope="col">Transition</th></tr></thead>
+        <tbody>
+          <tr><th scope="row"><code>order.reserved</code></th><td><code>api</code> reserve</td><td>— → RESERVED</td></tr>
+          <tr><th scope="row"><code>order.placed</code></th><td><code>api</code> checkout submit</td><td>RESERVED → PENDING_PAYMENT</td></tr>
+          <tr><th scope="row"><code>order.paid</code></th><td>payment consumer</td><td>PENDING_PAYMENT → PAID</td></tr>
+          <tr><th scope="row"><code>order.payment_failed</code></th><td>payment consumer</td><td>PENDING_PAYMENT → PAYMENT_FAILED</td></tr>
+          <tr><th scope="row"><code>order.expired</code></th><td>sweeper</td><td>RESERVED or PENDING_PAYMENT → EXPIRED</td></tr>
+          <tr><th scope="row"><code>order.cancelled</code></th><td><code>api</code> cancel</td><td>RESERVED or PENDING_PAYMENT → CANCELLED</td></tr>
+          <tr><th scope="row"><code>order.rejected</code></th><td><code>api</code> (Postgres refusal) or sweeper (<code>ORPHANED</code>)</td><td>— → REJECTED (tombstone)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" style="margin-top: 14px">Envelopes are a Zod discriminated union in <code>packages/contracts</code>, with <code>eventId</code> (uuidv7, the dedupe key), <code>schemaVersion: 1</code>, <code>orderVersion</code> and the ids. Only additive changes within v1; a breaking change means <code>orders.v2</code>.</p>
+
+    <h3 class="sub">Consumer groups</h3>
+    <div class="table-wrap" role="region" aria-label="Consumer groups" tabindex="0">
+      <table>
+        <caption class="sr-only">Consumer groups: what they handle, their effect and how they stay idempotent</caption>
+        <thead><tr><th scope="col">Group (role)</th><th scope="col">Handles</th><th scope="col">Effect</th><th scope="col">Idempotency</th></tr></thead>
+        <tbody>
+          <tr>
+            <th scope="row"><code>payment</code> (<code>payment</code>)</th>
+            <td><code>order.placed</code>; <code>order.expired</code> and <code>order.cancelled</code></td>
+            <td>Charge, then CAS to PAID or PAYMENT_FAILED. Close-by-reference for orders that ended unpaid</td>
+            <td>PSP keys <code>charge:&lt;orderId&gt;</code> and <code>close:&lt;orderId&gt;</code>, orders CAS, <code>payments</code> PK</td>
+          </tr>
+          <tr>
+            <th scope="row"><code>inventory-settlement</code> (<code>settlement</code>)</th>
+            <td><code>order.paid</code>, <code>order.payment_failed</code>, <code>order.expired</code>, <code>order.cancelled</code>, <code>order.rejected</code></td>
+            <td><code>settleRedis(order)</code>: <code>fd_confirm</code> or <code>fd_release</code>, then <code>redis_settled_at</code></td>
+            <td>Re-reads Postgres status, Lua state machine (<code>NOOP</code>), <code>redis_settled_at</code></td>
+          </tr>
+          <tr>
+            <th scope="row"><code>sales-dashboard</code> (<code>dashboard</code>)</th>
+            <td>All events</td>
+            <td>Postgres projection plus <code>PUBLISH fd:ch:dash:&lt;dropId&gt;</code></td>
+            <td><code>processed_events</code> insert in the projection transaction</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="sub">Why key by <code>productId</code></h3>
+    <div class="split">
+      <ol class="points">
+        <li><strong>Per-order order.</strong> All events of one order share a partition, so per-order causal order holds end to end.</li>
+        <li><strong>A single writer per product.</strong> One consumer instance owns each product's events, so the dashboard folds a batch into one upsert per drop with no cross-consumer lock contention.</li>
+        <li><strong>The cost is hot partitions.</strong> It is bounded, because Kafka sees only winners (about stock × 3–4 events), and payment parallelizes within the partition. Keying by <code>orderId</code> would balance better but give up point 2.</li>
+      </ol>
+      <div class="callout" style="margin-top: 0; border-left-color: var(--accent); background: var(--accent-soft)">
+        <p><span class="label" style="color: var(--accent-strong)">The numbers</span></p>
+        <p>Keying by product puts a whole flash sale on one partition. Serially, 1,000 orders at about 450 ms of PSP latency would take about 7.5 minutes, longer than the payment window. With 32 concurrent orders it takes about 15 s. That is safe because correctness rests on the orders CAS and PSP idempotency, not on processing order; work for the same order stays sequential.</p>
+      </div>
+    </div>
+
+    <h3 class="sub">Consumer runner rules</h3>
+    <ul class="bullets">
+      <li><strong>Manual offsets.</strong> Committed only after every message in the batch has succeeded or been dead-lettered.</li>
+      <li><strong>Start at earliest.</strong> All groups set <code>fromBeginning: true</code>, so a brand-new group (every CI run) never skips events; a consumer is healthy only once it has a partition assignment.</li>
+      <li><strong>Transient failures stall, never drop.</strong> Postgres or Redis errors, PSP 5xx or timeouts and Lua <code>RETRY</code> pause the partition, seek back and retry with backoff (100 ms → 30 s), indefinitely and never to the DLQ.</li>
+      <li><strong>Poison goes to the DLQ.</strong> Zod failures, unknown types and <code>InvariantViolation</code> go to <code>orders.v1.dlq</code> with an alert. A DLQ'd event never leaks stock or money: the sweeper, the safety net and close-by-reference still run.</li>
+      <li><strong>Replay without re-feeding.</strong> <code>pnpm dlq:replay</code> runs the handler named in <code>x-consumer</code> directly and never re-produces to <code>orders.v1</code>.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 6. Real-time -->
+<section id="realtime" class="block" aria-labelledby="realtime-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">06 · Real-time</p>
+      <h2 id="realtime-title">Live stock without a firehose</h2>
+      <p class="lede">Stock is a level, not a log. The Functions publish on every mutation; gateways coalesce, version and fan out, and a snapshot is always enough to recover.</p>
+      <p class="source">Source: <a href="system-design.md#7-real-time">§7 Real-time</a></p>
+    </header>
+
+    <div class="split">
+      <ul class="points">
+        <li><strong>Functions PUBLISH.</strong> Every stock mutation publishes <code>gen:seq:avail:held:sold:status:ts</code> on <code>fd:ch:stock:{d:&lt;dropId&gt;}</code> inside the same atomic call, so messages are ordered with the mutations.</li>
+        <li><strong>Ref-counted subscriptions.</strong> Each gateway holds one subscriber connection: it subscribes a channel for the first local socket and unsubscribes after the last. No sticky sessions are needed.</li>
+        <li><strong>100 ms coalescing.</strong> The gateway keeps <code>latest[topic]</code> and serializes each dirty topic once per tick, so a socket gets at most 10 stock frames per second (k6 gate: ≤ 11).</li>
+        <li><strong><code>(gen, seq)</code> gating.</strong> <code>gen</code> comes from Postgres <code>drop_inventory.redis_gen</code> and survives a wipe; <code>seq</code> restarts at 0 on every rebuild. Gateways and clients keep only strictly newer messages.</li>
+        <li><strong>Snapshot + delta resync.</strong> On <code>sub</code> the gateway subscribes first, then sends an <code>HMGET</code> snapshot, and re-snapshots after its own subscriber reconnects. Clients reconnect with jittered backoff (0.5 s → 10 s); after 5 s disconnected they poll the stock endpoint every 3 s.</li>
+        <li><strong>Backpressure.</strong> Sends are skipped while <code>bufferedAmount</code> &gt; 256 KB, and the next flush carries the latest level. A socket above 1 MB for 10 s is closed with 1013.</li>
+      </ul>
+      <figure class="diagram" style="--w: 837px; --min: 440px">
+        <div class="paper">
+          <a class="zoom" href="diagrams/realtime-fanout.svg" target="_blank" rel="noopener">
+            <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+            <img src="diagrams/realtime-fanout.svg" width="837" height="1377" loading="lazy" decoding="async"
+                 alt="Flowchart of stock fan-out. Writers (api, consumers, worker) call Redis Functions that update the inv hash and PUBLISH on fd:ch:stock. Each api gateway has one ref-counted subscriber, a coalescer that keeps only newer gen and seq, a 100 ms flush that serializes once per topic, and per-socket backpressure. Browser tabs on /ws/1 and /ws/2 apply only newer frames, seed from SSR HTML, and poll the stock endpoint when the socket has been down for over 5 s.">
+            <span class="sr-only">(Full size, opens in a new tab)</span>
+          </a>
+        </div>
+        <figcaption>Stock update path: Redis Function → pub/sub → gateway instances → browsers.</figcaption>
+      </figure>
+    </div>
+
+    <h3 class="sub">Topics and access</h3>
+    <div class="table-wrap" role="region" aria-label="WebSocket topics" tabindex="0">
+      <table>
+        <caption class="sr-only">WebSocket topics, their Redis channels, semantics and access rules</caption>
+        <thead><tr><th scope="col">Client topic</th><th scope="col">Redis channel</th><th scope="col">Semantics</th><th scope="col">Access</th></tr></thead>
+        <tbody>
+          <tr><th scope="row"><code>stock:&lt;dropId&gt;</code></th><td><code>fd:ch:stock:{d:&lt;dropId&gt;}</code></td><td>Level (latest wins), versioned <code>(gen, seq)</code></td><td>Public</td></tr>
+          <tr><th scope="row"><code>room:&lt;roomId&gt;</code></th><td><code>fd:ch:room:&lt;roomId&gt;</code></td><td>Level: pinned drop, drop status, viewer count</td><td>Public</td></tr>
+          <tr><th scope="row"><code>user</code> (implicit)</th><td><code>fd:ch:user:&lt;userId&gt;</code></td><td>Order status and listing-job status events, never coalesced</td><td>Owner only</td></tr>
+          <tr><th scope="row"><code>dash:&lt;dropId&gt;</code></th><td><code>fd:ch:dash:&lt;dropId&gt;</code></td><td>Level: dashboard totals, versioned by <code>drop_sales_totals.version</code></td><td>Admin only</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 7. Listing generator -->
+<section id="listing-generator" class="block" aria-labelledby="listing-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">07 · Listing generator (LLM)</p>
+      <h2 id="listing-title">Photos in, a validated draft out, a human publishes</h2>
+      <p class="lede">An admin uploads 1–4 product photos. A worker job asks the model for a structured listing, validates it with Zod, repairs it if needed and leaves publishing to a human. It is a job queue, not a Kafka stream, and it is never on the purchase path.</p>
+      <p class="source">Source: <a href="system-design.md#10-llm-listing-generator">§10 LLM listing generator</a></p>
+    </header>
+
+    <div class="split">
+      <ul class="points">
+        <li><strong>Model: <code>claude-sonnet-5-5</code>.</strong> The default (owner decision, 2026-10-01), set by <code>LISTING_MODEL</code>. <code>claude-haiku-4-5</code> is the cheap mode (no <code>effort</code>) and <code>claude-opus-5-5</code> is for hard cases. On Sonnet and Opus, <code>effort</code> is set explicitly, starting at <code>low</code>.</li>
+        <li><strong><code>ListingWire</code> vs <code>ListingDraft</code>.</strong> Wire is the shape the model must emit: shapes, enums and nullability that constrained decoding can enforce. Draft adds what it can't: title 10–80 characters, description 80–1,200, 3–6 highlights, banned claims, no prices in text, attributes required per category.</li>
+        <li><strong><code>messages.create()</code>, not <code>parse()</code>.</strong> <code>parse()</code> throws on invalid output and hides <code>stop_reason</code> and usage, so the code branches on <code>stop_reason</code> first, then parses inside a <code>try</code>.</li>
+        <li><strong>Repair loop, at most 3 model calls.</strong> <code>refusal</code> → FAILED; <code>max_tokens</code> → one retry at effort <code>low</code>, or NEEDS_REVIEW; invalid → a repair turn with <code>z.prettifyError</code> issues; ok → READY; after 3 calls → NEEDS_REVIEW.</li>
+        <li><strong>Fixtures in CI, no key.</strong> <code>FixtureListingModel</code> replays <code>Message</code>-shaped fixtures keyed by image sha256: an over-long title, a refusal, <code>max_tokens</code>, invalid JSON and a prompt-injection photo. <code>LLM_PROVIDER</code> defaults to <code>fixture</code> when <code>ANTHROPIC_API_KEY</code> is unset.</li>
+        <li><strong>Human approval.</strong> Nothing is published without it. Approve re-validates with <code>ListingDraft</code> and creates a <code>PUBLISHED</code> product with <code>source = 'llm'</code>.</li>
+        <li><strong>The price never comes from the LLM.</strong> The admin types it on the drop, which caps what a prompt injection can do; text inside images is data, never instructions.</li>
+      </ul>
+      <figure class="diagram" style="--w: 760px; --min: 440px">
+        <div class="paper">
+          <a class="zoom" href="diagrams/listing-generator.svg" target="_blank" rel="noopener">
+            <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+            <img src="diagrams/listing-generator.svg" width="927" height="2534" loading="lazy" decoding="async"
+                 alt="Flowchart of the LLM listing pipeline: admin upload with magic-byte checks and EXIF stripping, a listing_jobs row, a worker claim with a lease, a model attempt through the provider chosen by LLM_PROVIDER, then a branch on stop_reason: refusal to FAILED, max_tokens to a low-effort retry, end_turn to ListingWire and ListingDraft validation. Invalid output goes to a repair turn while fewer than 3 calls were made, otherwise NEEDS_REVIEW; valid output is READY. Both lead to the admin review form, approval and the SSR product page.">
+            <span class="sr-only">(Full size, opens in a new tab)</span>
+          </a>
+        </div>
+        <figcaption>Upload → job → attempt → validate → repair (≤ 3 calls) → review → approve → SSR page.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- 8. Correctness -->
+<section id="correctness" class="block" aria-labelledby="correctness-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">08 · Correctness</p>
+      <h2 id="correctness-title">Nine invariants, checked by machine</h2>
+      <p class="lede"><code>pnpm verify:invariants</code> waits for quiescence, then checks INV-1 to INV-9 across Postgres, Redis, the PSP ledger and Kafka. It runs after the k6 <code>load-smoke</code> run and the nightly chaos runs, and it is a hard CI gate. The integration suites assert the same checks per test drop.</p>
+      <p class="source">Source: <a href="system-design.md#11-invariants-checked-by-pnpm-verifyinvariants">§1.1 Invariants</a></p>
+    </header>
+
+    <ul class="inv-grid">
+      <li class="inv">
+        <p class="inv-id">INV-1</p>
+        <p class="inv-name">No oversell.</p>
+        <p class="inv-rule"><code>reserved + sold &lt;= total</code> for every drop, and Σqty(PAID) ≤ total.</p>
+        <p class="inv-where"><code>drop_inventory</code> CHECK (hard), Lua gate (fast)</p>
+      </li>
+      <li class="inv">
+        <p class="inv-id">INV-2</p>
+        <p class="inv-name">Counters match orders.</p>
+        <p class="inv-rule"><code>reserved = Σqty(RESERVED, PENDING_PAYMENT)</code> and <code>sold = Σqty(PAID)</code>.</p>
+        <p class="inv-where">Every status change updates the counters in the same transaction</p>
+      </li>
+      <li class="inv">
+        <p class="inv-id">INV-3</p>
+        <p class="inv-name">Per-user limit.</p>
+        <p class="inv-rule"><code>claimed = Σqty(user's RESERVED, PENDING_PAYMENT, PAID) &lt;= limit_qty</code>.</p>
+        <p class="inv-where"><code>user_drop_quota</code> CHECK (hard), <code>uq</code> hash in Lua (fast)</p>
+      </li>
+      <li class="inv">
+        <p class="inv-id">INV-4</p>
+        <p class="inv-name">No double charge.</p>
+        <p class="inv-rule">For each order, PSP net captured = <code>total_cents</code> if PAID, else 0. At most one succeeded charge per reference. Every PAID order has a <code>SUCCEEDED</code> payments row.</p>
+        <p class="inv-where">PSP idempotency keys, orders CAS, close-by-reference</p>
+      </li>
+      <li class="inv">
+        <p class="inv-id">INV-5</p>
+        <p class="inv-name">No lost events.</p>
+        <p class="inv-rule">Once idle, the outbox is fully published and every consumer group has processed every event, so dashboard totals equal Postgres truth.</p>
+        <p class="inv-where">Transactional outbox, status-polling relay, consumer dedupe</p>
+      </li>
+      <li class="inv">
+        <p class="inv-id">INV-6</p>
+        <p class="inv-name">No leaked stock.</p>
+        <p class="inv-rule">Once idle: no live order is past <code>expires_at</code>; every terminal order has <code>redis_settled_at</code>; Redis <code>avail = total − sold − reserved</code>, <code>held = reserved</code>, <code>sold = sold</code>; <code>uq</code> equals <code>claimed</code>.</p>
+        <p class="inv-where">Postgres sweeper, settlement consumer, safety net, reconciler</p>
+      </li>
+      <li class="inv">
+        <p class="inv-id">INV-7</p>
+        <p class="inv-name">Redis is never optimistic.</p>
+        <p class="inv-rule">Redis <code>avail</code> ≤ Postgres available (<code>total − sold − reserved</code>), except while a drop is <code>RECONCILING</code> or in the detection window after a Redis restart (≤ 2 s plus the rebuild).</p>
+        <p class="inv-where">Ordering rule (§4.3), reconciler</p>
+      </li>
+      <li class="inv">
+        <p class="inv-id">INV-8</p>
+        <p class="inv-name">Redis agrees with Postgres.</p>
+        <p class="inv-rule">An <code>rsv</code> entry is <code>COMMITTED</code> exactly when its order is PAID. <code>RELEASED</code> implies the order is terminal and unpaid, or <code>REJECTED</code>.</p>
+        <p class="inv-where">Settlement reads Postgres status before acting</p>
+      </li>
+      <li class="inv">
+        <p class="inv-id">INV-9</p>
+        <p class="inv-name">Redis conservation.</p>
+        <p class="inv-rule"><code>avail + held + sold = total</code> and <code>avail &gt;= 0</code>.</p>
+        <p class="inv-where">Lua Functions, model-based tests</p>
+      </li>
+    </ul>
+
+    <h3 class="sub">What breaks, and what happens</h3>
+    <p class="sub-lede">A condensed selection from the failure table. Each row is a deliberate trade-off that holds up in an interview.</p>
+    <ul class="fm">
+      <li>
+        <p class="sit">50k reserve requests for 500 units</p>
+        <p class="what">Lua admits exactly 500. Losers get 409 after one read-only O(1) call. Postgres sees only the winners.</p>
+        <p class="why"><span class="label">Why it's fine</span><br>Contention is bounded by stock, not traffic.</p>
+      </li>
+      <li>
+        <p class="sit">Postgres refuses what Redis admitted (drift)</p>
+        <p class="what">A REJECTED tombstone and its event in one statement → settlement releases → <code>fd_sync</code> nudge → prompt rebuild.</p>
+        <p class="why"><span class="label">Why it's fine</span><br>Postgres is the backstop, so oversell is impossible.</p>
+      </li>
+      <li>
+        <p class="sit">Redis down</p>
+        <p class="what">Reserve answers 503 (fail closed). Checkout submit and payments continue on Postgres; settlement pauses and retries; live updates switch to polling.</p>
+        <p class="why"><span class="label">Why it's fine</span><br>No sales beats wrong sales.</p>
+      </li>
+      <li>
+        <p class="sit">Postgres down</p>
+        <p class="what">The breaker answers 503 <em>before</em> Lua, so no new orphans. Checkout and payments stall; existing holds resolve when Postgres returns.</p>
+        <p class="why"><span class="label">Why it's fine</span><br>Fails closed.</p>
+      </li>
+      <li>
+        <p class="sit">Payment succeeds just as the order expires</p>
+        <p class="what">The orders CAS decides. The loser calls close-by-reference → refund → net capture 0.</p>
+        <p class="why"><span class="label">Why it's fine</span><br>One linearization point.</p>
+      </li>
+      <li>
+        <p class="sit">PSP timeout (unknown outcome)</p>
+        <p class="what">Retry with the same <code>charge:</code> key, indefinitely, with the partition paused; never DLQ'd.</p>
+        <p class="why"><span class="label">Why it's fine</span><br>No double charge, no false failure.</p>
+      </li>
+      <li>
+        <p class="sit">Poison event</p>
+        <p class="what">DLQ + alert. The order still expires and its stock returns through Postgres-driven paths. The replay tool runs only the failing group's handler.</p>
+        <p class="why"><span class="label">Why it's fine</span><br>No silent loss, no stuck partition, no double count elsewhere.</p>
+      </li>
+      <li>
+        <p class="sit">Kafka data volume lost (RF 1)</p>
+        <p class="what">Acknowledged events already marked published are gone. Expiry, the safety net and the PSP ledger still prevent stock or money loss; the dashboard undercounts and INV-5 flags it.</p>
+        <p class="why"><span class="label">Why it's fine</span><br>The single-broker limit of "no lost events", stated honestly. Production would use RF 3.</p>
+      </li>
+    </ul>
+    <p class="source" style="margin-top: 16px">Full table: <a href="system-design.md#17-failure-modes--trade-offs">§17 Failure modes &amp; trade-offs</a></p>
+  </div>
+</section>
+
+<!-- 9. Testing and CI -->
+<section id="testing" class="block" aria-labelledby="testing-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">09 · Testing and CI</p>
+      <h2 id="testing-title">Every claim has an automated proof</h2>
+      <p class="lede">Six layers, from pure unit tests to nightly chaos. Every load and chaos run ends in <code>verify:invariants</code>; latency thresholds are loose in CI, correctness is strict.</p>
+      <p class="source">Source: <a href="system-design.md#13-testing-strategy--ci-pipeline">§13 Testing strategy &amp; CI pipeline</a></p>
+    </header>
+
+    <ul class="layers">
+      <li class="layer">
+        <h3>Unit</h3>
+        <p class="tech">Vitest 5 · unit project</p>
+        <p>The order state machine including every illegal edge, rid and fingerprint canonicalization, Lua-result → HTTP mapping, Zod round-trips, the coalescer with fake timers, <code>(gen, seq)</code> ordering, <code>ListingDraft</code> and the repair loop, and the drift checker.</p>
+      </li>
+      <li class="layer">
+        <h3>Integration</h3>
+        <p class="tech">Vitest · against Compose Postgres, Redis, Kafka</p>
+        <p>2,000 concurrent <code>fd_reserve</code> calls from 300 users on 100 units give exactly 100 HELD; a same-key storm; a fast-check model test; the race matrix; relay crash; replay ×3; rebuild after <code>FLUSHALL</code>; <code>checkout-decoupled</code>; <code>partitioning</code>.</p>
+      </li>
+      <li class="layer">
+        <h3>End to end</h3>
+        <p class="tech">Playwright 1.63 · @axe-core/playwright 4.13</p>
+        <p>Chromium against the built Compose stack, with one isolated drop per spec via <code>POST /test/drops</code>: <code>ssr.spec</code>, <code>live-stock.spec</code>, <code>checkout-keyboard.spec</code>, <code>checkout-expiry.spec</code>, <code>idempotency.spec</code>, and <code>a11y.spec</code> with 0 serious or critical violations.</p>
+      </li>
+      <li class="layer">
+        <h3>Load</h3>
+        <p class="tech">k6 · grafana/k6:2.3.0 · TypeScript scripts</p>
+        <p><code>burst.ts</code>, <code>idempotency-storm.ts</code> (every response 201 or 200, never 429), <code>ws-fanout.ts</code> (≤ 11 frames/s per socket) and <code>expiry-soak.ts</code>.</p>
+      </li>
+      <li class="layer">
+        <h3>Invariants</h3>
+        <p class="tech">tools/verify-invariants.ts</p>
+        <p>Waits for quiescence (outbox drained, consumer lag 0, no due or unsettled orders), asserts INV-1 to INV-9, writes <code>invariants-report.json</code>; a non-zero exit fails the job.</p>
+      </li>
+      <li class="layer">
+        <h3>Chaos (nightly)</h3>
+        <p class="tech">tests/chaos/*.ts driving docker compose</p>
+        <p>Core: <code>redis-restart</code> mid-burst and <code>relay-kill</code> mid-batch. Stretch: <code>consumer-kill</code>, <code>psp-outage</code>, <code>dup-delivery</code>. Each run ends with <code>verify:invariants</code>.</p>
+      </li>
+    </ul>
+
+    <h3 class="sub">CI pipeline</h3>
+    <p class="sub-lede"><code>ci.yml</code> runs on PRs and pushes to <code>main</code>: <code>static</code>, then <code>integration</code>, <code>e2e</code> and <code>load-smoke</code> (ending in <code>verify:invariants</code>). <code>nightly.yml</code> runs the nightly k6 profile, chaos and the invariants. <code>llm-eval.yml</code> is manual only and is the one workflow that uses <code>ANTHROPIC_API_KEY</code>.</p>
+    <figure class="diagram" style="--w: 1401px">
+      <div class="paper">
+        <a class="zoom" href="diagrams/ci-pipeline.svg" target="_blank" rel="noopener">
+          <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
+          <img src="diagrams/ci-pipeline.svg" width="1401" height="996" loading="lazy" decoding="async"
+               alt="GitHub Actions diagram. ci.yml on pull requests and pushes to main: static, then integration, e2e and load-smoke in parallel, with verify:invariants as load-smoke's final step. Artifacts (Playwright report, k6 summary, invariants report, compose logs on failure) are uploaded and a latency plus invariants table goes to the step summary. Required checks are static, integration, e2e and load-smoke. nightly.yml runs the k6 nightly profile, then chaos, then verify:invariants.">
+          <span class="sr-only">(Full size, opens in a new tab)</span>
+        </a>
+      </div>
+      <figcaption>Jobs and dependencies in <code>ci.yml</code> and <code>nightly.yml</code>.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- 10. Roadmap -->
+<section id="roadmap" class="block" aria-labelledby="roadmap-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">10 · Roadmap</p>
+      <h2 id="roadmap-title">M0 to M10, each ending in a demo</h2>
+      <p class="lede">Estimates are focused days. Tests join CI as they are written. M2–M4 carry most of the risk, so they come right after the SSR foundation; M2 is the largest because the correctness core has to land together to be demonstrable.</p>
+      <p class="source">Source: <a href="system-design.md#16-milestones">§16 Milestones</a> and <a href="system-design.md#15-local-dev--docker-compose">§15 Local dev &amp; Docker Compose</a></p>
+    </header>
+
+    <p class="total"><strong>≈ 41 focused days</strong><span class="note">or 10–12 weeks part-time · bar length = estimate, out of 8 days</span></p>
+
+    <ol class="timeline">
+      <li class="ms" data-state="done">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">Pre-M0</span><h3>Environment check</h3><span class="badge badge-done">Done · 2026-10-01</span></div>
+          <p>Verified with a throwaway stack: Docker Desktop 29.8.1, Compose v5.5.1 and buildx 0.37.1 on WSL2; every pinned image pulls; the host ports are free (Compose Postgres on 5433); Windows-native Node 22.14 reaches Postgres, Redis (Functions and pub/sub) and Kafka with the pinned clients; k6 2.3.0 runs TypeScript, with the WebSocket module at <code>k6/websockets</code>.</p>
+          <p><span class="label">Findings for M0</span></p>
+          <ul>
+            <li><code>up --wait</code> doesn't wait for the one-shot <code>kafka-init</code>, so app services depend on its successful completion.</li>
+            <li>pnpm 10 skips the Kafka client's install script; it goes on the build allow-list.</li>
+            <li>librdkafka's default partitioner isn't Java's, so the producer sets <code>murmur2_random</code>.</li>
+            <li>Git Bash rewrites Linux paths; shell snippets set <code>MSYS_NO_PATHCONV=1</code>.</li>
+          </ul>
+          <p><span class="label">Still on the checklist</span> Upgrade Node to 22.23.3 (recommended, not blocking); install <code>gh</code> and run <code>gh auth login</code> before the public repo is created; <code>.gitattributes</code> with <code>* text=auto eol=lf</code> in the first code commit, required here because <code>core.autocrlf=true</code>.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="next">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M0</span><h3>Monorepo, Compose infra, CI skeleton</h3><span class="badge badge-next">Next</span><span class="ms-est">3 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
+          <p>Monorepo, Biome, TS 6, <code>packages/config</code>, <code>.nvmrc</code>, <code>.gitattributes</code>, the pnpm build allow-list with a native-binding smoke test, <code>pnpm docs:diagrams</code>, Compose infra (PG 5433, Redis, Kafka with the single-node settings, <code>kafka-init</code>), pinned image tags, CI <code>static</code> + <code>integration</code> skeleton. Spike: node-redis's typed Functions API, confluent consumer behaviour on rebalance, Next 16 cache API names.</p>
+          <p class="demo"><span class="label">Demo</span><code>pnpm infra:up</code> healthy; topics visible; CI green.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M1</span><h3>Schema, SSR pages, images</h3><span class="ms-est">3 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
+          <p>Schema and migrations (with the trigger), seed, dev login, <code>api</code> catalog endpoints, <code>web</code> <code>/</code>, <code>/p/[slug]</code> SSR and <code>/login</code>, Dockerfiles, Caddy, <code>stack:up</code>. Stock is served from Postgres until M2. Acceptance: <code>next build</code> succeeds with <code>api</code> unreachable.</p>
+          <p class="demo"><span class="label">Demo</span><code>curl</code> of <code>/p/&lt;slug&gt;</code> shows SSR HTML with the title and the stock; the first Playwright test (<code>ssr.spec</code>).</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M2</span><h3>Correctness core: Functions, reserve, sweeper, rebuild</h3><span class="ms-est">8 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 8"></span></div>
+          <p>The Redis Functions library; drop lock + <code>syncDropFromPostgres</code> + <code>POST /test/drops</code>; reconciler structural checks; the level-triggered drop scheduler; the reserve endpoint with its Postgres transaction, one-statement tombstones and quota; idempotency; rate limits; the sweeper loops; <code>verify:invariants</code> v1; Functions concurrency, missing-key and fast-check tests; k6 <code>burst.ts</code> (<code>reserve-only</code>) and <code>idempotency-storm.ts</code> (reserve part).</p>
+          <p class="demo"><span class="label">Demo</span>2,000 concurrent reserves on 100 units give exactly 100 reservations, nobody over the limit; abandoned holds expire and stock returns within about 15 s; <code>FLUSHALL</code> → the drop is rebuilt within seconds; invariants green.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M3</span><h3>Checkout, outbox, relay, settlement</h3><span class="ms-est">4 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 4"></span></div>
+          <p>Checkout submit, cancel, extend; outbox + relay; the consumer runner (grouping, backoff, DLQ, <code>dlq:replay</code>, earliest offsets, assignment healthcheck); the settlement consumer; the <code>partitioning</code> test; a basic checkout page with the persisted checkout key; <code>burst.ts</code> adds checkout and cancel.</p>
+          <p class="demo"><span class="label">Demo</span><code>order.*</code> events keyed by productId visible in kafka-ui; kill the relay mid-batch and nothing is lost; with consumers stopped, stock still returns via the safety net.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M4</span><h3>Payments</h3><span class="ms-est">4 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 4"></span></div>
+          <p><code>payment-mock</code> (ledger, close-by-reference, failure modes), the payment consumer with in-batch concurrency and <code>REFUNDED</code> rows, race-matrix tests, invariants v2 (money), the <code>checkout-decoupled</code> test, <code>burst.ts</code> adds <code>pm_ok</code>/<code>pm_decline</code>.</p>
+          <p class="demo"><span class="label">Demo</span>Buy → PAID; with 30% declines, stock comes back; timeout-after-success leaves exactly one charge; a late payment is refunded.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M5</span><h3>Real-time gateway and live room</h3><span class="ms-est">4 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 4"></span></div>
+          <p>WS gateway in <code>api</code> ×2, ref-counted subscriptions, coalescing, backpressure, snapshot/resync, <code>RealtimeClient</code>, the live room with HLS and captions, viewer count, order and listing push, k6 <code>ws-fanout.ts</code> with <code>ts</code>-based propagation, <code>live-room.spec</code>.</p>
+          <p class="demo"><span class="label">Demo</span>Two browsers on <code>/ws/1</code> and <code>/ws/2</code> tick down together during a k6 burst; <code>docker kill api-1</code> → clients reconnect and resync.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M6</span><h3>Accessible checkout</h3><span class="ms-est">3 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
+          <p>Focus management, countdown announcements, the +60 s extension, the leave dialog, the error summary; Playwright keyboard (<code>page.clock</code>) and axe suites in CI.</p>
+          <p class="demo"><span class="label">Demo</span>A recorded keyboard-only purchase (plus an NVDA pass); axe clean in every state.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M7</span><h3>Live sales dashboard</h3><span class="ms-est">3 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
+          <p>Dashboard consumer + Postgres projection (with <code>version</code>) + UI + <code>dash:rebuild</code>.</p>
+          <p class="demo"><span class="label">Demo</span>A live dashboard during a burst; wipe and replay give identical totals.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M8</span><h3>LLM listing generator</h3><span class="ms-est">3 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
+          <p>Upload pipeline, providers (fixture, recording, Anthropic), Wire/Draft schemas, the <code>create()</code>-based attempt and repair loop, review UI, eval script, <code>llm-eval.yml</code>.</p>
+          <p class="demo"><span class="label">Demo</span>Photo → validated draft → admin edits and approves → SSR product page.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M9</span><h3>Drift checks and chaos</h3><span class="ms-est">4 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 4"></span></div>
+          <p>Reconciler drift checks (stable samples, <code>Σuq</code>, the <code>fd_sync</code> refusal trigger, the drift-checker unit test), core chaos scripts (<code>redis-restart</code>, <code>relay-kill</code>), <code>nightly.yml</code> with the nightly k6 profile.</p>
+          <p class="demo"><span class="label">Demo</span>CI fully green; the nightly chaos report shows 0 oversell, 0 double charge and 0 leaked units after a Redis restart and a relay kill.</p>
+        </div>
+      </li>
+      <li class="ms" data-state="planned">
+        <div class="ms-card">
+          <div class="ms-head"><span class="ms-id">M10</span><h3>Measured numbers and docs</h3><span class="ms-est">2 d</span></div>
+          <div class="ms-bar" aria-hidden="true"><span style="--d: 2"></span></div>
+          <p><code>docs/perf.md</code> with measured laptop-profile numbers and the hardware, ADRs, README, interview notes.</p>
+          <p class="demo"><span class="label">Demo</span>A reviewer can follow every §18 row to a demo and a green check.</p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="callout">
+      <p><span class="label">Cut-line</span>If the schedule slips, these stretch items are dropped first, and no resume claim depends on them: <code>kafka-ui</code>, Prometheus and Grafana, the chaos cases beyond <code>redis-restart</code> and <code>relay-kill</code> (<code>consumer-kill</code>, <code>psp-outage</code>, <code>dup-delivery</code>), <code>RecordingListingModel</code>, and the <code>llm-eval.yml</code> workflow (the eval stays a manual script). The viewer count stays in scope.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 11. Decisions -->
+<section id="decisions" class="block" aria-labelledby="decisions-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">11 · Decisions</p>
+      <h2 id="decisions-title">What is settled, and what is still open</h2>
+      <p class="lede">Owner decisions from 2026-10-01 and the main design choices behind them, next to the questions that remain.</p>
+      <p class="source">Source: <a href="system-design.md#14-repo-layout--tech-choices">§14 Decision log</a> and <a href="system-design.md#19-open-decisions-for-the-owner">§19 Open decisions</a></p>
+    </header>
+
+    <div class="decisions">
+      <div>
+        <h3>Decided</h3>
+        <ul class="dlist">
+          <li>
+            <p class="d-head"><span class="d-title">Full scope, M0 to M10</span><span class="badge badge-owner">Owner · 2026-10-01</span></p>
+            <p>Including the M9 drift checks and chaos runs. The cut-line applies only if the schedule slips.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Drizzle ORM</span><span class="badge badge-owner">Owner · 2026-10-01</span></p>
+            <p><code>drizzle-orm</code> 0.45.3 + <code>drizzle-kit</code> 0.31.11 with generated SQL migrations. Guarantee-carrying SQL stays hand-written through the <code>sql</code> template, so the ORM never shapes a hot-path statement.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Public GitHub repo</span><span class="badge badge-owner">Owner · 2026-10-01</span></p>
+            <p>Free Actions minutes on 4-vCPU runners, so <code>load-smoke</code> runs on every PR. No secrets in the repo or CI logs; fork PRs never get secrets.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title"><code>claude-sonnet-5-5</code> as the default listing model</span><span class="badge badge-owner">Owner · 2026-10-01</span></p>
+            <p>Configurable via <code>LISTING_MODEL</code>; Haiku for cheap mode, Opus for hard cases.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Charge + close-by-reference payments</span><span class="badge badge-design">Design</span></p>
+            <p>Refund plus fence instead of auth/capture/void: fewer states, still provably no double charge.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Single outbox relay</span><span class="badge badge-design">Design</span></p>
+            <p>Status polling plus LISTEN/NOTIFY on low-rate paths, one publisher fenced by a per-batch advisory xact lock. Not Debezium/CDC.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">One topic, keyed by <code>productId</code></span><span class="badge badge-design">Design</span></p>
+            <p><code>orders.v1</code> with 6 partitions: per-order order within one partition plus a single writer per product aggregate.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title"><code>@confluentinc/kafka-javascript</code></span><span class="badge badge-design">Design</span></p>
+            <p>1.10.1 (librdkafka, KafkaJS-compatible API). kafkajs has had no release since Feb 2023.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Compose infra in CI</span><span class="badge badge-design">Design</span></p>
+            <p>The same services locally and in CI, with the same pinned <code>apache/kafka</code> image. Testcontainers would need Node ≥ 22.22.</p>
+          </li>
+        </ul>
+      </div>
+      <div>
+        <h3>Still open</h3>
+        <ul class="dlist">
+          <li>
+            <p class="d-head"><span class="d-title">Payment model depth</span><span class="badge badge-open">Open</span></p>
+            <p>Charge + close-by-reference is chosen; auth/capture/void would give more realistic card-hold semantics for about 3–4 extra days. Both meet "no double charge".</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">API key and spend cap</span><span class="badge badge-open">Open</span></p>
+            <p>Whether to hold an <code>ANTHROPIC_API_KEY</code> for live demos and the manual eval, and what monthly spend cap to set.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Product defaults</span><span class="badge badge-open">Open</span></p>
+            <p>Hold 120 s, payment window 300 s, default per-user limit 2, one +60 s extension.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Stretch items worth the time</span><span class="badge badge-open">Open</span></p>
+            <p>The cut-line items, plus single-use WS tickets, a Redis Streams room log, an intercepted-route checkout modal, auth/capture, and a public demo host (otherwise recorded videos).</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Resume dates</span><span class="badge badge-deferred">Deferred</span></p>
+            <p>Deferred by the owner. Commits are never backdated.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Resume wording sign-off</span><span class="badge badge-deferred">Deferred</span></p>
+            <p>Deferred with the resume dates.</p>
+          </li>
+          <li>
+            <p class="d-head"><span class="d-title">Performance numbers on the resume</span><span class="badge badge-deferred">Deferred</span></p>
+            <p>Resume questions are deferred. Only laptop-profile numbers from <code>docs/perf.md</code> would qualify.</p>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 12. Process -->
+<section id="process" class="block" aria-labelledby="process-title">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="eyebrow">12 · How this design was made</p>
+      <h2 id="process-title">Independent designs, adversarial review, then verification</h2>
+      <p class="lede">The design takes the correctness core of one proposal, fits it into the delivery footprint of another, and borrows the real-time, accessibility and LLM details of the third. Two critics attacked the three proposals before the synthesis, three verifiers then checked the finished design, and every issue they raised is logged with its resolution.</p>
+      <p class="source">Source: <a href="system-design.md#appendix-a-how-this-design-was-assembled-review-log">Appendix A: review log</a></p>
+    </header>
+
+    <ol class="process">
+      <li>
+        <span class="p-count">3</span>
+        <span class="p-title">Architect designs</span>
+        <p>A, correctness-first · B, pragmatic delivery · C, product, real-time and frontend.</p>
+      </li>
+      <li>
+        <span class="p-count">2</span>
+        <span class="p-title">Critics</span>
+        <p>Red team and scope, reviewing all three designs.</p>
+      </li>
+      <li>
+        <span class="p-count">1</span>
+        <span class="p-title">Synthesis</span>
+        <p>A's correctness core in B's delivery footprint, plus C's real-time, accessibility and LLM loop details.</p>
+      </li>
+      <li>
+        <span class="p-count">3</span>
+        <span class="p-title">Verifiers</span>
+        <p>Correctness, traceability and diagrams, checking the finished design.</p>
+      </li>
+      <li>
+        <span class="p-count">✓</span>
+        <span class="p-title">Fixes</span>
+        <p>For example the per-drop lock and <code>STALE</code> rebuilds, <code>fd:epoch</code> wipe detection, earliest offsets, <span class="nowrap"><code>messages.create()</code>,</span> split diagrams.</p>
+      </li>
+      <li>
+        <span class="p-count">✓</span>
+        <span class="p-title">Environment check</span>
+        <p>2026-10-01: Docker Desktop 29.8.1, Compose v5.5.1, all pinned images, Windows-native Node clients.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <ul>
+      <li><a href="system-design.md">system-design.md</a>: the full design and source of truth</li>
+      <li><a href="diagrams/">diagrams/</a>: Mermaid sources (<code>.mmd</code>) and rendered SVGs</li>
+    </ul>
+    <p>FlashDrop design flow · design date 2026-10-01. This page summarises; where the two differ, system-design.md wins.</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  var doc = document;
+  var root = doc.documentElement;
+  var slice = function (list) { return Array.prototype.slice.call(list); };
+  var reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  /* Keep an element visible inside a horizontally scrolling container. */
+  function revealInScroller(scroller, el) {
+    if (!scroller || !el || scroller.scrollWidth <= scroller.clientWidth) return;
+    var target = el.offsetLeft - (scroller.clientWidth - el.offsetWidth) / 2;
+    if (scroller.scrollTo) scroller.scrollTo({ left: Math.max(0, target), behavior: reduceMotion ? 'auto' : 'smooth' });
+    else scroller.scrollLeft = target;
+  }
+
+  /* Smooth in-page scrolling only after load, so a deep link lands instantly. */
+  window.addEventListener('load', function () {
+    setTimeout(function () { root.classList.add('smooth-scroll'); }, 0);
+  });
+
+  /* ---------- Theme toggle ---------- */
+  var THEME_KEY = 'flashdrop-design-theme';
+  var darkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  var toggle = doc.getElementById('theme-toggle');
+  function currentTheme() {
+    var t = root.getAttribute('data-theme');
+    if (t === 'light' || t === 'dark') return t;
+    return darkQuery && darkQuery.matches ? 'dark' : 'light';
+  }
+  function syncToggle() {
+    toggle.setAttribute('aria-pressed', currentTheme() === 'dark' ? 'true' : 'false');
+  }
+  if (toggle) {
+    toggle.hidden = false;
+    syncToggle();
+    toggle.addEventListener('click', function () {
+      var next = currentTheme() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* not persisted */ }
+      syncToggle();
+    });
+    if (darkQuery) {
+      if (darkQuery.addEventListener) darkQuery.addEventListener('change', syncToggle);
+      else if (darkQuery.addListener) darkQuery.addListener(syncToggle);
+    }
+  }
+
+  /* ---------- Shared tab keyboard handling (automatic activation) ---------- */
+  function wireTabs(tabs, select) {
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener('click', function () { select(i, false); });
+      tab.addEventListener('keydown', function (ev) {
+        var n = tabs.length, j = null;
+        if (ev.key === 'ArrowRight') j = (i + 1) % n;
+        else if (ev.key === 'ArrowLeft') j = (i - 1 + n) % n;
+        else if (ev.key === 'Home') j = 0;
+        else if (ev.key === 'End') j = n - 1;
+        if (j !== null) { ev.preventDefault(); select(j, true); }
+      });
+    });
+  }
+
+  /* ---------- Diagram tabs ---------- */
+  slice(doc.querySelectorAll('[data-tabs]')).forEach(function (box) {
+    var list = box.querySelector('.tablist');
+    var panels = slice(box.children).filter(function (el) { return el.classList.contains('tab-panel'); });
+    if (!list || !panels.length) return;
+    var tabs = panels.map(function (panel) {
+      var btn = doc.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tab';
+      btn.id = panel.id + '-tab';
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-controls', panel.id);
+      btn.textContent = panel.getAttribute('data-label');
+      list.appendChild(btn);
+      panel.setAttribute('role', 'tabpanel');
+      panel.setAttribute('aria-labelledby', btn.id);
+      panel.tabIndex = 0;
+      return btn;
+    });
+    function select(idx, focus) {
+      tabs.forEach(function (t, k) {
+        var on = k === idx;
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        t.tabIndex = on ? 0 : -1;
+        panels[k].hidden = !on;
+      });
+      revealInScroller(list, tabs[idx]);
+      if (focus) tabs[idx].focus();
+    }
+    wireTabs(tabs, select);
+    list.hidden = false;
+    box.classList.add('is-enhanced');
+    select(0, false);
+  });
+
+  /* ---------- Order flow stepper ---------- */
+  var flow = doc.getElementById('flow');
+  if (flow) {
+    var stepList = flow.querySelector('.steps');
+    var items = slice(stepList.children);
+    var cards = items.map(function (li) { return li.querySelector('.step-card'); });
+    var tablist = flow.querySelector('.steptabs');
+    var controls = flow.querySelector('.flow-controls');
+    var actorBox = flow.querySelector('.actors');
+    var actors = slice(flow.querySelectorAll('[data-actor]'));
+    var stepnav = flow.querySelector('.stepnav');
+    var prevBtn = flow.querySelector('[data-step="prev"]');
+    var nextBtn = flow.querySelector('[data-step="next"]');
+    var status = flow.querySelector('.step-status');
+    var modeBtns = slice(flow.querySelectorAll('[data-mode]'));
+    var current = 0;
+    var stepMode = true;
+
+    var stepTabs = items.map(function (li, i) {
+      var btn = doc.createElement('button');
+      btn.type = 'button';
+      btn.className = 'steptab';
+      btn.id = li.id + '-tab';
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-controls', cards[i].id);
+      var num = doc.createElement('span');
+      num.className = 'steptab-n';
+      num.setAttribute('aria-hidden', 'true');
+      num.textContent = String(i + 1);
+      var label = doc.createElement('span');
+      label.className = 'steptab-l';
+      var pre = doc.createElement('span');
+      pre.className = 'sr-only';
+      pre.textContent = 'Step ' + (i + 1) + ': ';
+      label.appendChild(pre);
+      label.appendChild(doc.createTextNode(li.getAttribute('data-short')));
+      btn.appendChild(num);
+      btn.appendChild(label);
+      tablist.appendChild(btn);
+      return btn;
+    });
+
+    /* announce: only Previous/Next need the live region; a focused tab already reads its own name. */
+    function showStep(i, focusTab, announce) {
+      current = i;
+      items.forEach(function (li, k) { li.hidden = k !== i; });
+      stepTabs.forEach(function (t, k) {
+        t.setAttribute('aria-selected', k === i ? 'true' : 'false');
+        t.tabIndex = k === i ? 0 : -1;
+        t.classList.toggle('is-done', k < i);
+      });
+      var active = (items[i].getAttribute('data-actors') || '').split(/\s+/);
+      actors.forEach(function (a) {
+        a.classList.toggle('is-active', active.indexOf(a.getAttribute('data-actor')) !== -1);
+      });
+      prevBtn.setAttribute('aria-disabled', i === 0 ? 'true' : 'false');
+      nextBtn.setAttribute('aria-disabled', i === items.length - 1 ? 'true' : 'false');
+      status.setAttribute('aria-live', announce ? 'polite' : 'off');
+      status.textContent ='Step ' + (i + 1) + ' of ' + items.length + ': ' + items[i].getAttribute('data-short');
+      revealInScroller(tablist, stepTabs[i]);
+      if (focusTab) stepTabs[i].focus();
+    }
+
+    function setMode(steps) {
+      stepMode = steps;
+      flow.classList.toggle('is-stepper', steps);
+      tablist.hidden = !steps;
+      stepnav.hidden = !steps;
+      actorBox.hidden = !steps;
+      if (steps) {
+        stepList.setAttribute('role', 'none');
+        cards.forEach(function (card, i) {
+          card.setAttribute('role', 'tabpanel');
+          card.setAttribute('aria-labelledby', stepTabs[i].id);
+          card.tabIndex = 0;
+        });
+        showStep(current, false);
+      } else {
+        stepList.removeAttribute('role');
+        items.forEach(function (li) { li.hidden = false; });
+        cards.forEach(function (card) {
+          card.removeAttribute('role');
+          card.removeAttribute('tabindex');
+          card.removeAttribute('aria-labelledby');
+        });
+      }
+      modeBtns.forEach(function (b) {
+        b.setAttribute('aria-pressed', (b.getAttribute('data-mode') === 'steps') === steps ? 'true' : 'false');
+      });
+      lockStepHeight();
+    }
+
+    /* On wide screens every step gets the height of the tallest one, so Previous/Next stay put. */
+    function lockStepHeight() {
+      stepList.style.minHeight = '';
+      if (!stepMode || window.innerWidth < 880) return;
+      var max = 0;
+      items.forEach(function (li) {
+        var h = li.hidden;
+        li.hidden = false;
+        max = Math.max(max, li.offsetHeight);
+        li.hidden = h;
+      });
+      stepList.style.minHeight = max + 'px';
+    }
+    var resizeTimer;
+    window.addEventListener('resize', function () {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(lockStepHeight, 150);
+    });
+
+    /* Previous/Next: if the step tabs have scrolled up under the header, bring them back so the new step starts in view. */
+    var topbar = doc.querySelector('.topbar');
+    function stepBy(d) {
+      var i = current + d;
+      if (i < 0 || i >= items.length) return;
+      showStep(i, false, true);
+      var bar = topbar ? topbar.getBoundingClientRect().bottom : 0;
+      if (tablist.getBoundingClientRect().top < bar) {
+        tablist.scrollIntoView({ block: 'start', behavior: reduceMotion ? 'auto' : 'smooth' });
+      }
+    }
+
+    wireTabs(stepTabs, showStep);
+    prevBtn.addEventListener('click', function () { stepBy(-1); });
+    nextBtn.addEventListener('click', function () { stepBy(1); });
+    modeBtns.forEach(function (b) {
+      b.addEventListener('click', function () { setMode(b.getAttribute('data-mode') === 'steps'); });
+    });
+
+    /* Deep links such as #step-3 open that step. */
+    function openFromHash() {
+      var m = /^#step-(\d+)$/.exec(location.hash || '');
+      if (!m) return;
+      var i = parseInt(m[1], 10) - 1;
+      if (i < 0 || i >= items.length) return;
+      if (!stepMode) return;
+      showStep(i, false);
+      flow.scrollIntoView({ block: 'start', behavior: reduceMotion ? 'auto' : 'smooth' });
+    }
+
+    controls.hidden = false;
+    setMode(true);
+    openFromHash();
+    window.addEventListener('hashchange', openFromHash);
+  }
+
+  /* ---------- Section nav: highlight the section in view ---------- */
+  var nav = doc.querySelector('.sections-nav');
+  var navLinks = nav ? slice(nav.querySelectorAll('a[href^="#"]')) : [];
+  /* A keyboard-focused link that is only partly visible in the scrolling nav is scrolled into view. */
+  if (nav) nav.addEventListener('focusin', function (e) { if (e.target.tagName === 'A') revealInScroller(nav, e.target); });
+  if (navLinks.length && 'IntersectionObserver' in window) {
+    var byId = {};
+    navLinks.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+    var setCurrent = function (id) {
+      navLinks.forEach(function (a) {
+        if (a === byId[id]) a.setAttribute('aria-current', 'true');
+        else a.removeAttribute('aria-current');
+      });
+      revealInScroller(nav, byId[id]);
+    };
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) { if (entry.isIntersecting) setCurrent(entry.target.id); });
+    }, { rootMargin: '-35% 0px -60% 0px' });
+    Object.keys(byId).forEach(function (id) {
+      var section = doc.getElementById(id);
+      if (section) observer.observe(section);
+    });
+  }
+})();
+</script>
+</body>
+</html>

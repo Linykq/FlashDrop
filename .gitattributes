@@ -1,0 +1,15 @@
+# Normalise to LF everywhere: .lua, .sh, Caddyfile and redis.conf are mounted into Linux
+# containers, and this machine has core.autocrlf=true.
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.woff2 binary
+
+# HLS sample stream: MPEG-TS segments share the .ts extension with TypeScript
+apps/web/public/hls/** binary

@@ -1,0 +1,36 @@
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%% FlashDrop order (Postgres, the arbiter) and reservation (Redis, the gate) state machines.
+%% Source of docs/diagrams/reservation-states.svg
+stateDiagram-v2
+  state "Postgres orders.status - the arbiter" as PG {
+    [*] --> RESERVED : reserve txn commits
+    [*] --> REJECTED : PG refusal or orphan tombstone
+    RESERVED --> PENDING_PAYMENT : checkout submit CAS
+    RESERVED --> EXPIRED : sweeper, expires_at passed
+    RESERVED --> CANCELLED : buyer cancels
+    PENDING_PAYMENT --> PAID : charge succeeded and CAS won
+    PENDING_PAYMENT --> PAYMENT_FAILED : declined or reference closed
+    PENDING_PAYMENT --> EXPIRED : sweeper, payment window passed
+    PENDING_PAYMENT --> CANCELLED : buyer cancels
+    PAID --> [*]
+    PAYMENT_FAILED --> [*]
+    EXPIRED --> [*]
+    CANCELLED --> [*]
+    REJECTED --> [*]
+  }
+
+  state "Redis rsv entry - the admission gate" as RS {
+    [*] --> HELD : fd_reserve, or rebuild of a live order
+    [*] --> COMMITTED : fd_rebuild, PAID
+    [*] --> RELEASED : fd_rebuild, terminal unpaid
+    HELD --> COMMITTED : fd_confirm after PG PAID
+    HELD --> RELEASED : fd_release after PG terminal unpaid or REJECTED
+    COMMITTED --> [*]
+    RELEASED --> [*]
+  }
+
+  note right of RS
+    Redis moves only after PG commits.
+    Settlement = fast path, safety net = guarantee.
+    COMMITTED/RELEASED kept to drop end + 24 h.
+  end note

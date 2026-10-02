@@ -1,0 +1,60 @@
+%%{init: {"sequence": {"wrap": true, "width": 210, "noteMargin": 8}}}%%
+%% Reserve: the first step of checkout. Browser -> api -> Redis fd_reserve -> Postgres, with idempotency handling.
+%% Source of docs/diagrams/reserve-checkout.svg. Checkout submit is in checkout-submit.mmd.
+sequenceDiagram
+  autonumber
+  actor B as Browser
+  participant A as api
+  participant R as Redis fd_reserve
+  participant P as Postgres
+
+  Note over B,A: Buy pressed. Idempotency-Key K created once per buy intent, kept in sessionStorage per drop
+  B->>A: POST /api/v1/drops/:dropId/reservations, Idempotency-Key K, body qty
+  Note over A,R: rid = uuidv5(user:drop:K), fp = sha256(body). PG breaker open → 503 before Redis
+  A->>R: FCALL fd_reserve rid uid qty fp
+  alt drop RECONCILING
+    R-->>A: RETRY
+    A-->>B: 503 Retry-After 1, same key
+  else drop not in Redis
+    R-->>A: NO_DROP
+    A-->>B: replay if the order exists in PG · else 503 + rebuild nudge if the drop is tracked · else 409 DROP_NOT_LIVE
+  else NOT_LIVE, LIMIT or SOLD_OUT
+    R-->>A: rejection, read-only path, no writes
+    A-->>B: 409 DROP_NOT_LIVE, LIMIT_REACHED or SOLD_OUT
+  else rid already in rsv
+    R-->>A: EXISTING with state and gen, or FP_MISMATCH
+    opt FP_MISMATCH
+      A-->>B: 422 IDEMPOTENCY_KEY_REUSED
+    end
+  else admitted
+    Note over R,P: avail - q, held + q, uq + q, rsv HELD, ZADD exp, seq + 1, PUBLISH fd:ch:stock:{d:dropId}
+    R-->>A: RESERVED with gen
+  end
+  Note over A,P: Only RESERVED or EXISTING continue. Postgres now decides the reservation's fate
+
+  A->>P: BEGIN, INSERT orders id=rid status RESERVED ON CONFLICT DO NOTHING
+  alt row already exists - duplicate or concurrent retry
+    P-->>A: 0 rows
+    A->>P: ROLLBACK, SELECT order rid
+    A-->>B: 200 replay (current order) · 409 if REJECTED · 410 if expired · 422 if request_hash differs
+  else new order
+    A->>P: UPSERT user_drop_quota WHERE claimed + q within limit_qty
+    alt limit exceeded - Redis uq was optimistic
+      A->>P: ROLLBACK, then tombstone REJECTED LIMIT
+      A-->>B: 409 LIMIT_REACHED (or the concurrent winner's order), reconciler nudged
+    else quota claimed
+      A->>P: INSERT outbox order.reserved
+      A->>P: UPDATE drop_inventory hot row LAST, guarded by redis_gen, stock and the drop window
+      alt all guards pass
+        A->>P: COMMIT
+        A-->>B: 201 orderId=rid, expiresAt, serverNow
+      else stale redis_gen - a rebuild happened
+        A->>P: ROLLBACK
+        A-->>B: 503 Retry-After 1, retry with the same key
+      else SOLD_OUT or NOT_LIVE
+        A->>P: ROLLBACK, then tombstone REJECTED SOLD_OUT or NOT_LIVE
+        A-->>B: 409, settlement later releases the Redis hold
+      end
+    end
+  end
+  Note over A,P: Tombstone = one statement: INSERT REJECTED ON CONFLICT DO NOTHING RETURNING feeds the outbox INSERT, so order.rejected exists only if the tombstone won

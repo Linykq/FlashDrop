@@ -1,0 +1,34 @@
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%% LLM listing generator pipeline. Source of docs/diagrams/listing-generator.svg
+flowchart TD
+  UP["Admin uploads 1-4 photos, POST /api/v1/admin/listings<br/>magic bytes, 8 MB cap, sharp: orient, strip EXIF/GPS, ≤ 1568 px JPEG"]
+  JOB[("uploads/sha256.jpg + listing_jobs PENDING<br/>input_hash reuses identical jobs")]
+  CLAIM["worker listing role: claim FOR UPDATE SKIP LOCKED<br/>status RUNNING, locked_until lease renewed per call"]
+  CALL["ListingModel.attempt, implementation chosen once by LLM_PROVIDER<br/>anthropic: messages.create, output_config.format = ListingWire JSON Schema<br/>fixture: Message-shaped fixtures keyed by image sha256 (default, CI)<br/>record: calls Anthropic, writes the fixture<br/>usage and cost recorded on every attempt"]
+  STOP{"stop_reason"}
+  FAILED["FAILED<br/>refusal category stored"]
+  MORE["retry at effort low"]
+  WIRE{"JSON.parse +<br/>ListingWire.safeParse ok?"}
+  POLICY{"ListingDraft<br/>.safeParse"}
+  REPAIR["repair turn<br/>z.prettifyError issues"]
+  ATT{"model calls < 3?"}
+  READY["READY<br/>draft + uncertainties"]
+  REVIEW["NEEDS_REVIEW<br/>issues shown on fields"]
+  FORM["Admin review form<br/>AI fields badged, price typed by the admin on the drop"]
+  APPROVE["Approve: Server Action calls api,<br/>ListingDraft re-validated, products row PUBLISHED,<br/>source=llm, job APPROVED"]
+  PAGE["updateTag product:id<br/>SSR /p/slug shows the listing"]
+
+  UP --> JOB --> CLAIM --> CALL --> STOP
+  STOP -->|"refusal"| FAILED
+  STOP -->|"max_tokens"| MORE --> ATT
+  STOP -->|"end_turn"| WIRE
+  WIRE -->|"no"| REPAIR
+  WIRE -->|"yes"| POLICY
+  POLICY -->|"invalid"| REPAIR
+  POLICY -->|"valid"| READY
+  REPAIR --> ATT
+  ATT -->|"yes, same provider"| CALL
+  ATT -->|"no"| REVIEW
+  READY --> FORM
+  REVIEW --> FORM
+  FORM --> APPROVE --> PAGE

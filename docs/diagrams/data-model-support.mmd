@@ -1,0 +1,107 @@
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%% FlashDrop PostgreSQL data model, support tables: outbox and dedupe, dashboard projection,
+%% listing jobs, PSP ledger (psp schema), sweeper quarantine and system state.
+%% Core tables appear here only as key stubs. Source of docs/diagrams/data-model-support.svg
+erDiagram
+  direction LR
+  orders ||..o{ outbox : emits
+  outbox ||..o{ processed_events : "deduped by"
+  drops ||--o{ sales_minute : "aggregated into"
+  drops ||--o| drop_sales_totals : "summarised by"
+  users ||--o{ listing_jobs : uploads
+  listing_jobs |o--o| products : drafts
+  orders ||..o| psp_references : "PSP reference"
+  psp_references ||..o{ psp_charges : charges
+  orders ||..o| sweeper_quarantine : quarantined
+
+  orders {
+    uuid id PK
+  }
+  drops {
+    uuid id PK
+  }
+  users {
+    uuid id PK
+  }
+  products {
+    uuid id PK
+  }
+  outbox {
+    bigint id PK
+    uuid event_id UK "uuidv7, dedupe key"
+    text topic
+    text partition_key "productId"
+    text event_type
+    jsonb payload
+    jsonb headers "event-id, trace-id"
+    timestamptz published_at "NULL = pending"
+  }
+  processed_events {
+    text consumer PK
+    uuid event_id PK
+    timestamptz processed_at "kept 45 d"
+  }
+  sales_minute {
+    uuid drop_id PK
+    timestamptz minute PK "event time"
+    int reserved
+    int placed
+    int paid
+    int failed
+    int expired
+    int cancelled
+    int rejected
+    int units_sold
+    bigint revenue_cents
+  }
+  drop_sales_totals {
+    uuid drop_id PK
+    int reserved
+    int placed
+    int paid
+    int failed
+    int expired
+    int cancelled
+    int rejected
+    int units_sold
+    bigint revenue_cents
+    bigint version "orders WS frames"
+    timestamptz last_event_at
+  }
+  listing_jobs {
+    uuid id PK
+    uuid created_by FK
+    text status "PENDING..APPROVED"
+    bytea input_hash "dedupes reruns"
+    text model
+    int attempts
+    jsonb draft
+    jsonb final
+    jsonb issues
+    jsonb usage
+    numeric cost_usd
+    timestamptz locked_until "lease"
+    uuid product_id FK
+  }
+  psp_references {
+    text reference PK "psp schema"
+    timestamptz closed_at "rejects later charges"
+  }
+  psp_charges {
+    text id PK "psp schema"
+    text idempotency_key UK
+    text reference
+    int amount_cents
+    text status "succeeded/declined/refunded"
+    timestamptz refunded_at
+  }
+  sweeper_quarantine {
+    text loop PK
+    uuid order_id PK
+    text error
+    timestamptz first_seen
+  }
+  system_state {
+    text key PK "redis_run_id, redis_epoch"
+    jsonb value
+  }

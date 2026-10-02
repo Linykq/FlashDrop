@@ -1,0 +1,36 @@
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%% Stock update path: Redis Function -> pub/sub -> gateway instances -> browsers, with coalescing and resync.
+%% Source of docs/diagrams/realtime-fanout.svg
+flowchart TB
+  subgraph WRITERS["Writers - api, consumers, worker"]
+    FN["Redis Function<br/>fd_reserve · fd_confirm · fd_release · fd_rebuild · fd_set_status<br/>mutate + seq+1 + PUBLISH in one atomic call"]
+  end
+
+  subgraph REDIS["Redis 8"]
+    INV[("fd:{d:X}:inv<br/>avail · held · sold · gen · seq · status")]
+    CH(["channel fd:ch:stock:{d:X}<br/>payload gen:seq:avail:held:sold:status:ts"])
+  end
+
+  subgraph G1["api-1 WS gateway (api-2 identical)"]
+    S1["one subscriber connection<br/>ref-counted SUBSCRIBE"]
+    C1["coalescer: latest per topic,<br/>keep only newer gen,seq"]
+    F1["flush every 100 ms<br/>JSON.stringify once per topic"]
+    W1["per-socket send<br/>skip if bufferedAmount over 256 KB,<br/>close 1013 if over 1 MB for 10 s"]
+  end
+  G2["api-2 WS gateway<br/>(same pipeline)"]
+
+  B1["Tab A via /ws/1<br/>RealtimeClient singleton, useSyncExternalStore<br/>applies a frame only if gen,seq is newer<br/>on disconnect: jittered backoff, re-sub, fresh snapshot"]
+  B2["Tab B via /ws/2"]
+  SSR["SSR HTML seed<br/>{avail, held, gen, seq}"]
+  API["GET /api/v1/drops/:id/stock"]
+
+  FN -->|"HINCRBY"| INV
+  FN -->|"PUBLISH, ordered with the mutation"| CH
+  CH -->|"at-most-once"| S1
+  CH -->|"at-most-once"| G2
+  S1 --> C1 --> F1 --> W1
+  INV -.->|"HMGET snapshot on sub<br/>and after subscriber reconnect"| C1
+  W1 -->|"delta frames, ≤ 10 per s"| B1
+  G2 -->|"delta frames"| B2
+  SSR -.->|"hydration seed"| B1
+  B2 -.->|"socket down over 5 s:<br/>poll every 3 s"| API

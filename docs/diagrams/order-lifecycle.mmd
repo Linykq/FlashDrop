@@ -1,0 +1,49 @@
+%%{init: {"sequence": {"wrap": true, "width": 170, "noteMargin": 8}}}%%
+%% Order lifecycle, part 1: outbox relay -> Kafka -> payment consumer -> PSP.
+%% Source of docs/diagrams/order-lifecycle.svg. Part 2 (expiry, settlement, dashboard) is order-settlement.mmd.
+sequenceDiagram
+  autonumber
+  participant P as Postgres
+  participant X as worker relay
+  participant K as Kafka orders.v1
+  participant Pay as payment consumer
+  participant PSP as payment-mock
+  participant R as Redis pub/sub
+  participant G as api WS gateways
+
+  Note over P,X: Woken by LISTEN outbox (checkout, cancel, expiry batches) or a 250 ms tick
+  X->>P: BEGIN + pg_try_advisory_xact_lock(relay)
+  X->>P: SELECT pending outbox rows, LIMIT 500, SKIP LOCKED
+  X->>K: produce key=productId, acks=all, await delivery (message.timeout.ms 10 s)
+  X->>P: mark published_at, COMMIT
+  Note over X,K: Send failure → ROLLBACK and back off. Crash before COMMIT re-publishes the batch, consumers dedupe
+
+  K->>Pay: order.placed
+  Pay->>P: SELECT order
+  alt already PAID
+    Pay->>Pay: duplicate, no-op
+  else EXPIRED, CANCELLED or PAYMENT_FAILED
+    Pay->>PSP: close reference (refunds any charge)
+  else PENDING_PAYMENT
+    Pay->>PSP: POST /v1/charges, key charge:orderId
+    Note right of PSP: timeout or 5xx: pause partition, retry same key, never DLQ
+    alt succeeded
+      PSP-->>Pay: succeeded
+      Pay->>P: CAS to PAID + payments SUCCEEDED + outbox order.paid + inventory
+      opt CAS lost to expiry or cancel
+        Pay->>PSP: close reference (refund + fence)
+        Pay->>P: payments row REFUNDED
+      end
+    else declined or reference_closed
+      PSP-->>Pay: declined or reference_closed
+      Pay->>P: CAS to PAYMENT_FAILED + payments FAILED + quota + outbox + inventory
+    end
+    Pay-)R: PUBLISH fd:ch:user:userId
+    R-)G: fan-out to the buyer's sockets
+  else any other status (RESERVED, REJECTED)
+    Pay->>K: InvariantViolation → orders.v1.dlq + alert
+  end
+
+  K->>Pay: order.expired / order.cancelled
+  Pay->>PSP: close reference, refunds a late charge
+  Pay->>P: payments row REFUNDED if a charge was refunded

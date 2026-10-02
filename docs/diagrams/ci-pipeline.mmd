@@ -1,0 +1,37 @@
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%% GitHub Actions jobs and dependencies. Source of docs/diagrams/ci-pipeline.svg
+%% llm-eval.yml (workflow_dispatch only) is described in prose in section 13.
+flowchart LR
+
+  subgraph CI["ci.yml - pull_request and push to main, concurrency cancel-in-progress"]
+    STATIC["static<br/>pnpm install --frozen-lockfile<br/>native binding smoke test<br/>biome ci, tsc, vitest unit,<br/>next build with no api reachable"]
+    INT["integration<br/>compose up --wait postgres redis kafka kafka-init<br/>migrate, vitest integration:<br/>Functions concurrency, fast-check model,<br/>race matrix, relay crash, replay x3, rebuild,<br/>checkout-decoupled, partitioning"]
+    E2E["e2e<br/>buildx bake with gha cache, image smoke check<br/>full stack + compose.ci.yaml<br/>Playwright Chromium + axe,<br/>one isolated test drop per spec"]
+    LOAD["load-smoke<br/>full stack, k6 CI profile:<br/>burst, idempotency-storm,<br/>ws-fanout, expiry-soak"]
+    INV["load-smoke, final step:<br/>verify:invariants<br/>INV-1 to INV-9 across<br/>PG, Redis, PSP ledger, Kafka"]
+    STATIC --> INT
+    STATIC --> E2E
+    STATIC --> LOAD
+    LOAD --> INV
+  end
+
+  ART[("artifacts:<br/>Playwright report and traces,<br/>k6 summary JSON,<br/>invariants report,<br/>compose logs on failure")]
+  SUM["GITHUB_STEP_SUMMARY<br/>latency table + invariants"]
+  GATE(["required checks:<br/>static, integration, e2e, load-smoke"])
+
+  E2E --> ART
+  INV --> ART
+  INV --> SUM
+  INT -.->|"compose logs on failure"| ART
+  STATIC --> GATE
+  INT --> GATE
+  E2E --> GATE
+  INV --> GATE
+
+  subgraph NIGHTLY["nightly.yml - cron and workflow_dispatch"]
+    FULL["k6 nightly profile, sized for the runner<br/>correctness gated, latency reported only"]
+    CHAOS["chaos: redis restart mid-burst,<br/>relay kill mid-batch<br/>stretch: consumer kill, PSP outage,<br/>duplicate delivery"]
+    INV2["verify:invariants"]
+    FULL --> CHAOS --> INV2
+  end
+  INV2 --> ART

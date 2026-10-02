@@ -1,0 +1,37 @@
+%%{init: {"sequence": {"wrap": true, "width": 170, "noteMargin": 8}}}%%
+%% Redis restart or wipe -> reconciler -> syncDropFromPostgres (section 4.7): drop lock, RECONCILING,
+%% generation fence, snapshot, atomic fd_rebuild. Source of docs/diagrams/redis-rebuild.svg
+sequenceDiagram
+  autonumber
+  participant C as worker reconciler
+  participant R as Redis
+  participant P as Postgres
+  participant A as api (reserve in flight)
+  participant S as settlement consumer
+
+  Note over A,R: Before the restart, A got RESERVED with gen 7 from fd_reserve
+  C->>R: every 2 s: INFO server run_id, GET fd:epoch, FUNCTION LIST flashdrop
+  R-->>C: run_id changed (AOF tail may be lost) or fd:epoch missing (keyspace wiped)
+  C->>R: FUNCTION LOAD REPLACE flashdrop, if missing
+  loop every tracked drop, read from Postgres (not DRAFT, now < ends_at + 24 h), ENDED ones included
+    C->>P: pg_advisory_lock(fd.sync:dropId) on a dedicated session
+    Note over C,P: Admin arm / reconcile / pause / resume / end and the scheduler take the same lock, so the drop's Redis status can't change until unlock
+    C->>R: fd_set_status RECONCILING (creates a fail-closed inv hash if it is missing)
+    Note over R: Every Function on this drop now answers RETRY. Reserve → 503 Retry-After 1, settlement pauses its partition
+    C->>P: UPDATE drop_inventory SET redis_gen = redis_gen + 1 → 8, COMMIT
+    A->>P: reserve txn: INSERT order, quota, outbox, UPDATE drop_inventory WHERE redis_gen = 7
+    P-->>A: 0 rows → STALE_GEN, ROLLBACK
+    Note over A: 503, retry with the same key. The rebuild never counted this hold and discards its rsv entry
+    C->>P: REPEATABLE READ snapshot: drop, inventory, quotas, every order of the drop
+    S->>R: FCALL fd_release for an order settled in PG after the snapshot
+    R-->>S: RETRY, partition paused and retried with backoff
+    C->>R: FCALL fd_rebuild(snapshot, gen 8)
+    Note over R,P: Validates the whole snapshot before the first write. STALE if gen ≤ the gen in Redis. Then DEL rsv uq exp, write inv, rsv, uq, exp and the status, and publish a snapshot frame (gen 8, seq 0). Clients drop anything older
+    C->>P: pg_advisory_unlock
+    S->>R: FCALL fd_release (retry)
+    R-->>S: OK if the snapshot still had it HELD, NOOP if it was already terminal
+    A->>R: client retry with the same key: fd_reserve
+    R-->>A: RESERVED, gen 8, and the PG txn commits
+  end
+  C->>R: SET fd:epoch new uuid
+  C->>P: store run_id and epoch in system_state

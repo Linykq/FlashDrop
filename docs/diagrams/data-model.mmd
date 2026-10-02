@@ -1,0 +1,89 @@
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%% FlashDrop PostgreSQL data model, core tables (stock, limits, orders, payments).
+%% Source of docs/diagrams/data-model.svg. Support tables are in data-model-support.mmd.
+erDiagram
+  users ||--o{ orders : places
+  users ||--o{ user_drop_quota : "is limited by"
+  products ||--o{ drops : "sold in"
+  products ||--o{ orders : "partition key"
+  rooms |o--o{ drops : features
+  drops ||--|| drop_inventory : "stock of record"
+  drops ||--o{ user_drop_quota : caps
+  drops ||--o{ orders : contains
+  orders ||--o| payments : "paid by"
+
+  users {
+    uuid id PK
+    text email UK
+    text display_name
+    text role "buyer or admin"
+  }
+  rooms {
+    uuid id PK
+    text slug UK
+    text title
+    text hls_url
+  }
+  products {
+    uuid id PK
+    text slug UK
+    text title "10 to 80 chars"
+    text description
+    jsonb attributes
+    text[] image_keys
+    text status "DRAFT or PUBLISHED"
+    text source "manual or llm"
+    uuid listing_job_id
+  }
+  drops {
+    uuid id PK
+    uuid product_id FK "one open per product"
+    uuid room_id FK
+    timestamptz starts_at
+    timestamptz ends_at
+    int price_cents
+    int per_user_limit "1 to 10"
+    int hold_seconds "10 to 900"
+    int payment_seconds
+    drop_status status
+  }
+  drop_inventory {
+    uuid drop_id PK, FK
+    int total
+    int reserved "CHECK res+sold <= total"
+    int sold
+    int redis_gen "rebuild fence"
+    timestamptz updated_at
+  }
+  user_drop_quota {
+    uuid user_id PK, FK
+    uuid drop_id PK, FK
+    int claimed "CHECK <= limit_qty"
+    int limit_qty
+  }
+  orders {
+    uuid id PK "uuidv5 rid"
+    uuid user_id FK
+    uuid drop_id FK
+    uuid product_id FK "partition key"
+    int qty "1 to 10"
+    int total_cents "generated"
+    order_status status "trigger-guarded"
+    text close_reason
+    text idempotency_key "UK with user, drop"
+    bytea request_hash
+    text checkout_key
+    bytea checkout_hash
+    timestamptz expires_at "PG clock decides"
+    int extensions "0 or 1"
+    timestamptz paid_at
+    timestamptz closed_at
+    timestamptz redis_settled_at
+    int version
+  }
+  payments {
+    uuid order_id PK, FK "one per order"
+    text psp_charge_id UK
+    int amount_cents
+    payment_status status "SUCCEEDED/FAILED/REFUNDED"
+  }

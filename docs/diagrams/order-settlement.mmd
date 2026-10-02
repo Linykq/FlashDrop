@@ -1,0 +1,34 @@
+%%{init: {"sequence": {"wrap": true, "width": 170, "noteMargin": 8}}}%%
+%% Order lifecycle, part 2: expiry, inventory settlement, live dashboard and the Postgres-driven safety net.
+%% Source of docs/diagrams/order-settlement.svg. Part 1 (relay and payment) is order-lifecycle.mmd.
+sequenceDiagram
+  autonumber
+  participant W as worker sweeper
+  participant P as Postgres
+  participant K as Kafka orders.v1
+  participant S as settlement consumer
+  participant D as dashboard consumer
+  participant R as Redis
+  participant G as api WS gateways
+
+  Note over W,P: expire-orders, every 1 s, advisory-lock leader
+  W->>P: lock due RESERVED / PENDING_PAYMENT rows SKIP LOCKED, set EXPIRED, quota, inventory, outbox order.expired
+  Note over W,P: A failing batch falls back to one txn per order. An order that still fails is quarantined with an alert
+
+  K->>S: order.paid / payment_failed / expired / cancelled / rejected
+  S->>P: read status, skip if redis_settled_at is set
+  alt PAID
+    S->>R: FCALL fd_confirm (HELD to COMMITTED, held - q, sold + q)
+  else terminal unpaid or REJECTED
+    S->>R: FCALL fd_release (HELD to RELEASED, avail + q, uq - q)
+  end
+  R-)G: PUBLISH fd:ch:stock:{d:dropId}, every viewer sees the new level
+  S->>P: SET redis_settled_at = now() WHERE redis_settled_at IS NULL
+  Note over S,R: RETRY pauses the partition. NO_DROP: settled if past retention, else rebuild nudge and retry. CONFLICT goes to orders.v1.dlq
+
+  K->>D: every order event
+  D->>P: one txn: processed_events dedupe, fold into sales_minute + drop_sales_totals, version + 1
+  D-)R: PUBLISH fd:ch:dash:dropId {version, totals}
+  R-)G: fan-out, gateways keep only newer versions
+
+  Note over W,R: Safety net every 5 s, Postgres-driven: settles terminal orders unsettled for more than 10 s. orphan-scan: HELD entries past expiry + 30 s get a REJECTED tombstone if PG has no row, or a forced fd_confirm / fd_release if PG is terminal
