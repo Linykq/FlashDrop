@@ -1,0 +1,12 @@
+{
+  "name": "@flashdrop/messaging",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@confluentinc/kafka-javascript": "catalog:"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "shotSeconds": 7,
+  "fadeSeconds": 1,
+  "shots": [
+    {
+      "image": "skincare-ritual-set/1.jpg",
+      "from": { "zoom": 1, "x": 0.5, "y": 0.5 },
+      "to": { "zoom": 1.1, "x": 0.57, "y": 0.6 },
+      "caption": "Welcome to tonight's drop! First up,\na five-piece skincare set in soft white."
+    },
+    {
+      "image": "sage-wireless-headphones/1.jpg",
+      "from": { "zoom": 1.06, "x": 0.5, "y": 0.64 },
+      "to": { "zoom": 1, "x": 0.5, "y": 0.42 },
+      "caption": "Sage wireless headphones: plush cushions\nand calm matte cups. So comfortable."
+    },
+    {
+      "image": "linen-band-collar-shirt/1.jpg",
+      "from": { "zoom": 1, "x": 0.5, "y": 0.36 },
+      "to": { "zoom": 1.04, "x": 0.5, "y": 0.6 },
+      "caption": "This washed-linen shirt gets softer\nevery single time you wear it."
+    },
+    {
+      "image": "ring-stoneware-vase/3.jpg",
+      "from": { "zoom": 1.12, "x": 0.42, "y": 0.56 },
+      "to": { "zoom": 1.12, "x": 0.56, "y": 0.56 },
+      "caption": "A hand-finished stoneware ring vase.\nNo two are ever quite alike."
+    },
+    {
+      "image": "faceted-eau-de-parfum/1.jpg",
+      "widen": 0.25,
+      "from": { "zoom": 1, "x": 0.5, "y": 0.5 },
+      "to": { "zoom": 1.07, "x": 0.5, "y": 0.5 },
+      "caption": "Faceted glass and a blush-pink scent,\nsoft, warm and close to the skin."
+    },
+    {
+      "image": "rose-tint-round-sunglasses/1.jpg",
+      "from": { "zoom": 1.12, "x": 0.5, "y": 0.5 },
+      "to": { "zoom": 1, "x": 0.5, "y": 0.5 },
+      "caption": "Rose-tint round sunglasses:\nfeatherlight, with a soft pink glow."
+    },
+    {
+      "image": "amber-jar-candle/1.jpg",
+      "from": { "zoom": 1, "x": 0.5, "y": 0.55 },
+      "to": { "zoom": 1.12, "x": 0.52, "y": 0.62 },
+      "caption": "Hand-poured soy wax in amber glass,\nfinished with a solid ash-wood lid."
+    },
+    {
+      "image": "stone-charcoal-mug-set/1.jpg",
+      "from": { "zoom": 1.12, "x": 0.44, "y": 0.55 },
+      "to": { "zoom": 1.12, "x": 0.56, "y": 0.55 },
+      "caption": "Finally, stoneware mugs for slow mornings.\nStock is limited: tap Buy when it drops!"
+    }
+  ]
+}

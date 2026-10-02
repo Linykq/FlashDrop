@@ -1,0 +1,23 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "agentGuidance": false,
+  "globalDependencies": ["tsconfig.base.json"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck", "//#typecheck:root"]
+    },
+    "//#typecheck:root": {
+      "inputs": ["tsconfig.json", "tsconfig.base.json", "vitest.config.ts"]
+    },
+    "//#lint": {},
+    "//#test": {},
+    "dev": {
+      "cache": false,
+      "persistent": true
+    }
+  }
+}

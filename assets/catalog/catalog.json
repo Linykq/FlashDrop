@@ -1,0 +1,522 @@
+{
+  "currency": "USD",
+  "taxonomy": [
+    {
+      "id": "apparel",
+      "label": "Apparel",
+      "requiredAttributes": ["size"]
+    },
+    {
+      "id": "audio",
+      "label": "Audio",
+      "requiredAttributes": []
+    },
+    {
+      "id": "bags",
+      "label": "Bags",
+      "requiredAttributes": []
+    },
+    {
+      "id": "beauty",
+      "label": "Beauty",
+      "requiredAttributes": []
+    },
+    {
+      "id": "eyewear",
+      "label": "Eyewear",
+      "requiredAttributes": []
+    },
+    {
+      "id": "footwear",
+      "label": "Footwear",
+      "requiredAttributes": ["size"]
+    },
+    {
+      "id": "fragrance",
+      "label": "Fragrance",
+      "requiredAttributes": ["size"]
+    },
+    {
+      "id": "home",
+      "label": "Home",
+      "requiredAttributes": ["material"]
+    },
+    {
+      "id": "tech",
+      "label": "Tech",
+      "requiredAttributes": []
+    },
+    {
+      "id": "watches",
+      "label": "Watches",
+      "requiredAttributes": []
+    }
+  ],
+  "products": [
+    {
+      "slug": "skincare-ritual-set",
+      "title": "Daily Ritual Skincare Set",
+      "description": "A pared-back routine in soft-touch white: a gentle gel cleanser, a foaming face wash, a lightweight serum with a precision pump and a rich day cream, plus a travel jar for weekends away. Everything you need for morning and night, and nothing you don't.",
+      "category": "beauty",
+      "condition": "new",
+      "attributes": {
+        "brand": null,
+        "color": "White",
+        "material": "Matte plastic, glass",
+        "size": "5 pieces"
+      },
+      "highlights": [
+        "Five essentials: cleanser, foam, serum, cream and a travel jar",
+        "Precision pump dispenses just the right amount of serum",
+        "Soft-touch matte bottles that look calm on any shelf",
+        "Travel jar sized for a weekend bag"
+      ],
+      "tags": ["skincare", "gift set", "minimal", "travel"],
+      "suggestedPriceCents": 6400,
+      "images": [
+        {
+          "src": "skincare-ritual-set/1.jpg",
+          "width": 2000,
+          "height": 1333,
+          "alt": "White skincare jars, a tube and a pump bottle beside folded white towels",
+          "color": "#b1afab",
+          "credit": {
+            "photographer": "Roman Odintsov",
+            "profile": "https://www.pexels.com/@roman-odintsov/",
+            "source": "https://www.pexels.com/photo/close-up-shot-of-skincare-products-7691112/",
+            "licence": "Pexels License"
+          }
+        },
+        {
+          "src": "skincare-ritual-set/2.jpg",
+          "width": 2000,
+          "height": 1334,
+          "alt": "The full skincare set arranged on a white table with a soft towel",
+          "color": "#c4c1bf",
+          "credit": {
+            "photographer": "Roman Odintsov",
+            "profile": "https://www.pexels.com/@roman-odintsov/",
+            "source": "https://www.pexels.com/photo/close-up-shot-of-skincare-products-7691164/",
+            "licence": "Pexels License"
+          }
+        },
+        {
+          "src": "skincare-ritual-set/3.jpg",
+          "width": 1333,
+          "height": 2000,
+          "alt": "Close-up of the cream jar, serum pump bottle and an open travel jar",
+          "color": "#adaba8",
+          "credit": {
+            "photographer": "Roman Odintsov",
+            "profile": "https://www.pexels.com/@roman-odintsov/",
+            "source": "https://www.pexels.com/photo/close-up-shot-of-skincare-products-7691161/",
+            "licence": "Pexels License"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "sage-wireless-headphones",
+      "title": "Sage Wireless Over-Ear Headphones",
+      "description": "Over-ear headphones in a calm sage and warm ivory colorway. Plush cushions wrapped in supple faux leather rest lightly for hours, and the matte cups keep the silhouette clean. Volume and play controls sit right under your thumb, with a 3.5 mm input for when you'd rather plug in.",
+      "category": "audio",
+      "condition": "new",
+      "attributes": {
+        "brand": null,
+        "color": "Sage and ivory",
+        "material": "Matte polymer, faux leather",
+        "size": null
+      },
+      "highlights": [
+        "Plush faux-leather ear cushions in soft sage",
+        "Matte ivory cups with tactile volume and play buttons",
+        "3.5 mm input for wired listening",
+        "Sage-wrapped headband that matches the cushions"
+      ],
+      "tags": ["headphones", "wireless", "over-ear", "sage"],
+      "suggestedPriceCents": 14900,
+      "images": [
+        {
+          "src": "sage-wireless-headphones/1.jpg",
+          "width": 1853,
+          "height": 2000,
+          "alt": "Sage and ivory over-ear headphones resting on a table, ear cushions facing the camera",
+          "color": "#918f89",
+          "credit": {
+            "photographer": "Andy Lee",
+            "profile": "https://www.pexels.com/@andy-lee-222330306/",
+            "source": "https://www.pexels.com/photo/close-up-of-modern-wireless-headphones-34075323/",
+            "licence": "Pexels License"
+          },
+          "edit": {
+            "crop": [0, 0.28, 1, 0.72]
+          }
+        },
+        {
+          "src": "sage-wireless-headphones/2.jpg",
+          "width": 1667,
+          "height": 2000,
+          "alt": "Close-up of the matte ivory ear cup and sage cushion of the headphones",
+          "color": "#979896",
+          "credit": {
+            "photographer": "Andy Lee",
+            "profile": "https://www.pexels.com/@andy-lee-222330306/",
+            "source": "https://www.pexels.com/photo/close-up-of-modern-stylish-wireless-headphones-34075324/",
+            "licence": "Pexels License"
+          },
+          "edit": {
+            "crop": [0, 0.2, 1, 0.8]
+          }
+        }
+      ]
+    },
+    {
+      "slug": "linen-band-collar-shirt",
+      "title": "Linen Band-Collar Shirt",
+      "description": "A relaxed shirt in washed natural linen with a band collar and a button placket. The fabric is light and breathable, softens with every wash and drapes easily, so it looks right tucked in, worn loose or layered open over a tee.",
+      "category": "apparel",
+      "condition": "new",
+      "attributes": {
+        "brand": null,
+        "color": "Natural oatmeal",
+        "material": "Washed linen",
+        "size": "M"
+      },
+      "highlights": [
+        "Washed natural linen that softens over time",
+        "Band collar with a button placket",
+        "Relaxed fit that drapes easily",
+        "Light and breathable for warm days"
+      ],
+      "tags": ["linen", "shirt", "summer", "relaxed fit"],
+      "suggestedPriceCents": 7900,
+      "images": [
+        {
+          "src": "linen-band-collar-shirt/1.jpg",
+          "width": 1334,
+          "height": 2000,
+          "alt": "Natural linen shirt with a band collar on a wooden hanger hung from a branch",
+          "color": "#d3cac6",
+          "credit": {
+            "photographer": "Dayong Tien",
+            "profile": "https://www.pexels.com/@dayong-tien-681073045/",
+            "source": "https://www.pexels.com/photo/shirt-on-hanger-on-branch-22441297/",
+            "licence": "Pexels License"
+          }
+        },
+        {
+          "src": "linen-band-collar-shirt/2.jpg",
+          "width": 1334,
+          "height": 2000,
+          "alt": "The linen shirt hanging from a branch above a mound of sand against a warm grey wall",
+          "color": "#c0b5af",
+          "credit": {
+            "photographer": "Dayong Tien",
+            "profile": "https://www.pexels.com/@dayong-tien-681073045/",
+            "source": "https://www.pexels.com/photo/shirt-on-hanger-on-branch-22441291/",
+            "licence": "Pexels License"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "ring-stoneware-vase",
+      "title": "Ring Stoneware Vase",
+      "description": "A sculptural ring vase in matte ivory stoneware, finished by hand so no two are quite alike. The open circle frames whatever sits behind it, making it as much an object as a vessel. Add dried grasses or a single stem, or let it stand on its own on a shelf, sideboard or desk.",
+      "category": "home",
+      "condition": "new",
+      "attributes": {
+        "brand": null,
+        "color": "Ivory",
+        "material": "Stoneware",
+        "size": "H 22 cm"
+      },
+      "highlights": [
+        "Sculptural ring silhouette in matte ivory stoneware",
+        "Hand-finished, so each piece varies slightly",
+        "Narrow neck holds dried grasses or a single stem",
+        "Sized for shelves, sideboards and desks"
+      ],
+      "tags": ["vase", "stoneware", "home decor", "sculptural"],
+      "suggestedPriceCents": 4800,
+      "images": [
+        {
+          "src": "ring-stoneware-vase/1.jpg",
+          "width": 1333,
+          "height": 2000,
+          "alt": "Ivory ring-shaped vase on a white marble plinth against a beige wall",
+          "color": "#c6bab0",
+          "credit": {
+            "photographer": "Karolina Grabowska (Kaboompics)",
+            "profile": "https://www.pexels.com/@karola-g/",
+            "source": "https://www.pexels.com/photo/decorative-vase-of-ring-shape-on-marble-stand-4203100/",
+            "licence": "Pexels License"
+          }
+        },
+        {
+          "src": "ring-stoneware-vase/2.jpg",
+          "width": 1333,
+          "height": 2000,
+          "alt": "The ring vase on a white shelf next to a small round vase holding dried grass",
+          "color": "#beb3a8",
+          "credit": {
+            "photographer": "Karolina Grabowska (Kaboompics)",
+            "profile": "https://www.pexels.com/@karola-g/",
+            "source": "https://www.pexels.com/photo/minimalist-vases-in-nude-home-interior-6952333/",
+            "licence": "Pexels License"
+          }
+        },
+        {
+          "src": "ring-stoneware-vase/3.jpg",
+          "width": 2000,
+          "height": 1333,
+          "alt": "The ring vase styled with small ceramic vessels and a cork vase on a white shelf",
+          "color": "#c0b6ad",
+          "credit": {
+            "photographer": "Karolina Grabowska (Kaboompics)",
+            "profile": "https://www.pexels.com/@karola-g/",
+            "source": "https://www.pexels.com/photo/minimalist-decoration-in-nude-home-interior-6952331/",
+            "licence": "Pexels License"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "faceted-eau-de-parfum",
+      "title": "Faceted Glass Eau de Parfum",
+      "description": "A blush-toned eau de parfum in a faceted glass flacon that catches the light from every angle. It opens bright and petal-soft, then settles into a warm, skin-close finish. A brushed-silver atomizer gives a fine, even mist, and the compact bottle slips easily into a bag.",
+      "category": "fragrance",
+      "condition": "new",
+      "attributes": {
+        "brand": null,
+        "color": "Blush pink",
+        "material": "Glass, brushed metal",
+        "size": "30 ml"
+      },
+      "highlights": [
+        "Faceted glass flacon with a blush-pink tint",
+        "Brushed-silver atomizer for a fine, even mist",
+        "Soft floral opening that dries down warm",
+        "Compact 30 ml bottle that travels well"
+      ],
+      "tags": ["fragrance", "floral", "travel size", "gift"],
+      "suggestedPriceCents": 6800,
+      "images": [
+        {
+          "src": "faceted-eau-de-parfum/1.jpg",
+          "width": 1600,
+          "height": 2000,
+          "alt": "Faceted blush-pink perfume bottle with a silver cap on a pale mint backdrop",
+          "color": "#dee5de",
+          "credit": {
+            "photographer": "Alex Lo",
+            "profile": "https://www.pexels.com/@alex-lo-132132270/",
+            "source": "https://www.pexels.com/photo/bottle-of-perfume-on-white-background-16266287/",
+            "licence": "Pexels License"
+          },
+          "edit": {
+            "crop": [0.075, 0.29, 0.75, 0.625],
+            "retouch": [[0.578, 0.465, 0.1156, 0.175]]
+          }
+        },
+        {
+          "src": "faceted-eau-de-parfum/2.jpg",
+          "width": 1600,
+          "height": 2000,
+          "alt": "The perfume bottle standing on a round brushed-silver plinth",
+          "color": "#e2e8e3",
+          "credit": {
+            "photographer": "Alex Lo",
+            "profile": "https://www.pexels.com/@alex-lo-132132270/",
+            "source": "https://www.pexels.com/photo/perfume-bottle-on-white-background-16266286/",
+            "licence": "Pexels License"
+          },
+          "edit": {
+            "crop": [0.135, 0.3, 0.75, 0.625],
+            "retouch": [[0.547, 0.4, 0.078, 0.135]]
+          }
+        },
+        {
+          "src": "faceted-eau-de-parfum/3.jpg",
+          "width": 1600,
+          "height": 2000,
+          "alt": "The perfume bottle beside a small white seashell",
+          "color": "#e0e6e0",
+          "credit": {
+            "photographer": "Alex Lo",
+            "profile": "https://www.pexels.com/@alex-lo-132132270/",
+            "source": "https://www.pexels.com/photo/vial-of-perfume-16266295/",
+            "licence": "Pexels License"
+          },
+          "edit": {
+            "crop": [0.125, 0.29, 0.75, 0.625],
+            "retouch": [[0.497, 0.4375, 0.1094, 0.1525]]
+          }
+        }
+      ]
+    },
+    {
+      "slug": "rose-tint-round-sunglasses",
+      "title": "Rose Tint Round Sunglasses",
+      "description": "Featherlight round frames in polished rose-gold metal, fitted with soft pink lenses that take the edge off bright days while keeping colors warm. Adjustable nose pads and slim temples make them easy to wear from morning coffee to golden hour.",
+      "category": "eyewear",
+      "condition": "new",
+      "attributes": {
+        "brand": null,
+        "color": "Rose gold, pink tint",
+        "material": "Metal",
+        "size": "One size"
+      },
+      "highlights": [
+        "Slim round frames in polished rose-gold metal",
+        "Soft pink tinted lenses that keep colors warm",
+        "Adjustable nose pads for a comfortable fit",
+        "Featherlight enough to forget you're wearing them"
+      ],
+      "tags": ["sunglasses", "round frames", "rose gold", "tinted lenses"],
+      "suggestedPriceCents": 8900,
+      "images": [
+        {
+          "src": "rose-tint-round-sunglasses/1.jpg",
+          "width": 2000,
+          "height": 1333,
+          "alt": "Round rose-gold sunglasses with pale pink lenses standing open on a soft pink backdrop",
+          "color": "#f4e7e2",
+          "credit": {
+            "photographer": "Diana",
+            "profile": "https://www.pexels.com/@didsss/",
+            "source": "https://www.pexels.com/photo/pink-sunglasses-with-gold-frames-1669595/",
+            "licence": "Pexels License"
+          }
+        },
+        {
+          "src": "rose-tint-round-sunglasses/2.jpg",
+          "width": 2000,
+          "height": 1333,
+          "alt": "The sunglasses folded beside two makeup brushes on a white surface",
+          "color": "#e9e7f1",
+          "credit": {
+            "photographer": "Diana",
+            "profile": "https://www.pexels.com/@didsss/",
+            "source": "https://www.pexels.com/photo/make-up-brushes-1359066/",
+            "licence": "Pexels License"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "amber-jar-candle",
+      "title": "Amber Jar Soy Candle",
+      "description": "Hand-poured soy wax in an apothecary-style amber glass jar, finished with a solid ash-wood lid. A cotton wick gives a slow, even burn, and warm notes of cedar and tonka fill a room without overwhelming it. Put the lid back on to keep the scent fresh between evenings.",
+      "category": "home",
+      "condition": "new",
+      "attributes": {
+        "brand": null,
+        "color": "Amber",
+        "material": "Glass, soy wax, ash wood",
+        "size": "200 g"
+      },
+      "highlights": [
+        "Hand-poured soy wax with a cotton wick",
+        "Amber glass jar with a solid ash-wood lid",
+        "Warm cedar and tonka notes",
+        "Lid keeps the scent fresh between burns"
+      ],
+      "tags": ["candle", "soy wax", "home fragrance", "cedar"],
+      "suggestedPriceCents": 3400,
+      "images": [
+        {
+          "src": "amber-jar-candle/1.jpg",
+          "width": 2000,
+          "height": 1333,
+          "alt": "Amber glass candle jar with its wooden lid leaning against it on a terracotta backdrop",
+          "color": "#a76744",
+          "credit": {
+            "photographer": "Vie Studio",
+            "profile": "https://www.pexels.com/@vie-studio/",
+            "source": "https://www.pexels.com/photo/a-candle-in-a-jar-7004667/",
+            "licence": "Pexels License"
+          }
+        },
+        {
+          "src": "amber-jar-candle/2.jpg",
+          "width": 1333,
+          "height": 2000,
+          "alt": "Top view of the open candle showing white soy wax and the ash-wood lid",
+          "color": "#713f2b",
+          "credit": {
+            "photographer": "Vie Studio",
+            "profile": "https://www.pexels.com/@vie-studio/",
+            "source": "https://www.pexels.com/photo/a-top-view-of-a-candle-in-a-jar-7004669/",
+            "licence": "Pexels License"
+          }
+        },
+        {
+          "src": "amber-jar-candle/3.jpg",
+          "width": 1333,
+          "height": 2000,
+          "alt": "The candle just blown out, smoke curling over the white wax, beside its ash-wood lid and a dried rose",
+          "color": "#814930",
+          "credit": {
+            "photographer": "Vie Studio",
+            "profile": "https://www.pexels.com/@vie-studio/",
+            "source": "https://www.pexels.com/photo/a-candle-in-a-jar-7004668/",
+            "licence": "Pexels License"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "stone-charcoal-mug-set",
+      "title": "Stone and Charcoal Mug Set",
+      "description": "Two matte stoneware mugs, one in warm stone and one in deep charcoal, set on a slim wooden serving tray. The soft satin glaze feels good in the hand, the rounded handle fits two fingers, and the gently tapered shape sits steady on the tray, a desk or a bedside table. Made for a slow first coffee for two.",
+      "category": "home",
+      "condition": "new",
+      "attributes": {
+        "brand": null,
+        "color": "Stone and charcoal",
+        "material": "Matte-glazed stoneware, wood",
+        "size": "2 × 300 ml, 40 cm tray"
+      },
+      "highlights": [
+        "Two mugs in warm stone and deep charcoal",
+        "Soft matte glaze with a smooth, rounded rim",
+        "Rounded handle that fits two fingers",
+        "Slim wooden serving tray included"
+      ],
+      "tags": ["mugs", "stoneware", "gift set", "coffee"],
+      "suggestedPriceCents": 4600,
+      "images": [
+        {
+          "src": "stone-charcoal-mug-set/1.jpg",
+          "width": 2000,
+          "height": 1333,
+          "alt": "A stone-colored mug and a charcoal mug side by side on a slim wooden tray against a concrete wall",
+          "color": "#a5947a",
+          "credit": {
+            "photographer": "Katrin Bolovtsova",
+            "profile": "https://www.pexels.com/@ekaterina-bolovtsova/",
+            "source": "https://www.pexels.com/photo/mugs-on-a-wooden-tray-6312184/",
+            "licence": "Pexels License"
+          }
+        },
+        {
+          "src": "stone-charcoal-mug-set/2.jpg",
+          "width": 1667,
+          "height": 2000,
+          "alt": "The two matte mugs on their wooden tray, seen from a low angle",
+          "color": "#9b876d",
+          "credit": {
+            "photographer": "Katrin Bolovtsova",
+            "profile": "https://www.pexels.com/@ekaterina-bolovtsova/",
+            "source": "https://www.pexels.com/photo/ceramic-mugs-on-a-wooden-tray-6312194/",
+            "licence": "Pexels License"
+          },
+          "edit": {
+            "crop": [0, 0.15, 1, 0.8]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+# FlashDrop local stack (design §15).
+#
+#   pnpm infra:up    data stores, then the one-shot kafka-init (`up --wait` does not wait for one-shot jobs)
+#   pnpm infra:down  stops the stack; named volumes keep the data
+#   docker compose --profile tools up -d kafka-ui    Kafka UI on http://127.0.0.1:8081
+#
+# Every published port binds to 127.0.0.1. Images are pinned by tag and multi-arch index digest.
+# The application services (migrate, api-1, api-2, web, worker, consumers, payment-mock, caddy) join from
+# M1 under the "app" profile. They depend on `kafka-init` and `migrate` with
+# `condition: service_completed_successfully`, because `up --wait` treats a running one-shot job as ready.
+
+name: flashdrop
+
+services:
+  # ---------------------------------------------------------------- data stores (always on)
+
+  postgres:
+    image: postgres:17.11@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+    environment:
+      POSTGRES_USER: flashdrop
+      POSTGRES_PASSWORD: flashdrop
+      POSTGRES_DB: flashdrop
+    ports:
+      # 5433: the native PostgreSQL on this machine keeps 5432.
+      - 127.0.0.1:5433:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP: during first-run initialisation the server listens on the Unix socket only, so a socket
+      # check would report healthy before the real server is up.
+      test: [CMD, pg_isready, --host=127.0.0.1, --username=flashdrop, --dbname=flashdrop]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:8.10.2@sha256:6f81e8915c60b065a524e6967e0ad1c639ba6efa84d669f823683ea04d9150ee
+    command: [redis-server, /usr/local/etc/redis/redis.conf]
+    ports:
+      - 127.0.0.1:6379:6379
+    volumes:
+      - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
+    ports:
+      - 127.0.0.1:9092:9092
+    environment:
+      # Setting any KAFKA_* variable replaces the image's default configuration, so the whole single-node
+      # KRaft set is spelled out. Without the replication-factor overrides, __consumer_offsets cannot be
+      # created on one broker and consumer groups never come up.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093,EXTERNAL://:9092
+      # Containers use kafka:19092; Node on the Windows host uses 127.0.0.1:9092.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,EXTERNAL://127.0.0.1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # A new consumer group gets its partitions at once instead of after the default 3 s delay.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics exist only through kafka-init, so a typo in a topic name fails instead of creating one.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms512m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:19092 > /dev/null 2>&1
+      # Each check starts a JVM for about a second of CPU, so it runs every 2 s only while the broker starts
+      # (`up --wait` stays fast) and every 30 s after that. start_interval needs Docker Engine 25 or later.
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+
+  # ---------------------------------------------------------------- one-shot jobs
+
+  kafka-init:
+    image: apache/kafka:4.3.1@sha256:77e3df9054047a88b520d0cc46e16696d3b22022e1d580aeccd2632df6532837
+    entrypoint: [sh, /opt/flashdrop/create-topics.sh]
+    volumes:
+      - ./infra/kafka/create-topics.sh:/opt/flashdrop/create-topics.sh:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: 'no'
+
+  # ---------------------------------------------------------------- tools (profile: tools)
+
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.5.0@sha256:7cda86a33344160309fdb65146332e4da65db81a945614f2fe32e210803f6fd1
+    profiles: [tools]
+    ports:
+      - 127.0.0.1:8081:8080
+    environment:
+      KAFKA_CLUSTERS_0_NAME: flashdrop
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, --quiet, --spider, http://127.0.0.1:8080/actuator/health]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:

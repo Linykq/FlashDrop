@@ -11,5 +11,5 @@
 *.ico binary
 *.woff2 binary
 
-# HLS sample stream: MPEG-TS segments share the .ts extension with TypeScript
+# HLS demo stream (fMP4 segments, playlist, captions): keep byte-exact
 apps/web/public/hls/** binary

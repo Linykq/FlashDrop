@@ -1,0 +1,35 @@
+packages:
+  - apps/*
+  - packages/*
+  - tools
+  - assets
+
+catalog:
+  '@biomejs/biome': 2.5.15
+  '@confluentinc/kafka-javascript': 1.10.1
+  '@types/node': 22.20.5
+  '@types/pg': 8.23.1
+  pg: 8.23.1
+  pino: 10.3.1
+  redis: 6.3.0
+  sharp: 0.35.5
+  tsx: 4.23.15
+  turbo: 2.11.6
+  typescript: 6.0.3
+  vite: 8.3.2
+  vitest: 5.0.3
+  zod: 4.6.5
+
+# Every version lives in the catalog above, once (design §14 decision log), and packages depend on
+# `catalog:`. `pnpm add <pkg>@<version> --filter <workspace>` adds new packages to the catalog, exact.
+catalogMode: strict
+
+# pnpm 10 skips dependency install scripts unless they are allow-listed. The Kafka client's `install`
+# script downloads the librdkafka binding; without it the module fails with "Could not locate the
+# bindings file" (design §14, §15). esbuild's postinstall verifies its platform binary. sharp needs no
+# entry: its binaries ship as `@img/*` optional dependencies. `pnpm check:native` proves both load.
+onlyBuiltDependencies:
+  - '@confluentinc/kafka-javascript'
+  - esbuild
+
+savePrefix: ''

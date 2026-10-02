@@ -1,0 +1,18 @@
+{
+  "name": "@flashdrop/test-utils",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@flashdrop/config": "workspace:*",
+    "@flashdrop/messaging": "workspace:*",
+    "pg": "catalog:",
+    "redis": "catalog:"
+  },
+  "devDependencies": {
+    "@types/pg": "catalog:"
+  }
+}

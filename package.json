@@ -1,0 +1,35 @@
+{
+  "name": "flashdrop",
+  "private": true,
+  "description": "Live-shopping flash-sale platform: Redis admits, Postgres decides, Kafka carries the news, timers clean up.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "biome check --error-on-warnings .",
+    "format": "biome check --write .",
+    "typecheck": "turbo run typecheck",
+    "typecheck:root": "tsc",
+    "test": "vitest run --project unit",
+    "test:int": "vitest run --project integration",
+    "infra:up": "docker compose up --detach --wait postgres redis kafka && docker compose run --rm kafka-init",
+    "infra:down": "docker compose --profile \"*\" down",
+    "infra:logs": "docker compose logs --follow --tail=100",
+    "docs:diagrams": "tsx tools/render-diagrams.ts",
+    "check:native": "tsx tools/check-native.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "turbo": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}

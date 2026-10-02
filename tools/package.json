@@ -1,0 +1,12 @@
+{
+  "name": "@flashdrop/tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@confluentinc/kafka-javascript": "catalog:",
+    "sharp": "catalog:"
+  }
+}

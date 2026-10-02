@@ -1,0 +1,17 @@
+{
+  "name": "@flashdrop/config",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./constants": "./src/constants.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "pino": "catalog:",
+    "zod": "catalog:"
+  }
+}

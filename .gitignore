@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# Test output
+coverage/
+playwright-report/
+test-results/
+blob-report/
+tests/load/results/
+invariants-report.json
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+uploads/
+*.log
+.DS_Store
+Thumbs.db
+
+# Local agent notes
+CLAUDE.local.md
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
