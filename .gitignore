@@ -26,6 +26,8 @@ invariants-report.json
 
 # Runtime data
 uploads/
+# The web route that proxies product photos is source, not runtime data.
+!apps/web/app/uploads/
 *.log
 .DS_Store
 Thumbs.db

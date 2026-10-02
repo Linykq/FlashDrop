@@ -1,0 +1,10 @@
+# CI overrides of compose.yaml (design §13), for the e2e job: `COMPOSE_FILE=compose.yaml:compose.ci.yaml`.
+# The design's other overrides (test routes, PSP latency, the LLM fixture provider, the load profile's rate
+# limits) arrive with the milestones that build what they configure.
+
+services:
+  postgres:
+    # A runner is thrown away after the job, so the data needs no disk; tmpfs also skips its fsyncs.
+    volumes: !reset []
+    tmpfs:
+      - /var/lib/postgresql/data

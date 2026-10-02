@@ -1,0 +1,267 @@
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *):not(
+        :where([data-theme="light"], [data-theme="light"] *)
+      ) {
+      @slot;
+    }
+  }
+}
+
+@theme {
+  --color-*: initial;
+  --font-*: initial;
+  --font-weight-*: initial;
+  --text-*: initial;
+  --tracking-*: initial;
+  --leading-*: initial;
+  --radius-*: initial;
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+  --blur-*: initial;
+  --ease-*: initial;
+  --animate-*: initial;
+  --breakpoint-*: initial;
+  --container-*: initial;
+
+  /* Surfaces */
+  --color-bg: #ffffff;
+  --color-bg-secondary: #f5f5f7;
+  --color-canvas: #f5f5f7;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+
+  /* Fills: translucent, for controls on any surface */
+  --color-fill: rgb(120 120 128 / 0.2);
+  --color-fill-secondary: rgb(120 120 128 / 0.16);
+  --color-fill-tertiary: rgb(118 118 128 / 0.12);
+  --color-fill-quaternary: rgb(116 116 128 / 0.08);
+
+  /* Labels */
+  --color-label: #1d1d1f;
+  --color-label-secondary: #6e6e73;
+  --color-label-tertiary: #86868b;
+  --color-label-on-color: #ffffff;
+
+  /* Lines and control parts */
+  --color-separator: #d2d2d7;
+  --color-control: #86868b;
+  --color-thumb: #ffffff;
+  --color-scrim: rgb(0 0 0 / 0.4);
+
+  /* Accent */
+  --color-accent: #0071e3;
+  --color-accent-hover: #0066cc;
+  --color-accent-pressed: #005bb8;
+  --color-accent-label: #0060c0;
+  --color-accent-tint: rgb(0 113 227 / 0.12);
+  --color-accent-tint-hover: rgb(0 113 227 / 0.16);
+
+  /* Live */
+  --color-live: #e0182d;
+
+  /* Status: the base value is text- and icon-safe; the tint is a background */
+  --color-success: #18732f;
+  --color-success-tint: rgb(52 199 89 / 0.12);
+  --color-warning: #a34900;
+  --color-warning-tint: rgb(255 149 0 / 0.12);
+  --color-danger: #c40013;
+  --color-danger-tint: rgb(255 59 48 / 0.12);
+  --color-danger-tint-hover: rgb(255 59 48 / 0.16);
+
+  --color-focus: #0060c0;
+
+  /* Material backgrounds; blur and fallbacks live in the material-* utilities */
+  --color-material-bar: rgb(251 251 253 / 0.8);
+  --color-material-bar-solid: #fbfbfd;
+  --color-material-thick: rgb(255 255 255 / 0.86);
+  --color-material-overlay: rgb(28 28 30 / 0.72);
+  --color-material-overlay-solid: rgb(28 28 30 / 0.92);
+
+  /* Charts (admin) */
+  --color-chart-1: #0071e3;
+  --color-chart-2: #c95f00;
+  --color-chart-3: #9a4fd6;
+  --color-chart-4: #1a8a72;
+  --color-chart-grid: #e8e8ed;
+  --color-chart-muted: #86868b;
+
+  /* Type */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, var(--font-inter), system-ui, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1rem;
+  --text-caption--letter-spacing: 0em;
+  --text-caption--font-weight: 400;
+  --text-footnote: 0.8125rem;
+  --text-footnote--line-height: 1.125rem;
+  --text-footnote--letter-spacing: -0.003em;
+  --text-footnote--font-weight: 400;
+  --text-callout: 0.9375rem;
+  --text-callout--line-height: 1.25rem;
+  --text-callout--letter-spacing: -0.008em;
+  --text-callout--font-weight: 400;
+  --text-body: 1.0625rem;
+  --text-body--line-height: 1.5625rem;
+  --text-body--letter-spacing: -0.016em;
+  --text-body--font-weight: 400;
+  --text-headline: 1.0625rem;
+  --text-headline--line-height: 1.375rem;
+  --text-headline--letter-spacing: -0.016em;
+  --text-headline--font-weight: 600;
+  --text-intro: 1.1875rem;
+  --text-intro--line-height: 1.6875rem;
+  --text-intro--letter-spacing: -0.008em;
+  --text-intro--font-weight: 400;
+  --text-title-3: 1.25rem;
+  --text-title-3--line-height: 1.5rem;
+  --text-title-3--letter-spacing: -0.008em;
+  --text-title-3--font-weight: 600;
+  --text-title-2: 1.5rem;
+  --text-title-2--line-height: 1.75rem;
+  --text-title-2--letter-spacing: -0.01em;
+  --text-title-2--font-weight: 600;
+  --text-title-1: 1.75rem;
+  --text-title-1--line-height: 2rem;
+  --text-title-1--letter-spacing: -0.012em;
+  --text-title-1--font-weight: 600;
+  --text-display-2: 2.5rem;
+  --text-display-2--line-height: 2.75rem;
+  --text-display-2--letter-spacing: -0.014em;
+  --text-display-2--font-weight: 600;
+  --text-display-1: 3rem;
+  --text-display-1--line-height: 3.25rem;
+  --text-display-1--letter-spacing: -0.016em;
+  --text-display-1--font-weight: 600;
+
+  /* Shape */
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1.125rem;
+  --radius-xl: 1.75rem;
+
+  /* Elevation: read through the elevation-* utilities so dark mode can swap them */
+  --elevation-1: 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 16px rgb(0 0 0 / 0.06);
+  --elevation-2: 0 2px 6px rgb(0 0 0 / 0.04), 0 12px 32px rgb(0 0 0 / 0.1);
+  --elevation-3: 0 4px 12px rgb(0 0 0 / 0.06), 0 24px 64px rgb(0 0 0 / 0.18);
+  --elevation-thumb: 0 3px 8px rgb(0 0 0 / 0.12), 0 3px 1px rgb(0 0 0 / 0.04);
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --animate-spin: spin 0.8s linear infinite;
+  --animate-live-pulse: live-pulse 1.6s var(--ease-standard) 3;
+  --animate-indeterminate: indeterminate 1.2s var(--ease-standard) infinite;
+  --animate-number-in: number-in 250ms var(--ease-out);
+
+  @keyframes spin {
+    to {
+      transform: rotate(1turn);
+    }
+  }
+  @keyframes live-pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  @keyframes number-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+  @keyframes indeterminate {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(250%);
+    }
+  }
+
+  /* Layout */
+  --breakpoint-sm: 735px;
+  --breakpoint-md: 1069px;
+  --breakpoint-lg: 1441px;
+
+  --container-form: 37.5rem;
+  --container-text: 42.5rem;
+  --container-content: 61.25rem;
+  --container-wide: 75rem;
+}
+
+@layer base {
+  /* color-scheme sits with the tokens so the dark rule overrides it at equal specificity, later in source. */
+  :root,
+  [data-theme="dark"] {
+    color-scheme: light;
+
+    @variant dark {
+      color-scheme: dark;
+
+      --color-bg: #000000;
+      --color-bg-secondary: #1c1c1e;
+      --color-canvas: #000000;
+      --color-surface: #1c1c1e;
+      --color-surface-raised: #2c2c2e;
+
+      --color-fill: rgb(120 120 128 / 0.36);
+      --color-fill-secondary: rgb(120 120 128 / 0.32);
+      --color-fill-tertiary: rgb(118 118 128 / 0.24);
+      --color-fill-quaternary: rgb(118 118 128 / 0.18);
+
+      --color-label: #f5f5f7;
+      --color-label-secondary: #a1a1a6;
+      --color-label-tertiary: #7c7c80;
+
+      --color-separator: #424245;
+      --color-control: #7c7c80;
+      --color-thumb: #636366;
+      --color-scrim: rgb(0 0 0 / 0.6);
+
+      --color-accent-label: #409cff;
+      --color-accent-tint: rgb(64 156 255 / 0.14);
+      --color-accent-tint-hover: rgb(64 156 255 / 0.18);
+
+      --color-success: #30d158;
+      --color-success-tint: rgb(48 209 88 / 0.16);
+      --color-warning: #ff9f0a;
+      --color-warning-tint: rgb(255 159 10 / 0.16);
+      --color-danger: #ff6961;
+      --color-danger-tint: rgb(255 69 58 / 0.16);
+      --color-danger-tint-hover: rgb(255 69 58 / 0.2);
+
+      --color-focus: #409cff;
+
+      --color-material-bar: rgb(22 22 23 / 0.8);
+      --color-material-bar-solid: #161617;
+      --color-material-thick: rgb(44 44 46 / 0.86);
+
+      --color-chart-1: #2b8cf2;
+      --color-chart-2: #d97400;
+      --color-chart-3: #a35ee6;
+      --color-chart-4: #1f9a80;
+      --color-chart-grid: #2c2c2e;
+      --color-chart-muted: #7c7c80;
+
+      --elevation-1: 0 0 0 1px rgb(255 255 255 / 0.06);
+      --elevation-2: 0 0 0 1px rgb(255 255 255 / 0.08), 0 12px 32px rgb(0 0 0 / 0.5);
+      --elevation-3: 0 0 0 1px rgb(255 255 255 / 0.08), 0 24px 64px rgb(0 0 0 / 0.6);
+      --elevation-thumb: 0 3px 8px rgb(0 0 0 / 0.24);
+    }
+  }
+}

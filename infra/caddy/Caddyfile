@@ -1,0 +1,75 @@
+# FlashDrop edge (design §2, §7, §8.1, §15): one origin, http://127.0.0.1:8080, for browsers, Playwright
+# and k6, so the fd_session cookie and same-origin /ws work without CORS.
+#
+#   /_internal/*               404: web's revalidation route is reachable only on the Compose network
+#   /ws/1, /ws/2               api-1, api-2 (pinned, so cross-instance tests are deterministic, §7)
+#   /api/*, /uploads/*, /ws    api-1 and api-2, round robin, no sticky sessions
+#   everything else            web
+#
+# WebSocket upgrades need no extra configuration. Caddy also sets X-Forwarded-For/-Proto/-Host and ignores
+# any the client sent, so the api can trust them from this hop only.
+{
+	# Plain HTTP on a local port: no certificates and no :80 -> :443 redirect listener.
+	auto_https off
+}
+
+:8080 {
+	# Next's streamed responses still flush per chunk through the encoder; 101 upgrades are left alone.
+	encode zstd gzip
+
+	header {
+		# Applied after the upstream wrote its headers, so these values win and the deletions see them.
+		defer
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Cross-Origin-Opener-Policy same-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		# No Strict-Transport-Security: the edge serves plain HTTP.
+		-Server
+		-X-Powered-By
+	}
+
+	# The path matcher compares the decoded, case-insensitive path, so /%5Finternal/... is caught as well.
+	@internal path /_internal /_internal/*
+	handle @internal {
+		respond 404
+	}
+
+	handle /ws/1 {
+		rewrite * /ws
+		reverse_proxy api-1:4000
+	}
+
+	handle /ws/2 {
+		rewrite * /ws
+		reverse_proxy api-2:4000
+	}
+
+	@api path /api/* /uploads/* /ws
+	handle @api {
+		reverse_proxy api-1:4000 api-2:4000 {
+			lb_policy round_robin
+			# A stopped instance fails at dial time, before any byte of the request is sent, so retrying on
+			# the other one is safe for every method, POST included. It then sits out fail_duration.
+			lb_try_duration 3s
+			fail_duration 10s
+			# Active checks take a stopped instance out within a couple of seconds, before a request has to
+			# fail over. Liveness, not readiness: when Postgres is down, every instance should still answer
+			# with its own 503 problem rather than Caddy reporting no upstreams.
+			health_uri /api/v1/health/live
+			health_interval 2s
+			health_timeout 1s
+			transport http {
+				# Docker's DNS stops answering for a stopped container's name, so the lookup hangs until the
+				# dial times out. The default 3 s would use up lb_try_duration and the request would 502
+				# without a retry (observed); 1 s leaves room to retry on the other instance.
+				dial_timeout 1s
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

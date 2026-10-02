@@ -1,0 +1,128 @@
+@utility page-* {
+  width: min(100% - 2 * (var(--page-margin) + var(--safe-x)), --value(--container-*));
+  margin-inline: auto;
+}
+
+/* Admin's 1440 px container has no --container-full token: a theme key named "full" would also turn Tailwind's
+   w-full, min-w-full and max-w-full into 1440 px. */
+@utility page-full {
+  width: min(100% - 2 * (var(--page-margin) + var(--safe-x)), 90rem);
+  margin-inline: auto;
+}
+
+@utility elevation-* {
+  box-shadow: --value(--elevation-*);
+}
+
+@utility material-bar {
+  background-color: var(--color-material-bar);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    background-color: var(--color-material-bar-solid);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    background-color: var(--color-material-bar-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@utility material-thick {
+  background-color: var(--color-material-thick);
+  -webkit-backdrop-filter: saturate(180%) blur(30px);
+  backdrop-filter: saturate(180%) blur(30px);
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    background-color: var(--color-surface-raised);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    background-color: var(--color-surface-raised);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@utility material-overlay {
+  --color-label: #ffffff;
+  --color-label-secondary: rgb(255 255 255 / 0.8);
+  --color-focus: #ffffff;
+  color: var(--color-label);
+  background-color: var(--color-material-overlay);
+  -webkit-backdrop-filter: saturate(160%) blur(24px);
+  backdrop-filter: saturate(160%) blur(24px);
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    background-color: var(--color-material-overlay-solid);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    background-color: var(--color-material-overlay-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@utility skeleton {
+  border-radius: var(--radius-sm);
+  background-color: var(--color-fill-quaternary);
+}
+
+/* The product gallery from 1069 px, as a flex item of the page-wide layout (so 100% is the page's width): 7 of the
+   12 grid columns with their 6 gaps (§4.4), but no wider than lets the 4:5 photo and the thumbnail row below it
+   (64 + 16 px, plus 16 px of air) fit the window under the navigation bar and the layout's 48 px top padding
+   (§1.2, §10.2). Never narrower than 384 px, so a very short window scrolls rather than shrinking it. */
+@utility gallery-fit {
+  --gallery-columns: calc((100% + var(--grid-gap)) * 7 / 12 - var(--grid-gap));
+  --gallery-window: calc((100svh - env(safe-area-inset-top) - var(--nav-height) - 3rem - 6rem) * 0.8);
+  width: min(var(--gallery-columns), max(24rem, var(--gallery-window)));
+}
+
+/* A scroll container whose position is shown another way (the gallery's dots and thumbnails). */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* A popover under the navigation bar's trailing edge (the account menu). It lives in the top layer, placed
+   against the viewport: the bar's content is page-wide, so its end sits max(margin, (100% - 1200px) / 2)
+   from the right. It fades in; with full motion it also scales from 0.96 out of its corner (§6.4). The scale
+   exists only inside the no-preference query, so under reduced motion nothing can override it back in: the
+   overlay only fades (§6.5). */
+@utility popover-nav-end {
+  inset: auto;
+  top: calc(env(safe-area-inset-top) + var(--nav-height) + 0.5rem);
+  right: max(calc(var(--page-margin) + var(--safe-x)), calc((100% - var(--container-wide)) / 2));
+  margin: 0;
+  transform-origin: top right;
+  opacity: 0;
+  transition:
+    opacity 200ms var(--ease-in),
+    overlay 200ms allow-discrete,
+    display 200ms allow-discrete;
+  &:popover-open {
+    opacity: 1;
+    transition-duration: 300ms;
+    transition-timing-function: var(--ease-out);
+  }
+  @starting-style {
+    &:popover-open {
+      opacity: 0;
+    }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    scale: 0.96;
+    transition:
+      opacity 200ms var(--ease-in),
+      scale 200ms var(--ease-in),
+      overlay 200ms allow-discrete,
+      display 200ms allow-discrete;
+    &:popover-open {
+      scale: 1;
+    }
+    @starting-style {
+      &:popover-open {
+        scale: 0.96;
+      }
+    }
+  }
+}

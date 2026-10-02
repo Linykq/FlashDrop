@@ -17,19 +17,32 @@
     "typecheck:root": "tsc",
     "test": "vitest run --project unit",
     "test:int": "vitest run --project integration",
+    "test:e2e": "playwright test",
+    "e2e:install": "playwright install chromium",
     "infra:up": "docker compose up --detach --wait postgres redis kafka && docker compose run --rm kafka-init",
     "infra:down": "docker compose --profile \"*\" down",
     "infra:logs": "docker compose logs --follow --tail=100",
+    "stack:up": "docker buildx bake --file docker-bake.hcl --load && docker compose --profile app up --detach --wait --wait-timeout 300",
+    "stack:down": "docker compose --profile app rm --stop --force migrate api-1 api-2 web caddy",
+    "stack:logs": "docker compose --profile app logs --follow --tail=100 migrate api-1 api-2 web caddy",
     "docs:diagrams": "tsx tools/render-diagrams.ts",
-    "check:native": "tsx tools/check-native.ts"
+    "check:native": "tsx tools/check-native.ts",
+    "db:migrate": "tsx packages/db/src/cli/migrate.ts",
+    "db:seed": "tsx packages/db/src/cli/seed.ts",
+    "db:reset-dev": "tsx packages/db/src/cli/reset-dev.ts"
   },
   "devDependencies": {
+    "@axe-core/playwright": "catalog:",
     "@biomejs/biome": "catalog:",
+    "@flashdrop/contracts": "workspace:*",
+    "@playwright/test": "catalog:",
     "@types/node": "catalog:",
+    "tsup": "catalog:",
     "tsx": "catalog:",
     "turbo": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "zod": "catalog:"
   }
 }

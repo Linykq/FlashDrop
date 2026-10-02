@@ -2,7 +2,11 @@
   "name": "@flashdrop/domain",
   "private": true,
   "type": "module",
-  "exports": "./src/index.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./identity": "./src/identity.ts"
+  },
   "scripts": {
     "typecheck": "tsc"
   }

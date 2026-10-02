@@ -1,0 +1,63 @@
+# syntax=docker/dockerfile:1.27
+
+# The `node` image (design §2, §14): api, worker and payment-mock, and the one-shot `migrate` job, all from
+# one image. Built with the repo root as context by `docker buildx bake node` (docker-bake.hcl).
+#
+#   build arg APPS   space-separated directories under apps/ to bundle (default "api"); each one runs as
+#                    `node apps/<app>/dist/main.js`
+#   migrate job      `node packages/db/dist/cli/migrate.js`, then `node packages/db/dist/cli/seed.js`
+#                    (migrations in packages/db/drizzle, seed photos in assets/catalog)
+#
+# tsup bundles the workspace code (infra/docker/tsup.config.ts). Third-party packages come from a
+# production install made on Linux, which builds the native bindings that pnpm's allow-list permits.
+# The layout under /app mirrors the repo, so a path an entry file resolves from import.meta.url matches
+# the source tree (details in tsup.config.ts).
+
+ARG NODE_IMAGE=node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
+
+# ---------------------------------------------------------------- pnpm, the version in package.json
+FROM ${NODE_IMAGE} AS pnpm
+ENV CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+WORKDIR /repo
+COPY package.json ./
+RUN corepack enable pnpm && corepack install
+
+# ---------------------------------------------------------------- install inputs only
+# Manifests and the lockfile alone, so a source edit never invalidates the install layers.
+FROM pnpm AS manifests
+COPY --parents pnpm-lock.yaml pnpm-workspace.yaml */package.json */*/package.json ./
+
+# ---------------------------------------------------------------- bundle
+FROM manifests AS build
+ARG APPS=api
+# The root project brings tsup; @flashdrop/db... covers the migrate and seed entries. `{./apps/<app>}...`
+# needs its braces: `./apps/<app>...` selects the directory alone, without the workspace packages it uses.
+RUN --mount=type=cache,id=flashdrop-pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --store-dir=/pnpm/store \
+      --filter=. --filter=@flashdrop/db... $(printf -- '--filter={./apps/%s}... ' ${APPS})
+COPY . .
+RUN pnpm exec tsup --config infra/docker/tsup.config.ts
+
+# ---------------------------------------------------------------- production dependencies, all hoisted
+# Bundling moves each workspace package's third-party imports into the entry file, so every package must
+# resolve from apps/<app>/dist. shamefully-hoist links all of them into the root node_modules. (The
+# hoisted node-linker would too, but it ignores --filter and installs the whole workspace, Next included.)
+FROM manifests AS prod-deps
+ARG APPS=api
+RUN --mount=type=cache,id=flashdrop-pnpm-store,target=/pnpm/store \
+    pnpm install --prod --frozen-lockfile --store-dir=/pnpm/store --config.shamefully-hoist=true \
+      --filter=@flashdrop/db... $(printf -- '--filter={./apps/%s}... ' ${APPS})
+
+# ---------------------------------------------------------------- runtime
+FROM ${NODE_IMAGE} AS runtime
+ENV NODE_ENV=production NODE_OPTIONS=--enable-source-maps
+WORKDIR /app
+COPY --from=prod-deps /repo/ ./
+COPY --from=build /repo/out/ ./
+COPY packages/db/drizzle/ packages/db/drizzle/
+COPY assets/catalog/ assets/catalog/
+COPY infra/docker/healthcheck.mjs ./
+# Compose mounts the shared uploads volume here; a new named volume copies this directory's ownership.
+RUN install --directory --owner=node --group=node /data/uploads
+USER node
+CMD ["node", "apps/api/dist/main.js"]

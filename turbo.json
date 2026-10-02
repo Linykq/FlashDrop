@@ -11,7 +11,14 @@
       "dependsOn": ["^typecheck", "//#typecheck:root"]
     },
     "//#typecheck:root": {
-      "inputs": ["tsconfig.json", "tsconfig.base.json", "vitest.config.ts"]
+      "inputs": [
+        "tsconfig.json",
+        "tsconfig.base.json",
+        "vitest.config.ts",
+        "playwright.config.ts",
+        "tests/e2e/**",
+        "infra/docker/*.ts"
+      ]
     },
     "//#lint": {},
     "//#test": {},

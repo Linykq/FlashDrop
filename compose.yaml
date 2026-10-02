@@ -2,14 +2,44 @@
 #
 #   pnpm infra:up    data stores, then the one-shot kafka-init (`up --wait` does not wait for one-shot jobs)
 #   pnpm infra:down  stops the stack; named volumes keep the data
+#   pnpm stack:up    builds the images (docker-bake.hcl), then the full stack on http://127.0.0.1:8080
+#   pnpm stack:down  removes the application containers; the data stores keep running
 #   docker compose --profile tools up -d kafka-ui    Kafka UI on http://127.0.0.1:8081
 #
-# Every published port binds to 127.0.0.1. Images are pinned by tag and multi-arch index digest.
-# The application services (migrate, api-1, api-2, web, worker, consumers, payment-mock, caddy) join from
-# M1 under the "app" profile. They depend on `kafka-init` and `migrate` with
-# `condition: service_completed_successfully`, because `up --wait` treats a running one-shot job as ready.
+# Every published port binds to 127.0.0.1. Images are pinned by tag and multi-arch index digest, except the
+# two built here. The application services run under the "app" profile and depend on `kafka-init` and
+# `migrate` with `condition: service_completed_successfully`, because `up --wait` treats a running one-shot
+# job as ready.
 
 name: flashdrop
+
+# Shared by the application services built from this repo (profile: app).
+x-app-service: &app-service
+  profiles: [app]
+  # The images exist only locally, from `docker buildx bake`. Never pull: a missing image must fail rather
+  # than fetch a namesake from Docker Hub.
+  pull_policy: never
+  # tini as PID 1 forwards SIGTERM to Node and reaps children.
+  init: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+
+# Inside the Compose network: service names and the containers' ports, not the host's 127.0.0.1:5433.
+x-app-env: &app-env
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: postgres://flashdrop:flashdrop@postgres:5432/flashdrop
+  REDIS_URL: redis://redis:6379
+  KAFKA_BROKERS: kafka:19092
+  UPLOAD_DIR: /data/uploads
+
+# Probes every second while a container starts, so `up --wait` returns soon after it is ready.
+x-app-healthcheck: &app-healthcheck
+  interval: 10s
+  timeout: 3s
+  retries: 3
+  start_period: 60s
+  start_interval: 1s
 
 services:
   # ---------------------------------------------------------------- data stores (always on)
@@ -119,7 +149,104 @@ services:
       retries: 30
       start_period: 20s
 
+  # ---------------------------------------------------------------- application (profile: app)
+
+  migrate:
+    <<: *app-service
+    image: flashdrop/node:${IMAGE_TAG:-dev}
+    # Migrations, then the demo seed (and its photos into the uploads volume); it runs on every `stack:up`.
+    # The directories are explicit because the bundles resolve paths from their own location (Dockerfile.node).
+    command:
+      - sh
+      - -c
+      - >-
+        node packages/db/dist/cli/migrate.js --migrations-dir /app/packages/db/drizzle
+        && exec node packages/db/dist/cli/seed.js --catalog-dir /app/assets/catalog
+    environment:
+      <<: *app-env
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # The seed arms its drop through the same service as the admin route, which syncs Redis (§15).
+      redis:
+        condition: service_healthy
+    restart: 'no'
+
+  api-1: &api
+    <<: *app-service
+    image: flashdrop/node:${IMAGE_TAG:-dev}
+    hostname: api-1
+    command: [node, apps/api/dist/main.js]
+    environment:
+      <<: *app-env
+      # All interfaces: Caddy and web reach the api over the Compose network.
+      HOST: 0.0.0.0
+      PORT: '4000'
+      API_ROLES: http,ws
+      SESSION_SECRET: ${SESSION_SECRET:-dev-only-session-secret-not-for-production}
+      WS_ALLOWED_ORIGINS: http://127.0.0.1:8080
+      # `ENABLE_TEST_ROUTES=true pnpm stack:up` mounts /api/v1/test/* for Playwright and k6 (§13).
+      ENABLE_TEST_ROUTES: ${ENABLE_TEST_ROUTES:-false}
+      TEST_ROUTES_SECRET: ${TEST_ROUTES_SECRET:-dev-only-test-routes-secret}
+    networks:
+      default:
+        # `api` resolves to both instances, for web's server-side calls (API_INTERNAL_URL).
+        aliases: [api]
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      <<: *app-healthcheck
+      test: [CMD, node, healthcheck.mjs, http://127.0.0.1:4000/api/v1/health]
+
+  api-2:
+    <<: *api
+    hostname: api-2
+
+  web:
+    <<: *app-service
+    image: flashdrop/web:${IMAGE_TAG:-dev}
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      API_INTERNAL_URL: http://api:4000
+      SESSION_SECRET: ${SESSION_SECRET:-dev-only-session-secret-not-for-production}
+      REVALIDATE_SECRET: ${REVALIDATE_SECRET:-dev-only-revalidate-secret-not-for-production}
+    healthcheck:
+      <<: *app-healthcheck
+      # A route prerendered at build time, so it shows that the Next server routes requests without calling
+      # the api: probing a page would read stock from Postgres every 10 s and tie web's health to the api's.
+      test: [CMD, node, healthcheck.mjs, http://127.0.0.1:3000/icon.svg]
+
+  caddy:
+    image: caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
+    profiles: [app]
+    ports:
+      - 127.0.0.1:8080:8080
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      web:
+        condition: service_healthy
+      api-1:
+        condition: service_healthy
+      api-2:
+        condition: service_healthy
+    healthcheck:
+      <<: *app-healthcheck
+      # The admin API answers once the config, and with it the :8080 listener, is loaded.
+      test: [CMD, wget, --quiet, --output-document=/dev/null, http://127.0.0.1:2019/config/]
+
 volumes:
   postgres-data:
   redis-data:
   kafka-data:
+  # Listing photos: written by api, read by the worker's listing role (§10).
+  uploads:

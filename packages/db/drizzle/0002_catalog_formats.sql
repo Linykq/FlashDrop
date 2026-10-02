@@ -1,0 +1,4 @@
+ALTER TABLE "drops" ADD CONSTRAINT "drops_currency_check" CHECK ("drops"."currency" ~ '^[A-Z]{3}$');--> statement-breakpoint
+ALTER TABLE "products" ADD CONSTRAINT "products_slug_check" CHECK ("products"."slug" ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$' AND char_length("products"."slug") <= 96);--> statement-breakpoint
+ALTER TABLE "products" ADD CONSTRAINT "products_image_keys_check" CHECK (cardinality("products"."image_keys") = 0 OR array_to_string("products"."image_keys", ',', '') ~ '^[0-9a-f]{64}\.jpg(?:,[0-9a-f]{64}\.jpg)*$');--> statement-breakpoint
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_slug_check" CHECK ("rooms"."slug" ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$' AND char_length("rooms"."slug") <= 96);

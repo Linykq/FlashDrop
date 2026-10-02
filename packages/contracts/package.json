@@ -2,8 +2,13 @@
   "name": "@flashdrop/contracts",
   "private": true,
   "type": "module",
+  "sideEffects": false,
   "exports": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@flashdrop/domain": "workspace:*",
+    "zod": "catalog:"
   }
 }

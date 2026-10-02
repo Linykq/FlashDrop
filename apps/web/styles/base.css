@@ -1,0 +1,218 @@
+@layer base {
+  :root {
+    --nav-height: 3rem;
+    --page-margin: 1.25rem;
+    --section-space: 4rem;
+    --grid-gap: 1rem;
+    --safe-x: max(env(safe-area-inset-left), env(safe-area-inset-right));
+    --bottom-bar-height: 0px;
+    --z-raised: 10;
+    --z-sticky: 20;
+    --z-nav: 30;
+    --z-toast: 40;
+    --z-skip-link: 50;
+    scrollbar-gutter: stable;
+    scroll-padding-block: calc(var(--nav-height) + 1rem) calc(var(--bottom-bar-height) + 1rem);
+  }
+
+  /* Apple platforms render SF Pro (§3.1), which takes apple.com's tracking rather than Inter's (§3.2). */
+  :root[data-font="sf"] {
+    --text-callout--letter-spacing: -0.016em;
+    --text-body--letter-spacing: -0.022em;
+    --text-headline--letter-spacing: -0.022em;
+    --text-intro--letter-spacing: 0.012em;
+    --text-title-3--letter-spacing: 0.012em;
+    --text-title-2--letter-spacing: 0.009em;
+    --text-title-1--letter-spacing: 0.007em;
+    --text-display-2--letter-spacing: 0em;
+    --text-display-1--letter-spacing: -0.003em;
+  }
+
+  /* Shown markers only; see the data-page rule below. */
+  :root:has([data-bottom-bar]:not([style*="display: none"], [style*="display: none"] *)) {
+    --bottom-bar-height: 4.5rem;
+  }
+
+  :root:has(dialog:modal) {
+    overflow: hidden;
+  }
+
+  @media (width >= 735px) {
+    :root {
+      --page-margin: 2rem;
+      --section-space: 5rem;
+      --grid-gap: 1.25rem;
+      --text-intro: 1.3125rem;
+      --text-intro--line-height: 1.8125rem;
+      --text-title-1: 2rem;
+      --text-title-1--line-height: 2.25rem;
+      --text-display-2: 3rem;
+      --text-display-2--line-height: 3.25rem;
+      --text-display-1: 4rem;
+      --text-display-1--line-height: 4.25rem;
+    }
+
+    :root[data-font="sf"] {
+      --text-intro--letter-spacing: 0.011em;
+      --text-title-1--letter-spacing: 0.004em;
+      --text-display-2--letter-spacing: -0.003em;
+      --text-display-1--letter-spacing: -0.009em;
+    }
+  }
+
+  @media (width >= 1069px) {
+    :root {
+      --page-margin: 2.5rem;
+      --section-space: 7rem;
+      --grid-gap: 1.5rem;
+      --text-title-2: 1.75rem;
+      --text-title-2--line-height: 2rem;
+      --text-title-1: 2.5rem;
+      --text-title-1--line-height: 2.75rem;
+      --text-display-2: 3.5rem;
+      --text-display-2--line-height: 3.75rem;
+      --text-display-1: 5rem;
+      --text-display-1--line-height: 5.25rem;
+    }
+
+    :root[data-font="sf"] {
+      --text-title-2--letter-spacing: 0.007em;
+      --text-title-1--letter-spacing: 0em;
+      --text-display-2--letter-spacing: -0.005em;
+      --text-display-1--letter-spacing: -0.015em;
+    }
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-label);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    font-weight: var(--text-body--font-weight);
+    line-height: var(--text-body--line-height);
+    letter-spacing: var(--text-body--letter-spacing);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* The page background is set on body and the root, not on a wrapper, so overscroll and the scrollbar match.
+     Next keeps visited routes mounted but hidden (React <Activity>, which puts an inline `display: none` on a
+     hidden route's top element), so a marker counts only while neither it nor an ancestor is hidden that way. */
+  body:has([data-page="grouped"]:not([style*="display: none"], [style*="display: none"] *)) {
+    background-color: var(--color-canvas);
+  }
+
+  /* The live room is always dark (§10.3). Its dark tokens are scoped to the route's wrapper and the root keeps the
+     light ones, so the dark bg value is written out here. */
+  :root:has([data-page="live"]:not([style*="display: none"], [style*="display: none"] *)),
+  :root:has([data-page="live"]:not([style*="display: none"], [style*="display: none"] *)) body {
+    color-scheme: dark;
+    background-color: #000000;
+  }
+
+  /* While a sticky bottom bar shows, the page also ends that much lower, so at the very bottom the bar covers
+     nothing of it, the footer included (§4.5, WCAG 2.4.11). */
+  :root:has([data-bottom-bar]:not([style*="display: none"], [style*="display: none"] *)) body {
+    padding-bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom));
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  p,
+  li,
+  dd {
+    text-wrap: pretty;
+  }
+
+  b,
+  strong {
+    font-weight: 600;
+  }
+
+  :focus-visible {
+    outline: 3px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-tint-hover);
+  }
+
+  input:autofill,
+  select:autofill,
+  textarea:autofill {
+    -webkit-text-fill-color: var(--color-label);
+    caret-color: var(--color-label);
+    box-shadow: inset 0 0 0 100vmax var(--color-surface);
+  }
+
+  dialog {
+    opacity: 0;
+    scale: 0.96;
+    transition:
+      opacity 200ms var(--ease-in),
+      scale 200ms var(--ease-in),
+      overlay 200ms allow-discrete,
+      display 200ms allow-discrete;
+  }
+
+  dialog[open] {
+    opacity: 1;
+    scale: 1;
+    transition-duration: 300ms;
+    transition-timing-function: var(--ease-sheet);
+  }
+
+  dialog::backdrop {
+    /* Older engines do not let ::backdrop inherit custom properties, hence the literal fallback. */
+    background-color: var(--color-scrim, rgb(0 0 0 / 0.4));
+    opacity: 0;
+    transition:
+      opacity 200ms var(--ease-in),
+      overlay 200ms allow-discrete,
+      display 200ms allow-discrete;
+  }
+
+  dialog[open]::backdrop {
+    opacity: 1;
+    transition-duration: 300ms;
+  }
+
+  @starting-style {
+    dialog[open] {
+      opacity: 0;
+      scale: 0.96;
+    }
+
+    dialog[open]::backdrop {
+      opacity: 0;
+    }
+  }
+
+  /* Below 735 px a sheet's panel moves with motion (§9.14) and close() runs after its exit, so the dialog box
+     must not fade or linger, and the backdrop starts fading when the exit starts (data-closing). */
+  @media (width < 735px) {
+    dialog[data-sheet] {
+      opacity: 1;
+      scale: none;
+      transition: none;
+    }
+
+    dialog[data-sheet][data-closing]::backdrop {
+      opacity: 0;
+      transition-duration: 200ms;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    dialog,
+    dialog[open] {
+      scale: none;
+    }
+  }
+}

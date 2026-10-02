@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1.27
+
+# The `web` image (design §2, §14): the Next.js standalone server. Built with the repo root as context by
+# `docker buildx bake web` (docker-bake.hcl). No api is reachable during this build, which the §8.1 build
+# rule requires anyway: pages read catalog data only at request time.
+#
+# Standalone output in a pnpm monorepo (spike §3.7): the tree mirrors the path from the tracing root, the
+# repo, so the server is apps/web/server.js. It contains neither .next/static nor public/ (which holds the
+# HLS sample), so both are copied next to it. Its traced node_modules uses pnpm's relative symlinks, which
+# COPY --from keeps as symlinks.
+
+ARG NODE_IMAGE=node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
+
+# ---------------------------------------------------------------- pnpm, the version in package.json
+FROM ${NODE_IMAGE} AS pnpm
+ENV CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+WORKDIR /repo
+COPY package.json ./
+RUN corepack enable pnpm && corepack install
+
+# ---------------------------------------------------------------- install inputs only
+# Manifests and the lockfile alone, so a source edit never invalidates the install layer.
+FROM pnpm AS manifests
+COPY --parents pnpm-lock.yaml pnpm-workspace.yaml */package.json */*/package.json ./
+
+# ---------------------------------------------------------------- next build
+FROM manifests AS build
+# The braces matter: `--filter=./apps/web...` selects the directory alone, without the workspace packages it
+# depends on, whose own dependencies (pino under @flashdrop/config) the build then cannot resolve.
+RUN --mount=type=cache,id=flashdrop-pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --store-dir=/pnpm/store '--filter={./apps/web}...'
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN --mount=type=cache,id=flashdrop-next-cache,target=/repo/apps/web/.next/cache \
+    pnpm --filter=./apps/web run build
+
+# ---------------------------------------------------------------- runtime
+FROM ${NODE_IMAGE} AS runtime
+# HOSTNAME is the address the standalone server binds. Docker would otherwise set it to the container id,
+# which binds one interface and leaves out loopback, where the healthcheck connects.
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000
+WORKDIR /app
+# Root-owned, so the server cannot rewrite its own code or dependencies, except apps/web/.next: the server
+# writes its prerender cache (.next/server) and image cache (.next/cache) there, so `node` owns that
+# directory. Excluding it from the first COPY keeps each file in one layer, where a later chown would
+# duplicate the whole tree.
+COPY --from=build --exclude=apps/web/.next /repo/apps/web/.next/standalone/ ./
+COPY --from=build --chown=node:node /repo/apps/web/.next/standalone/apps/web/.next/ apps/web/.next/
+COPY --from=build /repo/apps/web/.next/static/ apps/web/.next/static/
+COPY --from=build /repo/apps/web/public/ apps/web/public/
+COPY infra/docker/healthcheck.mjs ./
+USER node
+EXPOSE 3000
+CMD ["node", "apps/web/server.js"]

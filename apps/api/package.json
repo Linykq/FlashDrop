@@ -1,0 +1,20 @@
+{
+  "name": "@flashdrop/api",
+  "private": true,
+  "description": "REST /api/v1 and, from M5, the WebSocket gateway (Fastify; roles via API_ROLES).",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/main.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@fastify/cookie": "catalog:",
+    "@flashdrop/config": "workspace:*",
+    "@flashdrop/contracts": "workspace:*",
+    "@flashdrop/db": "workspace:*",
+    "@flashdrop/domain": "workspace:*",
+    "fastify": "catalog:",
+    "jose": "catalog:",
+    "zod": "catalog:"
+  }
+}

@@ -1,0 +1,31 @@
+# Build context for infra/docker/Dockerfile.node and Dockerfile.web (docker-bake.hcl, context ".").
+# The images install their own dependencies for Linux, so nothing host-built may leak in: a Windows
+# node_modules would carry win32 native bindings, and .next or dist would mask a stale build.
+
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+**/next-env.d.ts
+out
+build
+
+# Secrets never enter an image or the build cache.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Not read by any image build.
+.git
+.github
+.vscode
+.idea
+docs
+coverage
+playwright-report
+test-results
+blob-report
+uploads
+**/*.log
+CLAUDE*.md

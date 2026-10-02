@@ -30,6 +30,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # pnpm skips dependency build scripts that are not allow-listed; fail here, not at the first import.
       - run: pnpm check:native
+      # The migrator ignores edits to applied migrations and skips one that sorts before the last applied, so
+      # the committed SQL must be exactly what the schema generates (design §3, M0 delta 9). `check` catches
+      # snapshots that collide across branches; `generate` writes files only when the schema changed without
+      # its migration. The timeout bounds drizzle-kit's interactive rename prompt, which nobody can answer here.
+      - name: Check migrations match the schema
+        timeout-minutes: 2
+        run: |
+          pnpm --filter @flashdrop/db db:check
+          pnpm --filter @flashdrop/db db:generate
+          drift="$(git status --porcelain -- packages/db/drizzle)"
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            echo "::error::packages/db/drizzle is out of date: run 'pnpm --filter @flashdrop/db db:generate' and commit the migration."
+            exit 1
+          fi
       - run: pnpm turbo run lint typecheck test build
 
   integration:
@@ -58,4 +73,55 @@ jobs:
         with:
           name: compose-logs
           path: compose-logs.txt
+          retention-days: 7
+
+  e2e:
+    name: End-to-end tests (Compose stack)
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Every docker compose command in this job, the log collection included, applies the CI overrides.
+      COMPOSE_FILE: compose.yaml:compose.ci.yaml
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: docker/setup-buildx-action@v4
+      # docker-bake.hcl turns on the Actions layer cache when GITHUB_ACTIONS is set; this action exposes the
+      # runtime token that cache needs. `source: .` builds the checkout (with .dockerignore), not a Git URL,
+      # and `load` puts the images where Compose finds them (it never pulls them).
+      - name: Build images
+        uses: docker/bake-action@v7
+        with:
+          source: .
+          files: docker-bake.hcl
+          load: true
+      # The node image's first run, alone, against fresh Postgres: migrations and the seed. A broken bundle
+      # or a missing runtime dependency fails here with its own log instead of as an unhealthy stack.
+      # TODO(M2): also load the Functions library into Compose Redis from the image (design §14 smoke check).
+      - name: Smoke-check the node image
+        run: docker compose run --rm migrate
+      - name: Start the stack
+        run: docker compose --profile app up --detach --wait --wait-timeout 300
+      - run: pnpm e2e:install --with-deps
+      - run: pnpm test:e2e
+      - name: Collect Compose logs
+        if: failure()
+        run: docker compose --profile app logs --no-color --timestamps > compose-logs.txt
+      - name: Upload report, traces and logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-results
+          path: |
+            playwright-report/
+            test-results/
+            compose-logs.txt
           retention-days: 7

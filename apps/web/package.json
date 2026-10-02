@@ -1,0 +1,34 @@
+{
+  "name": "@flashdrop/web",
+  "private": true,
+  "description": "Storefront, live room, checkout and admin (Next.js App Router).",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 3000",
+    "build": "next build",
+    "start": "next start --hostname 127.0.0.1 --port 3000",
+    "lint": "biome check --error-on-warnings .",
+    "typecheck": "next typegen && tsc"
+  },
+  "dependencies": {
+    "@flashdrop/config": "workspace:*",
+    "@flashdrop/contracts": "workspace:*",
+    "@flashdrop/domain": "workspace:*",
+    "framer-motion": "catalog:",
+    "jose": "catalog:",
+    "lucide-react": "catalog:",
+    "next": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "@tailwindcss/postcss": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:"
+  }
+}
