@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { BugError } from './errors';
-import { checkoutFingerprint, requestFingerprint, uuidv5 } from './identity';
+import {
+  checkoutFingerprint,
+  fingerprintHex,
+  RID_NAMESPACE,
+  requestFingerprint,
+  reservationId,
+  uuidv5,
+  uuidv7,
+} from './identity';
 
 const DNS_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
@@ -47,5 +55,61 @@ describe('fingerprints', () => {
     expect(a).toEqual(
       sha256('{"orderId":"o1","paymentMethod":"pm_ok","shipping":{"country":"SE","name":"Ada"}}'),
     );
+  });
+});
+
+describe('reservationId', () => {
+  const ids = {
+    userId: '5eed0001-0000-4000-8000-000000000002',
+    dropId: '5eed0004-0000-4000-8000-000000000001',
+    idempotencyKey: 'key_0001-abcd',
+  };
+
+  it('is uuidv5(RID_NAMESPACE, userId:dropId:idempotencyKey)', () => {
+    expect(reservationId(ids)).toBe(
+      uuidv5(`${ids.userId}:${ids.dropId}:${ids.idempotencyKey}`, RID_NAMESPACE),
+    );
+    expect(reservationId(ids)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it('is stable for the same request, whatever the case of the uuids, and differs per key, user and drop', () => {
+    const rid = reservationId(ids);
+
+    expect(reservationId({ ...ids, dropId: ids.dropId.toUpperCase() })).toBe(rid);
+    expect(reservationId({ ...ids, idempotencyKey: 'key_0001-abce' })).not.toBe(rid);
+    expect(reservationId({ ...ids, userId: '5eed0001-0000-4000-8000-000000000003' })).not.toBe(rid);
+    expect(reservationId({ ...ids, dropId: '5eed0004-0000-4000-8000-000000000002' })).not.toBe(rid);
+  });
+
+  it('refuses a key or id that validation should have stopped', () => {
+    expect(() => reservationId({ ...ids, idempotencyKey: 'short' })).toThrow(BugError);
+    expect(() => reservationId({ ...ids, idempotencyKey: 'has:colon:inside' })).toThrow(BugError);
+    expect(() => reservationId({ ...ids, userId: 'user-1' })).toThrow(BugError);
+  });
+});
+
+describe('uuidv7', () => {
+  it('encodes the millisecond timestamp, version 7 and the RFC 9562 variant', () => {
+    const at = Date.UTC(2026, 9, 2, 12, 0, 0, 123);
+    const id = uuidv7(at);
+
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(Number.parseInt(id.replaceAll('-', '').slice(0, 12), 16)).toBe(at);
+  });
+
+  it('sorts by creation time and never repeats', () => {
+    const ids = [uuidv7(1_000), uuidv7(2_000), uuidv7(3_000)];
+
+    expect([...ids].sort()).toEqual(ids);
+    expect(new Set(Array.from({ length: 1_000 }, () => uuidv7())).size).toBe(1_000);
+  });
+});
+
+describe('fingerprintHex', () => {
+  it('is the lowercase hex Postgres encode(request_hash, hex) produces', () => {
+    expect(fingerprintHex(Buffer.from([0x00, 0xab, 0xff]))).toBe('00abff');
+    expect(fingerprintHex(requestFingerprint({ dropId: 'd', qty: 1 }))).toMatch(/^[0-9a-f]{64}$/);
   });
 });

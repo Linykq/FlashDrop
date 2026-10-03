@@ -25,7 +25,8 @@ describe('createPool', () => {
     });
     try {
       expect(pool.options).toMatchObject({
-        connectionTimeoutMillis: 2_000,
+        connectionTimeoutMillis: 5_000,
+        max: 32,
         options: '-c statement_timeout=2s -c transaction_timeout=5s',
       });
     } finally {

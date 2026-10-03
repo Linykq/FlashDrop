@@ -1,4 +1,14 @@
-import { ApiEnv, CoreEnv, type EnvSource, LlmEnv, loadEnv, PostgresEnv, SessionEnv } from '@flashdrop/config';
+import {
+  ApiEnv,
+  CoreEnv,
+  type EnvSource,
+  LlmEnv,
+  loadEnv,
+  PostgresEnv,
+  RedisEnv,
+  SessionEnv,
+  TestingEnv,
+} from '@flashdrop/config';
 import { z } from 'zod';
 
 /**
@@ -15,9 +25,12 @@ export const ListenEnv = z.object({
     .default(4000),
 });
 
-/** Everything the api reads from the environment. `LlmEnv` brings `UPLOAD_DIR`, shared with the worker. */
+/**
+ * Everything the api reads from the environment. `LlmEnv` brings `UPLOAD_DIR`, shared with the worker;
+ * `TestingEnv` mounts the test routes (§5.1) only with `ENABLE_TEST_ROUTES=true` and a secret.
+ */
 export function loadApiEnv(source?: EnvSource) {
-  return loadEnv([CoreEnv, PostgresEnv, SessionEnv, ApiEnv, LlmEnv, ListenEnv], source);
+  return loadEnv([CoreEnv, PostgresEnv, RedisEnv, SessionEnv, ApiEnv, LlmEnv, TestingEnv, ListenEnv], source);
 }
 
 export type ApiConfig = ReturnType<typeof loadApiEnv>;

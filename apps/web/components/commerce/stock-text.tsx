@@ -1,3 +1,4 @@
+import { WifiOff } from 'lucide-react';
 import { cx } from '../../lib/cx';
 import { describeStock, type StockState } from '../../lib/stock';
 import { Countdown } from './countdown';
@@ -17,13 +18,18 @@ type StockTextProps = {
    * `danger` loses its contrast there; the word "Only" carries the urgency (§2.5, §9.9).
    */
   onMaterial?: boolean;
+  /**
+   * Live updates stopped arriving (SD §7): the secondary line says so in place of numbers that may be stale,
+   * so the block keeps its height (§9.9).
+   */
+  paused?: boolean;
   className?: string;
 };
 
 /**
  * The stock block of LiveStock (§9.9): what is left, how much is claimed, and the meter. It renders one
- * snapshot, so SSR puts the number in the raw HTML (SD §8.1); the live island (M5) re-renders it from the
- * realtime store. It is not a live region: stock announcements go through the Announcer, on thresholds only.
+ * snapshot, so SSR puts the number in the raw HTML (SD §8.1); the live island re-renders it from the live
+ * stock store (`lib/live-stock.ts`). It is not a live region: stock announcements go through the Announcer, on thresholds only.
  * Every state takes the same height, so a state change never moves the layout.
  */
 export function StockText({
@@ -33,6 +39,7 @@ export function StockText({
   meter = 'md',
   layout = 'stacked',
   onMaterial = false,
+  paused = false,
   className,
 }: StockTextProps) {
   const view = describeStock(stock);
@@ -49,7 +56,17 @@ export function StockText({
       ) : (
         <>
           <p className={cx('text-headline tabular-nums', urgentText && 'text-danger')}>{primary}</p>
-          <p className="mt-1 text-footnote text-label-secondary tabular-nums">{view.secondary}</p>
+          <p className="mt-1 text-footnote text-label-secondary tabular-nums">
+            {paused ? (
+              // Top-aligned, so the 16 px icon never makes the 18 px line taller (§9.9 reserves the height).
+              <span className="inline-flex items-center gap-1.5 align-top">
+                <WifiOff size={16} />
+                Live updates paused
+              </span>
+            ) : (
+              view.secondary
+            )}
+          </p>
         </>
       )}
       {meter !== 'none' && (

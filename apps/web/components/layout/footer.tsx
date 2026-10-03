@@ -1,6 +1,7 @@
 import { ArrowUpRight } from 'lucide-react';
 import Link from 'next/link';
 import { cx } from '../../lib/cx';
+import { ORDERS_HREF } from '../../lib/routes';
 import { ThemeSwitcher } from '../theme/theme-switcher';
 import type { NavAccount } from './nav-bar';
 
@@ -28,6 +29,7 @@ export function Footer({ account, liveHref = null }: FooterProps) {
       title: 'Account',
       links: [
         { href: '/login', label: account ? 'Account' : 'Sign in' },
+        ...(account ? [{ href: ORDERS_HREF, label: 'Orders' }] : []),
         ...(account?.adminHref ? [{ href: account.adminHref, label: 'Admin' }] : []),
       ],
     },

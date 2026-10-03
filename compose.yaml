@@ -46,6 +46,11 @@ services:
 
   postgres:
     image: postgres:17.11@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+    # The default of 100 is too few for this shared dev and CI server: `pnpm test:int` runs its files in
+    # parallel, each with its own pools (the reserve and sweeper concurrency tests open up to 40 each), next
+    # to the running stack's api, worker and drop-lock pools. Past the limit a connect fails with 53300 "too
+    # many clients already", which surfaces as a random test failure. Idle backends cost little memory.
+    command: [postgres, -c, max_connections=300]
     environment:
       POSTGRES_USER: flashdrop
       POSTGRES_PASSWORD: flashdrop
@@ -71,6 +76,25 @@ services:
     volumes:
       - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
       - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # The integration tests' own Redis (vitest.config.ts points them here). The Functions library is global
+  # to a Redis, so a test run from an edited working tree must never load its Lua into the Redis the running
+  # stack executes, nor test against the stack's copy (§4.2, §13). The same server and configuration as
+  # `redis`, with its data on a tmpfs: tests create fresh drops and delete their keys.
+  redis-test:
+    image: redis:8.10.2@sha256:6f81e8915c60b065a524e6967e0ad1c639ba6efa84d669f823683ea04d9150ee
+    command: [redis-server, /usr/local/etc/redis/redis.conf]
+    ports:
+      - 127.0.0.1:6380:6379
+    volumes:
+      - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    tmpfs:
+      - /data
     healthcheck:
       test: [CMD, redis-cli, ping]
       interval: 2s
@@ -149,19 +173,45 @@ services:
       retries: 30
       start_period: 20s
 
+  # ---------------------------------------------------------------- load tests (profile: load)
+
+  # k6 runs the TypeScript scripts of tests/load natively (§13), through Caddy like a browser, against a
+  # stack that is already up with the test routes and the load profile's rate limits:
+  #   ENABLE_TEST_ROUTES=true RATE_LIMIT_IP_PER_SEC=100000 RATE_LIMIT_USER_PER_SEC=1000 pnpm stack:up
+  # (CI: compose.ci.yaml). No depends_on, so a run never starts or rebuilds the stack under test.
+  # `pnpm load:burst`:
+  #   docker compose --profile load run --rm k6 run /scripts/burst.ts -e PROFILE=ci
+  k6:
+    image: grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34
+    profiles: [load]
+    # The results bind mount is created by Docker (root) or the CI runner, never by the image's k6 user.
+    user: root
+    working_dir: /scripts
+    environment:
+      BASE_URL: http://caddy:8080
+      # api's CSRF guard admits only WS_ALLOWED_ORIGINS on mutating requests (§11).
+      ORIGIN: http://127.0.0.1:8080
+      TEST_SECRET: ${TEST_ROUTES_SECRET:-dev-only-test-routes-secret}
+      RESULTS_DIR: /results
+      K6_NO_USAGE_REPORT: 'true'
+    volumes:
+      - ./tests/load:/scripts:ro
+      - ./tests/load/results:/results
+
   # ---------------------------------------------------------------- application (profile: app)
 
   migrate:
     <<: *app-service
     image: flashdrop/node:${IMAGE_TAG:-dev}
-    # Migrations, then the demo seed (and its photos into the uploads volume); it runs on every `stack:up`.
-    # The directories are explicit because the bundles resolve paths from their own location (Dockerfile.node).
+    # Migrations, then the demo seed (and its photos into the uploads volume), which also arms the seeded
+    # drops in Redis (tools/seed.ts); it runs on every `stack:up`. The directories are explicit because the
+    # bundles resolve paths from their own location (Dockerfile.node).
     command:
       - sh
       - -c
       - >-
         node packages/db/dist/cli/migrate.js --migrations-dir /app/packages/db/drizzle
-        && exec node packages/db/dist/cli/seed.js --catalog-dir /app/assets/catalog
+        && exec node tools/dist/seed.js --catalog-dir /app/assets/catalog
     environment:
       <<: *app-env
     volumes:
@@ -190,6 +240,10 @@ services:
       # `ENABLE_TEST_ROUTES=true pnpm stack:up` mounts /api/v1/test/* for Playwright and k6 (§13).
       ENABLE_TEST_ROUTES: ${ENABLE_TEST_ROUTES:-false}
       TEST_ROUTES_SECRET: ${TEST_ROUTES_SECRET:-dev-only-test-routes-secret}
+      # Reserve rate limits (§11). k6 sends everything from one IP through Caddy, so a load run raises both:
+      # `RATE_LIMIT_IP_PER_SEC=100000 RATE_LIMIT_USER_PER_SEC=1000` (compose.ci.yaml does the same).
+      RATE_LIMIT_IP_PER_SEC: ${RATE_LIMIT_IP_PER_SEC:-100}
+      RATE_LIMIT_USER_PER_SEC: ${RATE_LIMIT_USER_PER_SEC:-10}
     networks:
       default:
         # `api` resolves to both instances, for web's server-side calls (API_INTERNAL_URL).
@@ -210,6 +264,30 @@ services:
   api-2:
     <<: *api
     hostname: api-2
+
+  # The singleton background loops (design §2, §4.6, §4.7). Each loop elects itself per tick through a
+  # Postgres advisory lock, so a second replica would only stand by.
+  worker:
+    <<: *app-service
+    image: flashdrop/node:${IMAGE_TAG:-dev}
+    hostname: worker
+    command: [node, apps/worker/dist/main.js]
+    environment:
+      <<: *app-env
+      # Only the roles built so far: relay joins in M3 and listing in M8; the worker refuses to start a role
+      # it does not have. payment, settlement and dashboard will run in `consumers`.
+      WORKER_ROLES: sweeper,reconciler
+      WEB_INTERNAL_URL: http://web:3000
+    depends_on:
+      # The seed has armed the drops the loops will look after.
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *app-healthcheck
+      # Healthy while every loop of every role completes its ticks (apps/worker/src/health.ts).
+      test: [CMD, node, healthcheck.mjs, http://127.0.0.1:4200/health]
 
   web:
     <<: *app-service

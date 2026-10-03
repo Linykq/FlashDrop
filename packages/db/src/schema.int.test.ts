@@ -38,7 +38,7 @@ async function rejection(statement: Promise<unknown>): Promise<string | undefine
 
 describe('migrations', () => {
   it('are recorded once, and a second run is a no-op', async () => {
-    expect(await migrateDatabase(test.pool)).toEqual({ applied: 0, total: 4 });
+    expect(await migrateDatabase(test.pool)).toEqual({ applied: 0, total: 6 });
   });
 
   it('create every named constraint (§3)', async () => {
@@ -108,7 +108,8 @@ describe('migrations', () => {
   it('create the named partial indexes (§3)', async () => {
     const { rows } = await test.pool.query<{ indexname: string; indexdef: string }>(
       `SELECT indexname, indexdef FROM pg_indexes
-       WHERE indexname IN ('one_open_drop_per_product', 'orders_due', 'orders_unsettled', 'outbox_pending')
+       WHERE indexname IN ('one_open_drop_per_product', 'orders_due', 'orders_unsettled', 'outbox_pending',
+                           'orders_drop_id', 'user_drop_quota_drop_id')
        ORDER BY indexname`,
     );
     const defs = Object.fromEntries(rows.map((row) => [row.indexname, row.indexdef]));
@@ -123,6 +124,10 @@ describe('migrations', () => {
       /ON public\.orders .*\(updated_at\) WHERE \(\(redis_settled_at IS NULL\)/,
     );
     expect(defs.outbox_pending).toMatch(/ON public\.outbox .*\(id\) WHERE \(published_at IS NULL\)$/);
+    expect(defs.orders_drop_id).toMatch(/ON public\.orders .*\(drop_id, id\)$/);
+    expect(defs.user_drop_quota_drop_id).toMatch(
+      /ON public\.user_drop_quota .*\(drop_id\) WHERE \(claimed > 0\)$/,
+    );
   });
 
   it('install the orders_guard trigger for inserts and updates', async () => {

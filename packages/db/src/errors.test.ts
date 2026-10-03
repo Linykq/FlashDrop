@@ -1,7 +1,14 @@
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
-import { constraintOf, isTransientDbError, pgErrorOf } from './errors';
+import {
+  constraintOf,
+  HotRowBusyError,
+  isPostgresUnavailableError,
+  isTransientDbError,
+  isUnknownUserError,
+  pgErrorOf,
+} from './errors';
 
 function databaseError(fields: Partial<pg.DatabaseError>): pg.DatabaseError {
   return Object.assign(new pg.DatabaseError('postgres said no', 0, 'error'), fields);
@@ -86,5 +93,58 @@ describe('isTransientDbError', () => {
   it('does not retry unrelated errors', () => {
     expect(isTransientDbError(new Error('boom'))).toBe(false);
     expect(isTransientDbError(undefined)).toBe(false);
+  });
+});
+
+describe('isUnknownUserError', () => {
+  it('recognises a reservation refused because its user does not exist', () => {
+    for (const constraint of ['orders_user_id_users_id_fk', 'user_drop_quota_user_id_users_id_fk']) {
+      expect(isUnknownUserError(wrapped(databaseError({ code: '23503', constraint })))).toBe(true);
+    }
+  });
+
+  it('ignores other foreign keys and other errors', () => {
+    expect(
+      isUnknownUserError(wrapped(databaseError({ code: '23503', constraint: 'orders_drop_id_drops_id_fk' }))),
+    ).toBe(false);
+    expect(
+      isUnknownUserError(wrapped(databaseError({ code: '23505', constraint: 'orders_user_id_users_id_fk' }))),
+    ).toBe(false);
+    expect(isUnknownUserError(new Error('x'))).toBe(false);
+  });
+});
+
+describe('isPostgresUnavailableError', () => {
+  it.each([
+    ['a lost connection', wrapped(new Error('Connection terminated unexpectedly'))],
+    ['a new session that timed out opening', new Error('Connection terminated due to connection timeout')],
+    ['a refused socket', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })],
+    ['too many connections', wrapped(databaseError({ code: '53300', severity: 'FATAL' }))],
+    ['a server shutting down', wrapped(databaseError({ code: '57P01', severity: 'FATAL' }))],
+    ['a server starting up', wrapped(databaseError({ code: '57P03', severity: 'FATAL' }))],
+    ['a statement Postgres could not finish in time', wrapped(databaseError({ code: '57014' }))],
+    ['a transaction past transaction_timeout', wrapped(databaseError({ code: '25P04', severity: 'FATAL' }))],
+  ])('counts %s', (_name, error) => {
+    expect(isPostgresUnavailableError(error)).toBe(true);
+  });
+
+  // Regression: under a burst against a healthy Postgres these opened the reserve breaker 19 times in
+  // 250 ms and turned away buyers before Lua.
+  it.each([
+    ['a full pool in this process', wrapped(new Error('timeout exceeded when trying to connect'))],
+    [
+      'the hot row queue past the statement timeout',
+      new HotRowBusyError('busy', { cause: wrapped(databaseError({ code: '57014' })) }),
+    ],
+    ['a serialization failure', wrapped(databaseError({ code: '40001' }))],
+    ['a deadlock', wrapped(databaseError({ code: '40P01' }))],
+  ])('does not count %s, which stays transient', (_name, error) => {
+    expect(isTransientDbError(error)).toBe(true);
+    expect(isPostgresUnavailableError(error)).toBe(false);
+  });
+
+  it('does not count errors that are the request’s own fault', () => {
+    expect(isPostgresUnavailableError(wrapped(databaseError({ code: '23505' })))).toBe(false);
+    expect(isPostgresUnavailableError(new Error('boom'))).toBe(false);
   });
 });

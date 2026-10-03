@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ImageKey, ProductAttributes, SessionUser } from '@flashdrop/contracts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { DROP_LOCK_NAMESPACE } from '../drops';
 import { createTestDatabase, type TestDatabase } from '../test-database';
 import { REPO_CATALOG_DIR } from './catalog';
 import { SEED_USERS } from './plan';
@@ -185,12 +186,22 @@ describe('seedDatabase', () => {
     const later = new Date(NOW.getTime() + 86_400_000);
     const before = await snapshot();
 
-    const again = await seedDatabase(test.db, {
-      catalogDir: REPO_CATALOG_DIR,
-      uploadDir,
-      logger,
-      now: later,
+    // Another writer of the drop's status (the scheduler, an admin action) holds its drop lock: the seed
+    // waits for it before moving the drop, like every writer of an armed drop's status (§4.7).
+    const holder = await test.pool.connect();
+    const [locked = ''] = first.dropIds;
+    const key = `hashtextextended('${DROP_LOCK_NAMESPACE}' || $1::text, 0)`;
+    await holder.query(`SELECT pg_advisory_lock(${key})`, [locked]);
+    let finished = false;
+    const seeding = seedDatabase(test.db, { catalogDir: REPO_CATALOG_DIR, uploadDir, logger, now: later });
+    void seeding.finally(() => {
+      finished = true;
     });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(finished).toBe(false);
+    await holder.query(`SELECT pg_advisory_unlock(${key})`, [locked]);
+    holder.release();
+    const again = await seeding;
 
     expect(again.created).toEqual({ users: 0, products: 0, drops: 0 });
     expect(again.movedDrops).toBe(3);

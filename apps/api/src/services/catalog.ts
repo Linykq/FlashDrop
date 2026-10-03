@@ -6,15 +6,18 @@ import {
   ProductAttributes,
   type ProductDetail,
 } from '@flashdrop/contracts';
-import { and, asc, type Db, desc, drops, eq, inArray, products, rooms, sql } from '@flashdrop/db';
-import { type DropStatus, PUBLIC_DROP_STATUSES } from '@flashdrop/domain';
+import { and, asc, type Db, desc, drops, eq, inArray, ne, products, rooms, sql } from '@flashdrop/db';
+import { alert, type DropStatus, PUBLIC_DROP_STATUSES } from '@flashdrop/domain';
 import { publicDropStatus } from './drop-status';
 import type { StockReader } from './stock';
 
 /** A catalog entry before its live stock is attached. */
 export type DropListing = Omit<DropSummary, 'stock'>;
 
-/** The public catalog: PUBLISHED products and their non-DRAFT drops (design §5.1, §8.1). */
+/**
+ * The public catalog: PUBLISHED products and their non-DRAFT drops (design §5.1, §8.1). Test products
+ * (`POST /test/drops`) have pages but are never listed, so specs and load runs leave the storefront alone.
+ */
 export interface CatalogStore {
   /** In the order `DropListResponse` documents. */
   listDrops(query: DropListQuery): Promise<DropListing[]>;
@@ -79,7 +82,9 @@ export function createPostgresCatalog(db: Db): CatalogStore {
         .from(drops)
         .innerJoin(products, eq(products.id, drops.productId))
         .leftJoin(rooms, eq(rooms.id, drops.roomId))
-        .where(and(inArray(drops.status, status), eq(products.status, 'PUBLISHED')))
+        .where(
+          and(inArray(drops.status, status), eq(products.status, 'PUBLISHED'), ne(products.source, 'test')),
+        )
         // ENDED drops newest first, so a limited "recently ended" list gets the latest ones, not the oldest.
         .orderBy(
           sql`CASE ${drops.status} WHEN 'LIVE' THEN 0 WHEN 'ENDED' THEN 2 ELSE 1 END`,
@@ -148,7 +153,7 @@ export async function listDropSummaries(
   return listings.flatMap((listing) => {
     const level = levels.get(listing.id);
     if (level === undefined) {
-      logger.error({ dropId: listing.id, alert: true }, 'public drop has no stock level');
+      alert(logger, 'stock_missing', { dropId: listing.id }, 'public drop has no stock level');
       return [];
     }
     return [{ ...listing, stock: level }];

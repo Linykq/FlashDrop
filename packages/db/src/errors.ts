@@ -31,6 +31,19 @@ export function constraintOf(error: unknown): string | undefined {
   return pgErrorOf(error)?.constraint;
 }
 
+/** The foreign keys from a reservation's rows to its user, as the migrations name them. */
+const USER_FOREIGN_KEYS = new Set(['orders_user_id_users_id_fk', 'user_drop_quota_user_id_users_id_fk']);
+
+/**
+ * True when a reservation was refused because its user does not exist: a session that outlived its account
+ * (a reset development database, an old load-test token). The caller is unauthenticated, not the server
+ * broken.
+ */
+export function isUnknownUserError(error: unknown): boolean {
+  const pg = pgErrorOf(error);
+  return pg?.code === '23503' && USER_FOREIGN_KEYS.has(pg.constraint ?? '');
+}
+
 /** SQLSTATEs where the same request may succeed if it is simply retried. */
 const TRANSIENT_SQLSTATES = new Set([
   '25P04', // transaction_timeout (observed in the M0 spike)
@@ -43,6 +56,9 @@ const TRANSIENT_SQLSTATES = new Set([
   '57P03', // cannot_connect_now (starting up)
 ]);
 
+/** `pg-pool` giving up after `connectionTimeoutMillis` waiting for a free connection of its full pool. */
+const POOL_EXHAUSTED_MESSAGE = 'timeout exceeded when trying to connect';
+
 /**
  * `pg` reports a lost or unobtainable connection with these messages and no SQLSTATE. The first two were
  * observed in the M0 spike; the last two are `pg-pool` giving up after `connectionTimeoutMillis`, waiting for
@@ -51,7 +67,7 @@ const TRANSIENT_SQLSTATES = new Set([
 const CONNECTION_LOST_MESSAGES = new Set([
   'Connection terminated unexpectedly',
   'Client has encountered a connection error and is not queryable',
-  'timeout exceeded when trying to connect',
+  POOL_EXHAUSTED_MESSAGE,
   'Connection terminated due to connection timeout',
 ]);
 
@@ -90,4 +106,35 @@ export function isTransientDbError(error: unknown): boolean {
     if ('code' in cause && typeof cause.code === 'string' && SOCKET_ERROR_CODES.has(cause.code)) return true;
   }
   return false;
+}
+
+/**
+ * A statement timeout while queued on a drop's hot inventory row behind other reservations (`takeStock`,
+ * §5.2). Transient (503 `RETRY`), but contention from this service's own winners, not a Postgres failure.
+ */
+export class HotRowBusyError extends Error {
+  override name = 'HotRowBusyError';
+}
+
+/** Transient errors that are contention from this service's own load, however long they last. */
+const CONTENTION_SQLSTATES = new Set(['40001', '40P01']);
+
+/**
+ * The transient errors that say Postgres itself is unavailable, for the reserve path's breaker (§5.2): it
+ * cannot be reached or refuses sessions (socket errors, class 08, a new session that timed out opening,
+ * too_many_connections), is shutting down or starting up (57P01-57P03), or cannot finish a statement or
+ * transaction in time (57014, 25P04) that did not queue on the hot row.
+ *
+ * Left out, though transient: this process's own pool being full (pg-pool's acquire timeout), a statement
+ * queued on the hot row past its timeout (`HotRowBusyError`), serialization failures and deadlocks. They
+ * are this service's own load on a healthy Postgres; a breaker that opened on them would turn away buyers
+ * that Lua alone would have answered, and flap with every burst.
+ */
+export function isPostgresUnavailableError(error: unknown): boolean {
+  if (!isTransientDbError(error)) return false;
+  for (const cause of causeChain(error)) {
+    if (cause instanceof HotRowBusyError || cause.message === POOL_EXHAUSTED_MESSAGE) return false;
+    if (cause instanceof pg.DatabaseError) return !CONTENTION_SQLSTATES.has(cause.code ?? '');
+  }
+  return true;
 }

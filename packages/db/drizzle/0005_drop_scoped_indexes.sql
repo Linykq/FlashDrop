@@ -1,0 +1,2 @@
+CREATE INDEX "orders_drop_id" ON "orders" USING btree ("drop_id","id");--> statement-breakpoint
+CREATE INDEX "user_drop_quota_drop_id" ON "user_drop_quota" USING btree ("drop_id") WHERE "user_drop_quota"."claimed" > 0;

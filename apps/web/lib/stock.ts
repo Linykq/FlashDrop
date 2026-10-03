@@ -24,6 +24,14 @@ export function toStockState(level: StockLevel, dropStatus: PublicDropStatus): S
   return { status: level.status === 'RECONCILING' ? dropStatus : level.status, avail, held, sold };
 }
 
+/** A server snapshot as the seed of the live store (`lib/live-stock.ts`), keeping its `(gen, seq)` version. */
+export function toLiveSeed(
+  level: StockLevel,
+  dropStatus: PublicDropStatus,
+): StockState & { gen: number; seq: number } {
+  return { ...toStockState(level, dropStatus), gen: level.gen, seq: level.seq };
+}
+
 /**
  * Urgent stock: few enough left that "Only" is honest (§9.9, §1.5). A large remainder reads "488 left", never
  * "Only 488 left", so urgency is never invented.

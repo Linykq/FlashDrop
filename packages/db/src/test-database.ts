@@ -6,9 +6,10 @@ import { migrateDatabase } from './migrate';
 import { createPool, POOL_PROFILES, type PoolOptions } from './pool';
 
 /*
- * Integration-test helper (not exported from the package): a throwaway database on the shared Compose
- * server. Migrations name the `public` schema explicitly, so a fresh database, not a fresh schema, is what
- * isolates a migrate test from the development database and from other test files.
+ * Integration-test helper, exported only as `@flashdrop/db/testing` (never from the package root): a
+ * throwaway database on the shared Compose server. Migrations name the `public` schema explicitly, so a
+ * fresh database, not a fresh schema, is what isolates a test file from the development database, from the
+ * running stack's loops (which track every armed drop in it) and from other test files.
  */
 
 export interface TestDatabase {

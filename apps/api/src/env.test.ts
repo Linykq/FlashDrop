@@ -15,6 +15,18 @@ describe('loadApiEnv', () => {
     expect(env).toMatchObject({ HOST: '0.0.0.0', PORT: 4000, API_ROLES: ['http'] });
   });
 
+  it('reads Redis, the rate limits and the test-route switch, closed by default', () => {
+    expect(loadApiEnv({ SESSION_SECRET: SECRET })).toMatchObject({
+      REDIS_URL: 'redis://127.0.0.1:6379',
+      RATE_LIMIT_USER_PER_SEC: 10,
+      RATE_LIMIT_IP_PER_SEC: 100,
+      ENABLE_TEST_ROUTES: false,
+    });
+    expect(() => loadApiEnv({ SESSION_SECRET: SECRET, ENABLE_TEST_ROUTES: 'true' })).toThrow(
+      /TEST_ROUTES_SECRET\s+is required/,
+    );
+  });
+
   it('fails fast on a bad port or a missing secret', () => {
     let error: unknown;
     try {

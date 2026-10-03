@@ -1,15 +1,14 @@
-import { LlmEnv, loadEnv } from '@flashdrop/config';
 import { sql } from 'drizzle-orm';
 import { migrateDatabase } from '../migrate';
 import { POOL_PROFILES } from '../pool';
-import { REPO_CATALOG_DIR, seedDatabase } from '../seed';
 import { transaction } from '../transaction';
 import { runScript } from './script';
 
 /*
- * pnpm db:reset-dev: drops every FlashDrop schema of a local development database, then migrates and seeds
- * it again, which also moves the seeded drops back around the current time. Photos in UPLOAD_DIR are
- * content-addressed and kept.
+ * The first step of `pnpm db:reset-dev`: drops every FlashDrop schema of a local development database, then
+ * migrates it again. The root script goes on with tools/reset-redis-dev.ts, which clears the drop states the
+ * dropped database left in Redis, and tools/seed.ts, which seeds and arms the drops around the current time.
+ * Photos in UPLOAD_DIR are content-addressed and kept.
  */
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
@@ -33,10 +32,6 @@ await runScript(
 
     const migrations = await migrateDatabase(pool);
     logger.info(migrations, 'migrations applied');
-
-    const { UPLOAD_DIR } = loadEnv([LlmEnv]);
-    // TODO(M2): pass armDrops, as in cli/seed.ts, and flush the reset drops' Redis keys.
-    await seedDatabase(db, { catalogDir: REPO_CATALOG_DIR, uploadDir: UPLOAD_DIR, logger });
   },
   // Fail fast instead of queueing behind a running `pnpm dev` that holds locks on the tables.
   { ...POOL_PROFILES.maintenance, settings: { lock_timeout: '5s' } },

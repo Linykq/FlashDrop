@@ -21,17 +21,25 @@ export interface PoolProfile {
    * burst or a Postgres restart becomes 503 `RETRY` instead of requests that hang.
    */
   readonly connectionTimeoutMillis: number;
+  /** Connections per process; `pg` defaults to 10. */
+  readonly max?: number;
 }
 
 /**
  * Per-role pool profiles (M0 spike §4.7). `api`: a reserve transaction can never outlive the orphan scan's
- * 30 s grace (§4.6), a stuck statement answers 503 instead of holding a hot row, and a request fails fast
- * rather than queueing behind a saturated pool. `relay`: a stuck publish batch releases its rows; it can
- * afford to wait longer for a connection than a buyer can. `maintenance` (migrations, the seed): no session
- * limits, because DDL on a real table may legitimately run long.
+ * 30 s grace (§4.6), and a stuck statement answers 503 instead of holding a hot row. Its pool is sized for
+ * the winners of a burst (every one holds a connection for its whole transaction, queued on the hot row),
+ * 32 per instance against Postgres's 300; and a request waits for a connection as long as a transaction may
+ * run (`transaction_timeout`), since one comes free by then at the latest: a burst queues briefly instead of
+ * failing at its opening. `relay`: a stuck publish batch releases its rows. `maintenance` (migrations, the
+ * seed): no session limits, because DDL on a real table may legitimately run long.
  */
 export const POOL_PROFILES = {
-  api: { settings: { statement_timeout: '2s', transaction_timeout: '5s' }, connectionTimeoutMillis: 2_000 },
+  api: {
+    settings: { statement_timeout: '2s', transaction_timeout: '5s' },
+    connectionTimeoutMillis: 5_000,
+    max: 32,
+  },
   relay: {
     settings: { idle_in_transaction_session_timeout: '30s', transaction_timeout: '20s' },
     connectionTimeoutMillis: 5_000,
@@ -44,7 +52,6 @@ export interface PoolOptions extends PoolProfile {
   readonly logger: Pick<Logger, 'warn'>;
   /** Shown in `pg_stat_activity`, e.g. `api` or `worker:relay`. */
   readonly applicationName?: string;
-  readonly max?: number;
 }
 
 /** `-c key=value` pairs for libpq's `options` startup parameter. */

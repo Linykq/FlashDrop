@@ -1,6 +1,6 @@
 import { RetryError } from '@flashdrop/domain';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { postgresCheck } from './health';
+import { postgresCheck, redisCheck } from './health';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -22,6 +22,22 @@ describe('postgresCheck', () => {
     vi.useFakeTimers();
     const pending = postgresCheck({ query: () => new Promise(() => undefined) }, 1_500)();
     const outcome = expect(pending).rejects.toBeInstanceOf(RetryError);
+    await vi.advanceTimersByTimeAsync(1_500);
+    await outcome;
+  });
+});
+
+describe('redisCheck', () => {
+  it('resolves on PONG and passes a failure on', async () => {
+    await expect(redisCheck({ ping: async () => 'PONG' })()).resolves.toBeUndefined();
+    const offline = new Error('The client is offline');
+    await expect(redisCheck({ ping: async () => Promise.reject(offline) })()).rejects.toBe(offline);
+  });
+
+  it('gives up after the timeout', async () => {
+    vi.useFakeTimers();
+    const pending = redisCheck({ ping: () => new Promise(() => undefined) }, 1_500)();
+    const outcome = expect(pending).rejects.toThrow('redis did not answer in time');
     await vi.advanceTimersByTimeAsync(1_500);
     await outcome;
   });

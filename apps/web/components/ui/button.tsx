@@ -1,11 +1,13 @@
-import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
-import type { ComponentProps, MouseEvent, ReactNode } from 'react';
+import type { ComponentProps, ComponentType, MouseEvent, ReactNode } from 'react';
 import { cx } from '../../lib/cx';
 import { Spinner } from './spinner';
 
 export type ButtonVariant = 'filled' | 'tinted' | 'gray' | 'plain';
 export type ButtonSize = 'sm' | 'md' | 'lg';
+
+/** A Lucide icon, or a component wrapping one (the Buy button's animated check), sized by the button. */
+export type ButtonIcon = ComponentType<{ size: number }>;
 
 /**
  * `destructive` swaps the text to `danger` (and a tinted fill to `danger-tint`) for "Leave" and "End drop".
@@ -82,8 +84,8 @@ type StyleProps = Appearance & {
   /** `rounded` is for full-width buttons in checkout, dialogs and the login card. */
   shape?: 'pill' | 'rounded';
   fullWidth?: boolean;
-  icon?: LucideIcon;
-  trailingIcon?: LucideIcon;
+  icon?: ButtonIcon;
+  trailingIcon?: ButtonIcon;
   /**
    * Every label this button can show ("Buy 2", "Reserving…", "Reserved"). The label slot takes the width of
    * the widest, so swapping labels never moves the layout (§9.0 loading state).

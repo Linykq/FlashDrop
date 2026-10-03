@@ -61,3 +61,23 @@ export function requireSession(request: FastifyRequest): SessionClaims {
   if (request.session === null) throw new DomainError('UNAUTHENTICATED', 'Sign in to continue');
   return request.session;
 }
+
+/**
+ * An admin's claims: 401 without a session, 403 `FORBIDDEN` for a buyer. `web` gates `/admin` too, but the
+ * api checks the role on every admin route itself (§11).
+ */
+export function requireAdmin(request: FastifyRequest): SessionClaims {
+  const session = requireSession(request);
+  if (session.role !== 'admin') throw new DomainError('FORBIDDEN', 'Admins only');
+  return session;
+}
+
+/** `requireSession` as a route hook, so a check that needs the caller (a per-user limit) can follow it. */
+export async function signedIn(request: FastifyRequest): Promise<void> {
+  requireSession(request);
+}
+
+/** `requireAdmin` as a route hook: an admin route refuses before it parses or validates anything. */
+export async function adminOnly(request: FastifyRequest): Promise<void> {
+  requireAdmin(request);
+}

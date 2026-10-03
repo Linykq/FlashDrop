@@ -40,6 +40,8 @@ export const userDropQuota = pgTable(
   (t) => [
     primaryKey({ name: 'user_drop_quota_pkey', columns: [t.userId, t.dropId] }),
     check('within_limit', sql`${t.claimed} BETWEEN 0 AND ${t.limitQty}`),
+    // The rebuild snapshot's quotas of one drop (§4.7 step 3); the primary key leads with the user.
+    index('user_drop_quota_drop_id').on(t.dropId).where(sql`${t.claimed} > 0`),
   ],
 );
 
@@ -98,6 +100,9 @@ export const orders = pgTable(
       'orders_closed_at_matches_status',
       sql`(${inList(t.status, ['RESERVED', 'PENDING_PAYMENT', 'PAID'])}) = (${t.closedAt} IS NULL)`,
     ),
+    // Every order of one drop, in id order: the rebuild snapshot (§4.7 step 3) and verify:invariants. The
+    // other indexes lead with the user or a time, so without it every rebuild scans the whole table.
+    index('orders_drop_id').on(t.dropId, t.id),
     // The sweeper's expire-orders scan (§4.6).
     index('orders_due').on(t.expiresAt).where(inList(t.status, LIVE_ORDER_STATUSES)),
     // The settle-safety-net scan (§4.6).

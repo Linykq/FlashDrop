@@ -75,14 +75,50 @@ jobs:
           path: compose-logs.txt
           retention-days: 7
 
+  # The images, built once per run: e2e and load-smoke load this job's export. Baking in both of them would
+  # double the build minutes and base-image pulls, and their concurrent `cache-to` exports to the same GHA
+  # scopes would race, the last writer winning.
+  images:
+    name: Build images
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      # docker-bake.hcl turns on the Actions layer cache when GITHUB_ACTIONS is set; this action exposes the
+      # runtime token that cache needs. `source: .` builds the checkout (with .dockerignore), not a Git URL,
+      # and `load` puts the images in the local store, from where `docker save` exports them.
+      - name: Build images
+        uses: docker/bake-action@v7
+        with:
+          source: .
+          files: docker-bake.hcl
+          load: true
+      - name: Export images
+        run: docker save flashdrop/node:dev flashdrop/web:dev | zstd -T0 -3 > images.tar.zst
+      - uses: actions/upload-artifact@v7
+        with:
+          name: images
+          path: images.tar.zst
+          if-no-files-found: error
+          # Already zstd; the artifact only has to outlive this run.
+          compression-level: 0
+          retention-days: 1
+
   e2e:
     name: End-to-end tests (Compose stack)
-    needs: static
+    needs: [static, images]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # Every docker compose command in this job, the log collection included, applies the CI overrides.
+      # Every docker compose command in this job, the log collection included, applies the CI overrides. They
+      # mount the test routes, through which every spec creates its own drop and buyer (tests/e2e/support).
       COMPOSE_FILE: compose.yaml:compose.ci.yaml
+      # Required by compose.ci.yaml; the Playwright fixtures send the same value.
+      TEST_ROUTES_SECRET: ci-only-test-routes-secret
     steps:
       - uses: actions/checkout@v7
         with:
@@ -93,21 +129,32 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - uses: docker/setup-buildx-action@v4
-      # docker-bake.hcl turns on the Actions layer cache when GITHUB_ACTIONS is set; this action exposes the
-      # runtime token that cache needs. `source: .` builds the checkout (with .dockerignore), not a Git URL,
-      # and `load` puts the images where Compose finds them (it never pulls them).
-      - name: Build images
-        uses: docker/bake-action@v7
+      # Compose never pulls the app images, so they must be in the local store before any `up`.
+      - uses: actions/download-artifact@v8
         with:
-          source: .
-          files: docker-bake.hcl
-          load: true
-      # The node image's first run, alone, against fresh Postgres: migrations and the seed. A broken bundle
-      # or a missing runtime dependency fails here with its own log instead of as an unhealthy stack.
-      # TODO(M2): also load the Functions library into Compose Redis from the image (design §14 smoke check).
+          name: images
+      - name: Load images
+        run: zstd -dc images.tar.zst | docker load
+      # The node image's first run, alone, against fresh Postgres and Redis: migrations, the seed, and the
+      # seeded drops armed in Redis through syncDropFromPostgres, which also loads the Functions library from
+      # the bundle (design §14 smoke check). Connecting loads the library even when nothing is armed, so the
+      # check also reads the seeded drops' state: all four (keys from packages/inventory/src/keys.ts), and
+      # the LIVE one open. A broken bundle or a missing runtime dependency fails here with its own log
+      # instead of as an unhealthy stack.
       - name: Smoke-check the node image
-        run: docker compose run --rm migrate
+        run: |
+          docker compose run --rm migrate
+          redis() { docker compose exec -T redis redis-cli "$@"; }
+          if [ -z "$(redis FUNCTION LIST LIBRARYNAME flashdrop)" ]; then
+            echo "::error::the migrate job did not load the flashdrop Functions library into Redis"
+            exit 1
+          fi
+          armed="$(redis --scan --pattern 'fd:{d:5eed0004-*}:inv' | wc -l)"
+          live="$(redis HGET 'fd:{d:5eed0004-0000-4000-8000-000000000001}:inv' status)"
+          if [ "$armed" -lt 4 ] || [ "$live" != LIVE ]; then
+            echo "::error::the seed armed $armed of 4 seeded drops, and the LIVE one has status '$live'"
+            exit 1
+          fi
       - name: Start the stack
         run: docker compose --profile app up --detach --wait --wait-timeout 300
       - run: pnpm e2e:install --with-deps
@@ -125,3 +172,64 @@ jobs:
             test-results/
             compose-logs.txt
           retention-days: 7
+
+  load-smoke:
+    name: Load smoke (k6 + invariants)
+    needs: [static, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The CI overrides raise the rate limits (k6 sends everything from one IP, and the scripts assert that
+      # nothing answers 429) and mount the test routes that k6's setup() mints sessions and drops through.
+      COMPOSE_FILE: compose.yaml:compose.ci.yaml
+      # Required by compose.ci.yaml; the k6 service passes the same value to the scripts.
+      TEST_ROUTES_SECRET: ci-only-test-routes-secret
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # For verify:invariants and the summary, which run on the runner against the published ports.
+      - run: pnpm install --frozen-lockfile
+      # The same images as the e2e job, from the images job.
+      - uses: actions/download-artifact@v8
+        with:
+          name: images
+      - name: Load images
+        run: zstd -dc images.tar.zst | docker load
+      - name: Start the stack
+        run: docker compose --profile app up --detach --wait --wait-timeout 300
+      # Design §13: the reserve-only CI profile on a fresh drop through Caddy: an opening spike of 300 buyers
+      # firing together (contention, double clicks in flight), then an arrival-rate burst. Strict correctness
+      # thresholds (exactly the stock in distinct orders, every replay consistent, no 429, all stock back
+      # after the holds expire) and loose latency ones. k6 exits non-zero when a threshold fails.
+      - name: Reserve burst (k6, ci profile)
+        run: docker compose --profile load run --rm k6 run /scripts/burst.ts -e PROFILE=ci
+      - name: Idempotency storm (k6)
+        if: ${{ !cancelled() }}
+        run: docker compose --profile load run --rm k6 run /scripts/idempotency-storm.ts
+      # Waits for quiescence, then checks INV-1 to INV-9 (v1: those M2 can break) on every tracked drop.
+      - name: Verify invariants
+        if: ${{ !cancelled() }}
+        run: pnpm verify:invariants
+      - name: Step summary
+        if: ${{ !cancelled() }}
+        run: pnpm exec tsx tools/load-smoke-summary.ts >> "$GITHUB_STEP_SUMMARY"
+      - name: Collect Compose logs
+        if: failure()
+        run: docker compose --profile app logs --no-color --timestamps > compose-logs.txt
+      - name: Upload k6 summaries, invariants report and logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: load-smoke
+          path: |
+            tests/load/results/
+            invariants-report.json
+            compose-logs.txt
+          if-no-files-found: warn
+          retention-days: 14

@@ -134,6 +134,13 @@
     font-weight: 600;
   }
 
+  /* Every element carries the focus colour at rest, so focusing changes only the outline's style and the ring
+     appears at once. Tailwind's transition-colors includes outline-color: from the default currentColor, the
+     ring would fade in from the label's colour (white on a filled button) over 100 to 200 ms. */
+  * {
+    outline-color: var(--color-focus);
+  }
+
   :focus-visible {
     outline: 3px solid var(--color-focus);
     outline-offset: 2px;
@@ -214,5 +221,15 @@
     dialog[open] {
       scale: none;
     }
+  }
+}
+
+/* Controls are disabled with aria-disabled, never `disabled` (§9.1), so the browser does not map them to GrayText,
+   and forced colours replace the tertiary label that marks them. GrayText puts the signal back (§13.1). Outside
+   any layer on purpose: the utilities that colour a disabled control sit in a later layer and would win. */
+@media (forced-colors: active) {
+  [aria-disabled="true"] {
+    color: GrayText;
+    border-color: GrayText;
   }
 }

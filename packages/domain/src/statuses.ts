@@ -53,8 +53,12 @@ export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 export const PRODUCT_STATUSES = ['DRAFT', 'PUBLISHED'] as const;
 export type ProductStatus = (typeof PRODUCT_STATUSES)[number];
 
-/** `llm` products were approved from a listing job (§10); `manual` ones were entered or seeded. */
-export const PRODUCT_SOURCES = ['manual', 'llm'] as const;
+/**
+ * `llm` products were approved from a listing job (§10); `manual` ones were entered or seeded. `test` ones
+ * come from `POST /test/drops` (§13): their pages work by URL, but the storefront's drop lists leave them out,
+ * so tests and load runs on a shared stack never push the catalog off the home page.
+ */
+export const PRODUCT_SOURCES = ['manual', 'llm', 'test'] as const;
 export type ProductSource = (typeof PRODUCT_SOURCES)[number];
 
 export const LISTING_JOB_STATUSES = [

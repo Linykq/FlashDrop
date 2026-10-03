@@ -13,13 +13,23 @@ export function postgresCheck(
   pool: { query(text: string): Promise<unknown> },
   timeoutMs = 1_500,
 ): DependencyCheck {
-  return async () => {
-    const { promise: timedOut, reject } = Promise.withResolvers<never>();
-    const timer = setTimeout(() => reject(new RetryError('postgres did not answer in time')), timeoutMs);
-    try {
-      await Promise.race([pool.query('SELECT 1'), timedOut]);
-    } finally {
-      clearTimeout(timer);
-    }
-  };
+  return () => withDeadline('postgres', () => pool.query('SELECT 1'), timeoutMs);
+}
+
+/**
+ * `PING` within `timeoutMs`. The command client has no offline queue, so a disconnected Redis fails at once;
+ * the deadline covers a connected Redis that stopped answering (a long script, a stalled AOF rewrite).
+ */
+export function redisCheck(redis: { ping(): Promise<unknown> }, timeoutMs = 1_500): DependencyCheck {
+  return () => withDeadline('redis', () => redis.ping(), timeoutMs);
+}
+
+async function withDeadline(name: string, call: () => Promise<unknown>, timeoutMs: number): Promise<void> {
+  const { promise: timedOut, reject } = Promise.withResolvers<never>();
+  const timer = setTimeout(() => reject(new RetryError(`${name} did not answer in time`)), timeoutMs);
+  try {
+    await Promise.race([call(), timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

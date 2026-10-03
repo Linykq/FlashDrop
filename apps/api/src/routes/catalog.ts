@@ -6,7 +6,7 @@ import {
   ProductSlugParams,
   StockSnapshot,
 } from '@flashdrop/contracts';
-import { NotFoundError } from '@flashdrop/domain';
+import { NotFoundError, RetryError } from '@flashdrop/domain';
 import type { Api } from '../http/api';
 import { type CatalogStore, listDropSummaries } from '../services/catalog';
 import type { StockReader } from '../services/stock';
@@ -41,9 +41,10 @@ export function catalogRoutes(app: Api, { catalog, stock, now }: CatalogDeps): v
     async (request, reply) => {
       // Never cached anywhere, a 404 included: a drop armed a moment later must show up at once.
       reply.header('cache-control', 'no-store');
-      const { dropId } = request.params;
-      const level = (await stock.read([dropId])).get(dropId);
+      const level = await stock.snapshot(request.params.dropId);
       if (level === undefined) throw new NotFoundError('Drop');
+      // Clients keep their last level and retry; they never see the fail-closed counters of a rebuild.
+      if (level === 'RETRY') throw new RetryError('The drop is being rebuilt, retry');
       return { ...level, serverNow: now().toISOString() };
     },
   );

@@ -9,12 +9,17 @@
   },
   "dependencies": {
     "@fastify/cookie": "catalog:",
+    "@fastify/rate-limit": "catalog:",
     "@flashdrop/config": "workspace:*",
     "@flashdrop/contracts": "workspace:*",
     "@flashdrop/db": "workspace:*",
     "@flashdrop/domain": "workspace:*",
+    "@flashdrop/inventory": "workspace:*",
     "fastify": "catalog:",
     "jose": "catalog:",
     "zod": "catalog:"
+  },
+  "devDependencies": {
+    "redis": "catalog:"
   }
 }

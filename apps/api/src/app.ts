@@ -7,24 +7,44 @@ import Fastify, { type FastifyBaseLogger, LogController, type RawServerDefault }
 import type { Api } from './http/api';
 import { originGuard } from './http/origin';
 import { handleError, handleNotFound } from './http/problem';
+import { type RateLimitCounter, registerRateLimits } from './http/rate-limit';
 import { createSessionCodec } from './http/session';
 import { traceIdOf } from './http/trace';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from './http/zod';
+import { adminRoutes } from './routes/admin';
 import { authRoutes } from './routes/auth';
 import { catalogRoutes } from './routes/catalog';
 import { healthRoutes, PROBE_ROUTES } from './routes/health';
+import { orderRoutes } from './routes/orders';
+import { reservationRoutes } from './routes/reservations';
+import { testRoutes } from './routes/testing';
 import { uploadRoutes } from './routes/uploads';
+import type { AdminDropService } from './services/admin-drops';
 import type { CatalogStore } from './services/catalog';
 import type { DependencyCheck } from './services/health';
+import type { OrderReader } from './services/orders';
+import type { ReservationService } from './services/reserve';
 import type { StockReader } from './services/stock';
+import type { TestRouteService } from './services/testing';
 import type { UserStore } from './services/users';
 
 export interface AppServices {
   readonly catalog: CatalogStore;
   readonly stock: StockReader;
   readonly users: UserStore;
+  readonly reservations: ReservationService;
+  readonly orders: OrderReader;
+  readonly adminDrops: AdminDropService;
+  /** The fixed-window counter behind the rate limits: the `fd_rl_hit` Function (§11). */
+  readonly rateLimitCounter: RateLimitCounter;
   /** Dependencies the readiness probe checks, by name. */
   readonly checks: Readonly<Record<string, DependencyCheck>>;
+}
+
+/** `ENABLE_TEST_ROUTES=true`: the routes exist only then, and every call must carry the secret. */
+export interface TestRoutesOptions {
+  readonly secret: string;
+  readonly service: TestRouteService;
 }
 
 export interface AppOptions {
@@ -36,6 +56,10 @@ export interface AppOptions {
   readonly sessionSecret: string;
   readonly uploadDir: string;
   readonly services: AppServices;
+  /** Reservations per second: `RATE_LIMIT_USER_PER_SEC` and `RATE_LIMIT_IP_PER_SEC` (§11). */
+  readonly rateLimits: { readonly userPerSecond: number; readonly ipPerSecond: number };
+  /** Mounts `/api/v1/test/*` (§5.1, §13). Absent in production. */
+  readonly testRoutes?: TestRoutesOptions;
   readonly now?: () => Date;
 }
 
@@ -88,17 +112,22 @@ export async function buildApp(options: AppOptions): Promise<Api> {
     const token = request.cookies[SESSION_COOKIE];
     request.session = token === undefined ? null : await sessions.verify(token);
   });
+  const limits = await registerRateLimits(app, {
+    counter: services.rateLimitCounter,
+    ...options.rateLimits,
+  });
+  const now = options.now ?? (() => new Date());
 
   await app.register(
     async (api: Api) => {
       healthRoutes(api, services.checks);
       if (roles.has('http')) {
         authRoutes(api, { users: services.users, sessions });
-        catalogRoutes(api, {
-          catalog: services.catalog,
-          stock: services.stock,
-          now: options.now ?? (() => new Date()),
-        });
+        catalogRoutes(api, { catalog: services.catalog, stock: services.stock, now });
+        reservationRoutes(api, { reservations: services.reservations, limits });
+        orderRoutes(api, { orders: services.orders, now });
+        adminRoutes(api, { adminDrops: services.adminDrops });
+        if (options.testRoutes !== undefined) testRoutes(api, { ...options.testRoutes, sessions });
       }
     },
     { prefix: '/api/v1' },

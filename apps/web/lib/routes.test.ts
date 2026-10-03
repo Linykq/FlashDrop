@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loginHref, safeReturnTo } from './routes';
+import { checkoutHref, loginHref, orderHref, safeReturnTo } from './routes';
 
 describe('safeReturnTo', () => {
   it('keeps paths on this origin, with their query and hash', () => {
@@ -27,5 +27,20 @@ describe('loginHref', () => {
     expect(loginHref('/p/a b')).toBe('/login?returnTo=%2Fp%2Fa+b');
     expect(loginHref('/')).toBe('/login');
     expect(loginHref()).toBe('/login');
+  });
+});
+
+describe('orderHref', () => {
+  const id = '6f1c2a3b-4d5e-5f60-8a7b-9c0d1e2f3a4b';
+
+  it('opens a held order at checkout', () => {
+    expect(orderHref({ id, status: 'RESERVED' })).toBe(checkoutHref(id));
+    expect(checkoutHref(id)).toBe(`/checkout/${id}`);
+  });
+
+  it('opens an ended order where its outcome is shown', () => {
+    // Checkout shows EXPIRED and REJECTED until the order status page arrives (M3).
+    expect(orderHref({ id, status: 'EXPIRED' })).toBe(`/checkout/${id}`);
+    expect(orderHref({ id, status: 'REJECTED' })).toBe(`/checkout/${id}`);
   });
 });

@@ -1,6 +1,18 @@
-# CI overrides of compose.yaml (design §13), for the e2e job: `COMPOSE_FILE=compose.yaml:compose.ci.yaml`.
-# The design's other overrides (test routes, PSP latency, the LLM fixture provider, the load profile's rate
-# limits) arrive with the milestones that build what they configure.
+# CI overrides of compose.yaml (design §13), for the e2e and load-smoke jobs:
+# `COMPOSE_FILE=compose.yaml:compose.ci.yaml`. The design's other overrides (PSP latency, the LLM fixture
+# provider) arrive with the milestones that build what they configure. Hold and payment windows are not
+# overridden: every spec and load script creates its own drop with its own windows (POST /test/drops).
+
+x-ci-api-env: &ci-api-env
+  # Playwright fixtures and k6 create their own drops and sessions through /api/v1/test/* (§13). The job
+  # sets the secret once for the api, the k6 service (compose.yaml) and the Playwright fixtures, so a
+  # consumer that ignored it would fail with 403 instead of passing on a shared default.
+  ENABLE_TEST_ROUTES: 'true'
+  TEST_ROUTES_SECRET: ${TEST_ROUTES_SECRET:?the CI job sets TEST_ROUTES_SECRET}
+  # k6 sends every request from one IP through Caddy, and the load profile asserts that nothing answers
+  # 429, so that 201/200 alone prove Lua and the primary key serialize same-key requests (§11, §13).
+  RATE_LIMIT_IP_PER_SEC: '100000'
+  RATE_LIMIT_USER_PER_SEC: '1000'
 
 services:
   postgres:
@@ -8,3 +20,9 @@ services:
     volumes: !reset []
     tmpfs:
       - /var/lib/postgresql/data
+
+  api-1:
+    environment: *ci-api-env
+
+  api-2:
+    environment: *ci-api-env

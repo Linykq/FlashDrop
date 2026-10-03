@@ -18,8 +18,8 @@ import type { Options } from 'tsup';
 
 const APP_DIR = /^[a-z][a-z0-9-]*$/;
 
-/** `APPS`: space-separated directories under `apps/` to bundle (the image's build arg). */
-function appsToBundle(value = process.env.APPS ?? 'api'): string[] {
+/** `APPS`: space-separated directories under `apps/` to bundle (the image's build arg, same default). */
+function appsToBundle(value = process.env.APPS ?? 'api worker'): string[] {
   const apps = value.split(/\s+/).filter((app) => app !== '');
   if (apps.length === 0 || !apps.every((app) => APP_DIR.test(app))) {
     throw new Error(`APPS must name directories under apps/, such as "api worker"; got "${value}"`);
@@ -30,9 +30,10 @@ function appsToBundle(value = process.env.APPS ?? 'api'): string[] {
 export default {
   entry: {
     ...Object.fromEntries(appsToBundle().map((app) => [`apps/${app}/dist/main`, `apps/${app}/src/main.ts`])),
-    // The one-shot `migrate` service runs both: Drizzle migrations, then the demo seed (compose.yaml).
+    // The one-shot `migrate` service runs both: Drizzle migrations, then the demo seed, which also arms the
+    // seeded drops in Redis (compose.yaml).
     'packages/db/dist/cli/migrate': 'packages/db/src/cli/migrate.ts',
-    'packages/db/dist/cli/seed': 'packages/db/src/cli/seed.ts',
+    'tools/dist/seed': 'tools/seed.ts',
   },
   outDir: 'out',
   format: 'esm',
@@ -44,8 +45,6 @@ export default {
   sourcemap: true,
   skipNodeModulesBundle: true,
   noExternal: [/^@flashdrop\//],
-  // The Redis Functions library is imported as a string, so it ships inside the bundle (design §14).
-  loader: { '.lua': 'text' },
   // Keep `node:` specifiers as written; some built-ins (node:sqlite, node:test) exist only under them.
   removeNodeProtocol: false,
 } satisfies Options;

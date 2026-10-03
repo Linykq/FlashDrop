@@ -1368,8 +1368,8 @@ Apple-style floating label: there is no placeholder, and the label sits where a 
 ```
 
 - Two 44 px round icon buttons (`Minus`, `Plus` at 16) and the value in `text-headline tabular-nums`, at least 32 px wide.
-- `role="group"` with `aria-labelledby` pointing at a visible or visually hidden "Quantity" label. The buttons are labelled "Decrease quantity" and "Increase quantity" and use `aria-disabled` at 1 and at the drop's per-user limit. The value sits in an `<output aria-live="polite">`.
-- The limit is stated next to it: "Limit 2 per person". With a limit of 1 the stepper is not rendered and only the limit text remains.
+- `role="group"` with `aria-labelledby` pointing at a visible or visually hidden "Quantity" label. The buttons are labelled "Decrease quantity" and "Increase quantity" and use `aria-disabled` at 1 and at the most that can be chosen now: the drop's per-user limit, or fewer while fewer are left. The value sits in an `<output aria-live="polite">`.
+- The limit is stated next to it: "Limit 2 per person". With a limit of 1 the stepper is not rendered and only the limit text remains. Fewer units left than the limit only caps the plus button: the stepper keeps its place in the row. Beside a live hold (§9.13) the limit is what the buyer may still add.
 
 ### 9.7 Product tile
 
@@ -1488,10 +1488,16 @@ A filled lg button that runs the reserve flow of SD §8.2.
 | Signed out | "Sign in to buy" | Link to `/login?returnTo=<current path>` |
 | Before start, all reserved, sold out, paused | From the LiveStock table | `aria-disabled`, LiveStock explains why |
 | Available | "Buy", or "Buy 2" when the quantity is 2 | Creates or reuses the `Idempotency-Key` (SD §8.2) |
+| Signed in, holding a live reservation on this drop that takes the whole limit | "Go to checkout" | Link to that order's `/checkout/[orderId]`; no stepper (see **Live hold** below) |
 | In flight | Spinner + "Reserving…" | `aria-busy` |
-| 503 `RETRY` | "Reserving…", then "Still trying…" after 2 s | Retries with backoff and the same key. After 10 s in total it stops and shows an inline error with "Try again" |
+| 503 `RETRY`, 429 | "Reserving…", then "Still trying…" after 2 s | Retries with the same key, after api's `Retry-After` when it sent one, otherwise with backoff. After 10 s in total it stops and shows the inline message: "We couldn't reserve right now. Try again." for a 503, "Too many tries…" for a 429 |
 | 201 or 200 | `Check` icon + "Reserved", `celebrate` spring, 400 ms | Then navigates to `/checkout/[orderId]` |
-| 409, 410, 429 | Back to the rest label | Inline message under the button (§12.2), announced politely |
+| 409, 410 | Back to the rest label | Inline message under the button (§12.2), announced politely |
+
+- **The inline message** stays until the buyer acts again. The inline Buy button points at it with `aria-describedby`, so the reason is read with the control. A press in the sticky buy bar (§10.2) moves focus to the inline Buy button first (`preventScroll`), then the message scrolls into view: the bar hides (and is `inert`) once the row is in view, and leaves when the refusal closes the drop, so focus would otherwise fall to the page.
+- **`SOLD_OUT` is worded from the stock.** Redis refuses whenever fewer than the asked quantity are available, which isn't always "sold out". The button keeps "Reserving…" while the drop's stock is refreshed (up to 1 s), then the message says what that stock says: some left but fewer than asked, "Only {n} left now. We set your quantity to {n}." (the stepper takes {n}, plus disabled); none left and some in carts, "All reserved right now. Some may free up."; none left at all, "Sold out. Every unit has been claimed."; enough again, "Stock just changed. Try again." The message goes once `avail` rises after the refusal. The stock change the refresh brought is not announced (§9.9): the message speaks for it.
+- **Live hold.** Signed in, with a `RESERVED` order on this drop that the UI hasn't ended yet (its deadline minus 2 s, §10.4), a row sits above the Buy row, 12 px above it: `Timer` 20 in `accent-label`, "You have {qty} reserved" (`text-callout font-medium`) and " · {m:ss} left" (`label-secondary`, tabular, on the shared clock, `aria-hidden`, with a visually hidden ", held until {LocalTime}"), and a tinted md "Go to checkout" link, on `bg-secondary`, `rounded-lg`. The link sits beside the text from a 28 rem wide panel and below it, full width, in narrower ones (a container query). When the hold takes the whole limit, the filled action is "Go to checkout" (also in the sticky bar) and the row leaves out its own link; otherwise the stepper offers what the limit leaves. The row goes when the hold ends on screen. A `LIMIT_REACHED` message adds a "Go to checkout" link when the hold is known. Leaving checkout keeps the hold until `cancel` exists (M3), so this is how the buyer finds it again.
+- **A page shown again starts at Buy.** Next keeps a visited page mounted but hidden (React `<Activity>`) and shows it again on Back or a link to it. Hiding abandons a request in flight (its key stays stored, so a later press replays it) and clears "Reserving…", "Reserved" and any message; showing it again asks the server for the page again (`router.refresh()`), since the live hold is server data, and polls the stock at once.
 
 ### 9.14 Dialog and sheet
 
@@ -1562,10 +1568,10 @@ phone    ┌──────────────────────�
 - The wordmark "FlashDrop" is text in `text-headline`, linking to `/`.
 - Everything on the bar is `label` (§2.5). Links (from 735 px) use `text-footnote` in `label` at 80% (`text-label/80`, 6.30:1 over the worst content), becoming full `label` on hover and with `aria-current="page"`. Each link is 44 px tall.
 - "Live" appears only while a drop is LIVE, with a 6 px `live` dot (`motion-safe:animate-live-pulse`, three cycles, §9.11), and links to that drop's room. On phone it becomes a pill: `fill-tertiary`, dot and "Live" in `text-caption font-medium`.
-- On the right: "Admin" (admins only, from 735 px), then the account avatar. It is a `size-11` (44 × 44) link with the 28 px avatar centred in it, `aria-label="Account, {name}"`, its initials `aria-hidden`, linking to `/login`, which doubles as the account page (§10.6). Signed-out users see "Sign in" instead, styled like the other links (`text-footnote text-label/80`, 44 px tall), on phone too.
-- There is no menu button: with two links, the phone bar shows everything.
+- On the right: "Admin" (admins only, from 735 px), then the account avatar. It is a `size-11` (44 × 44) button with the 28 px avatar centred in it, `aria-label="Account, {name}"`, its initials `aria-hidden`, that opens the **account popover**: a native `popover` (light dismiss, Esc and the expanded state come with it) on `material-thick`, 256 px wide, `rounded-lg`, `elevation-2`, everything in `label`. It shows the 40 px avatar and the name (`text-headline`), a hairline, then 44 px rows in `text-callout`: **Account** (to `/login`, which doubles as the account page, §10.6), **Orders** (to `/orders`), **Admin** (admins only), each ending in `ChevronRight` 16, and **Sign out** with `LogOut` 16 ("Signing out…" with a spinner while it runs; "Couldn't sign out. Try again." as an alert under it if it fails). Signed-out users see "Sign in" instead, styled like the other links (`text-footnote text-label/80`, 44 px tall), on phone too.
+- There is no menu button for navigation: with two links, the phone bar shows everything.
 - The bottom hairline (`separator`) appears only when content is scrolled beneath the bar, toggled by an IntersectionObserver sentinel at the top of `<main>`.
-- Checkout uses a reduced bar: the wordmark (not a link) and a plain neutral-tone "Leave checkout" button (`label` text, §9.1) on the right that opens the leave dialog (§10.4).
+- Checkout uses a reduced bar: the wordmark (not a link) and a plain neutral-tone "Leave checkout" button (`label` text, §9.1) on the right that opens the leave dialog (§10.4). It shows only while there is a hold to leave: an expired or refused order, loaded or ended on screen, leaves the wordmark alone, since its card has the way back.
 - The live room renders the bar inside its `data-theme="dark"` subtree (§10.3).
 
 ### 9.19 Large title
@@ -1576,7 +1582,7 @@ phone    ┌──────────────────────�
 ### 9.20 Footer
 
 - `bg-secondary`, a `separator` hairline on top, `page-content`, 32 px (phone) or 40 px vertical padding, `text-footnote text-label-secondary`. Links turn `label` on hover.
-- From 735 px, three columns: **Shop** (Drops, Live), **Account** (Sign in or Account, Admin for admins), **Project** (Source on GitHub and Image credits, each ending in `ArrowUpRight` 14, §7). On phone the groups stack.
+- From 735 px, three columns: **Shop** (Drops, Live), **Account** (Sign in, or Account and Orders when signed in, Admin for admins), **Project** (Source on GitHub and Image credits, each ending in `ArrowUpRight` 14, §7). On phone the groups stack.
 - The appearance switch (§8.3) is a sm segmented control with icons and labels: Automatic, Light, Dark.
 - The last line reads "FlashDrop is a demo store. No real payments are taken. MIT License."
 - There is no footer in checkout, the live room or admin.
@@ -1852,7 +1858,8 @@ Checkout                                                           title-1, h1, 
 ```
 
 - Spacing: 32 px between the `h1`, the hold card, the summary card and the form; fieldsets 40 px apart; 24 px above Pay.
-- **Countdown** (SD §8.3): the visible `m:ss` and the hold bar (§9.27) use `label` and `accent` until 60 s are left, then `warning`. The UI ends 2 s early. A visually hidden polite region announces only at 2:00, 1:00, 0:30 and 0:10 (§12.2).
+- **Summary card:** checkout never truncates what is being bought: the title wraps, however long. An order is one line, so its amount is the Total just below; below 735 px that right-hand column goes and "Qty 2" joins the unit price's line ("$129.00 each · Qty 2"), so the title has the card's width beside the thumbnail.
+- **Countdown** (SD §8.3): the visible `m:ss` and the hold bar (§9.27) use `label` and `accent` until 60 s are left, then `warning`. The UI ends 2 s early. A visually hidden polite region announces only at 2:00, 1:00, 0:30 and 0:10 (§12.2). It counts from just above the whole hold, so the first tick after load names the band the hold is in: a fresh 2-minute hold, which the margin starts at 1:58, says "2 minutes left to check out."
 - **Extension:** at 60 s left, if `extensions = 0`, the hold card shows the "Need more time?" row. "Add 1 minute" calls `POST /orders/:orderId/extend`; on 200 the row becomes `CircleCheck` + "1 minute added" in `success`, a polite announcement repeats it, and the bar rescales. On 409 (the hold changed meanwhile) the row becomes "Couldn't add time. Your hold ends at {LocalTime}." in `text-callout text-label-secondary`, announced politely, and the countdown continues. The offer appears once.
 - **Submit:** Pay shows the spinner and "Processing…" with `aria-busy` and `aria-disabled`, never `disabled` (SD §8.3). The checkout key is created once and kept per SD §8.2.
 - **Validation:** on submit, client-side checks first. With errors, the error summary ("Fix 2 fields to continue") appears at the top of the form and takes focus; each link moves focus to its field. Fields show their errors per §9.4.
@@ -1866,7 +1873,7 @@ Checkout                                                           title-1, h1, 
 | 422 | Error summary with the server's field issues |
 | Network error or 5xx | Danger banner above Pay: "Couldn't place your order. Check your connection and try again." Pay retries with the same key |
 
-- **Expired panel:** at expiry (or a 410) the hold card and the form are replaced by one card: `Hourglass` 40 in a 72 px `fill-tertiary` circle, "Reservation expired" (`text-title-2`, `role="alert"`, focused), "Your item went back on sale." and a filled lg "Try again" link to `/p/[slug]` (SD §8.3).
+- **Expired panel:** at expiry (or a 410) the hold card and the form are replaced by one card: `Hourglass` 40 in a 72 px `fill-tertiary` circle, "Reservation expired" (`text-title-2`, focused, `aria-describedby` on the sentence below it), "Your item went back on sale." and a filled lg "Try again" link to `/p/[slug]` (SD §8.3). Focus moving there reads the heading with its sentence once; there is no alert role, which, inserted with its text and focused at the same time, would read it twice (§13.3). "Leave checkout" leaves the bar at the same moment (§9.18).
 - **Leave checkout:** the alert dialog (§9.14) with "Leave checkout?", "Your reservation will be released.", **Stay** (filled, initial focus) and **Leave** (plain, destructive tone), which calls cancel and then navigates to `/p/[slug]`. If cancel answers 409 (the order was placed or expired in the meantime), the dialog closes and the page navigates to `/orders/[orderId]`.
 - `noindex`.
 
@@ -1925,8 +1932,11 @@ canvas, centred card (surface, rounded-xl, elevation-1, padding 24 / 32, page-fo
 
 - `data-page="grouped"`. Signed out, the `h1` and `<title>` are "Sign in".
 - **Signed in,** the page is the account page: the `h1` and `<title>` become "Account", and the top of the card shows "Signed in as {name}" with a plain "Sign out" button and, for admins, an "Open admin" link ending in `ChevronRight`. Choosing another account and Continue switches user.
-- **Your orders.** Signed in, a second card follows 24 px below (same card style): a `text-title-3` heading "Your orders" and the latest 10 orders from `GET /me/orders`, newest first. Each row is one link to `/orders/[orderId]`, at least 64 px tall: a 40 px `rounded-sm` thumbnail, the title (`text-callout font-medium`, `line-clamp-2`) over the date (`<LocalTime>`, `text-footnote text-label-secondary`), the status pill (§9.24) and a `ChevronRight` 16 in `label-tertiary`. Rows are separated by `separator` hairlines. With no orders the card shows "No orders yet" / "Orders you place show up here." This is the way back to an order once its page is closed; there is no separate `/orders` route (SD §8.1).
+- **Your orders.** Signed in, a second card follows 24 px below (same card style): a `text-title-3` heading "Your orders" and the latest 10 orders from `GET /me/orders` in the **order list** below, with a "See all" link ending in `ChevronRight` 14 (`text-callout text-accent-label`, 44 px tall) beside the heading when there are more than 10. With no orders the card shows "No orders yet" / "Orders you place show up here." This, `/orders` and the account popover (§9.18) are the way back to an order once its page is closed.
+- **Order list.** Live holds first, the one ending soonest on top, then newest first. Each row is one link, at least 64 px tall, to `/checkout/[orderId]` while the order is held and to `/orders/[orderId]` otherwise (checkout until that page exists, M3): a 40 px `rounded-sm` thumbnail, the title (`text-callout font-medium`, `line-clamp-2`) over the meta line (`text-footnote text-label-secondary`), the status pill (§9.24) and a `ChevronRight` 16 in `label-tertiary`. The meta line is the date (`<LocalTime>`) and, from 735 px, " · {total}". A live hold shows "{m:ss} left" instead of the date, on the shared clock (`aria-hidden`, with a visually hidden "Held until {LocalTime}"), and its pill turns to Expired at the UI's deadline, as the sweeper will make it. From 735 px the pill sits at the row's end beside both lines; below, it sits on the meta line under the title, so the title has the row's full width. Rows are separated by `separator` hairlines that start at the text.
 - After sign-in: navigate to `returnTo` if it is a same-origin path, otherwise `/`.
+
+**Your orders `/orders`.** Signed-in only (signed out, `proxy.ts` sends the visitor to sign in). `canvas` (`data-page="grouped"`), `page-form`, the standard navigation bar and footer: the `h1` "Your orders" (`text-title-1`), then one card (`surface`, `rounded-lg`, `elevation-1`, 24 px below the `h1`, 32 px from 735 px) with the buyer's latest 100 orders in the order list. With none, the card holds the empty state (§9.17): "No orders yet" / "Orders you place show up here." with a tinted "Go to drops" link to `/`. `noindex`.
 
 ### 10.7 Admin shell
 
@@ -2153,8 +2163,9 @@ Totals are a projection of orders.v1, version 1,204.                     footnot
 | Product without a drop | This product isn't in a drop yet. · Create drop (admins) |
 | Stock announcements | 10 left. · 5 left. · 1 left. · All reserved. Some may free up. · Sold out. · Available again. 4 left. |
 | Limit line | Limit 2 per person. We hold your item for 2 minutes at checkout. · Compact (drop card): Limit 2 per person · Held 2 minutes at checkout |
-| `SOLD_OUT` | Sold out. Every unit has been claimed. |
-| `LIMIT_REACHED` | You've reached the limit of 2 for this drop. |
+| `SOLD_OUT`, by the stock refreshed after it (§9.13) | Only 1 left now. We set your quantity to 1. · All reserved right now. Some may free up. · Sold out. Every unit has been claimed. · Stock just changed. Try again. |
+| `LIMIT_REACHED` | You've reached the limit of 2 for this drop. (+ "Go to checkout" when the buyer's hold is known) |
+| Live hold | You have 1 reserved · 1:47 left (read as "You have 1 reserved, held until 7:04 PM") · Go to checkout |
 | `DROP_NOT_LIVE` | This drop isn't live right now. |
 | `RESERVATION_EXPIRED` (reserve replay) | That reservation expired. Try again if any are left. |
 | 429 | Too many tries. Wait a moment, then try again. |
@@ -2188,8 +2199,8 @@ Totals are a projection of orders.v1, version 1,204.                     footnot
 |---|---|
 | Login | Sign in · Development sign-in. Pick a seeded account; there's no password. · Continue · Sessions last 12 hours. |
 | Signed in | Account · Signed in as Mira Chen · Sign out · Open admin |
-| Your orders | Your orders · No orders yet / Orders you place show up here. |
-| Navigation | Sign in · Account, Mira Chen (avatar label) |
+| Your orders | Your orders · See all · No orders yet / Orders you place show up here. / Go to drops (on `/orders`) · 1:47 left (a live hold, read as "Held until 7:04 PM") |
+| Navigation | Sign in · Account, Mira Chen (avatar label) · Account · Orders · Sign out · Signing out… · Couldn't sign out. Try again. |
 
 **Shared states and live room**
 
@@ -2277,8 +2288,8 @@ Target: WCAG 2.2 AA, enforced by Biome's a11y rules, axe in every checkout state
 SD §8.3 sets the policy for checkout and stock; this extends it to the whole app.
 
 1. The `Announcer` in the root layout renders two visually hidden regions that are always in the DOM, one polite (`role="status"`) and one assertive (`role="alert"`). `announce(text, politeness)` clears the region and sets the text on the next frame, so a repeated message is read again. Regions are never inserted together with their text.
-2. Polite announcements: checkout countdown thresholds at 2:00, 1:00, 0:30 and 0:10 (checkout's own region, SD §8.3); stock events (§9.9); order status changes on the order page; listing job status changes; toasts; "1 minute added" and "Couldn't add time…"; "Now selling: {title}"; tags added and removed (§9.28); "Live updates paused" and "Live updates resumed", once each.
-3. Assertive, with focus moved there: reservation expired; the checkout error summary.
+2. Polite announcements: checkout countdown thresholds at 2:00, 1:00, 0:30 and 0:10 (checkout's own region, SD §8.3); stock events (§9.9), except the stock change a buyer's own press brought, which the Buy button's message speaks for (§9.13); that message; order status changes on the order page; listing job status changes; toasts; "1 minute added" and "Couldn't add time…"; "Now selling: {title}"; tags added and removed (§9.28); "Live updates paused" and "Live updates resumed", once each.
+3. Focus moves there, no alert role: reservation expired (the heading, described by its sentence, so the focus event reads both once; an alert inserted and focused together reads twice). Assertive, with focus moved there: the checkout error summary.
 4. Never announced: individual stock deltas, viewer counts, countdown ticks, dashboard and health numbers, skeletons being replaced, chart redraws.
 5. At most one announcement per 3 s from any one source, and the latest state wins.
 
@@ -2371,7 +2382,7 @@ Known limits, handled by rules rather than by colour:
 Items for the lead and the owner. None blocks M1.
 
 1. **"{N} left" above the urgent threshold.** SD §8.2 writes "Only N left" for every `avail > 0`, which invents urgency at large numbers ("Only 488 left"). This document adopts "{N} left" above the urgent threshold and "Only {N} left" at or below it (§9.9, §1.5). The lead should bring SD §8.2's wording in line, and E2E specs should match on the number, not on "Only".
-2. **Finding an order again.** SD §8.1 has no `/orders` list. Instead of a new route, the signed-in `/login` page is the account page and lists the latest 10 orders from `GET /me/orders` (§10.6). That response needs, per order, the product title and its first image key, besides status, total and `createdAt` (M3 contract).
+2. **Finding an order again.** The signed-in `/login` page is the account page and lists the latest 10 orders from `GET /me/orders`; M2 added `/orders` for all of them, reached from "See all", the account popover and the footer (§10.6, SD §8.1), and the product page offers a live hold back (§9.13). That response carries, per order, the product title and its first image key, besides status, total and `createdAt`.
 3. **Images from `/uploads`.** §11.4 recommends `remotePatterns` plus `dangerouslyAllowLocalIP` for our own `api`. The alternative is a custom `next/image` loader with widths generated at upload time by `sharp` and served by Caddy; it is more work and avoids the optimizer. M1 decides and records the choice here.
 4. **Tracking check.** M1 checks both tracking columns on Windows (Inter) and on macOS and iOS (SF Pro) against apple.com, may move any value by up to ±0.02em, and records the result (§3.2).
 5. **Always-dark live room.** The live room ignores the light preference on purpose (§10.3). The owner can overrule it; the tokens support both.

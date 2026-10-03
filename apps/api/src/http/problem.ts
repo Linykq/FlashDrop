@@ -1,8 +1,10 @@
 import { STATUS_CODES } from 'node:http';
 import { type ErrorCode, PROBLEM_CONTENT_TYPE, type ProblemDetails } from '@flashdrop/contracts';
 import { isTransientDbError } from '@flashdrop/db';
-import { BugError, DomainError, RetryError, ValidationError } from '@flashdrop/domain';
+import { alert, BugError, DomainError, RetryError, ValidationError } from '@flashdrop/domain';
+import { isTransientRedisError } from '@flashdrop/inventory';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { RateLimitedError } from './rate-limit';
 
 /*
  * Every error leaves the api as RFC 9457 problem details with a stable `code` (design §5.1). The mapping
@@ -66,12 +68,15 @@ export function toProblem(error: unknown, traceId: string): Problem {
     const body = details(error.status, error.code, detailOf(error), traceId);
     if (error instanceof ValidationError) body.errors = [...error.issues];
     const headers: Record<string, string> =
-      error instanceof RetryError ? { 'retry-after': String(error.retryAfterSeconds) } : {};
+      error instanceof RetryError || error instanceof RateLimitedError
+        ? { 'retry-after': String(error.retryAfterSeconds) }
+        : {};
     return { body, headers };
   }
   const status = statusCodeOf(error);
-  // Postgres briefly unreachable or the session killed (design delta 7), or a plugin's own 503.
-  if (isTransientDbError(error) || status === 503) {
+  // Postgres or Redis briefly unreachable, the session killed (design delta 7), Redis refusing writes under
+  // memory pressure (§4.7), or a plugin's own 503. A reserve retried with the same key is safe either way.
+  if (isTransientDbError(error) || isTransientRedisError(error) || status === 503) {
     return {
       body: details(503, 'RETRY', 'Temporarily unavailable, retry', traceId),
       headers: { 'retry-after': String(RETRY_AFTER_SECONDS) },
@@ -94,7 +99,8 @@ export function handleError(error: Error, request: FastifyRequest, reply: Fastif
   const problem = toProblem(error, request.traceId);
   const { status } = problem.body;
   if (status === 503) request.log.warn({ err: error }, 'dependency unavailable');
-  else if (status >= 500) request.log.error({ err: error }, 'request failed');
+  // Any 500 is a broken assumption (a BugError, an unvalidated qty reaching Lua, §5.2): it pages.
+  else if (status >= 500) alert(request.log, 'request_failed', { err: error }, 'request failed');
   return sendProblem(reply, problem);
 }
 

@@ -1,7 +1,9 @@
 import { ProblemDetails } from '@flashdrop/contracts';
 import { BugError, DomainError, NotFoundError, RetryError, ValidationError } from '@flashdrop/domain';
+import { ClientOfflineError, ErrorReply, SocketClosedUnexpectedlyError } from 'redis';
 import { describe, expect, it } from 'vitest';
 import { toProblem } from './problem';
+import { RateLimitedError } from './rate-limit';
 
 const TRACE = 'f'.repeat(32);
 
@@ -60,6 +62,23 @@ describe('toProblem', () => {
       expect(body).toMatchObject({ status: 503, code: 'RETRY' });
       expect(headers).toEqual({ 'retry-after': '1' });
     }
+  });
+
+  it('turns an unreachable or refusing Redis into 503 RETRY', () => {
+    const offline = new ClientOfflineError();
+    const oom = new ErrorReply("OOM command not allowed when used memory > 'maxmemory'.");
+    for (const error of [offline, new SocketClosedUnexpectedlyError(), oom]) {
+      const { body, headers } = toProblem(error, TRACE);
+      expect(body).toMatchObject({ status: 503, code: 'RETRY' });
+      expect(headers).toEqual({ 'retry-after': '1' });
+    }
+    expect(toProblem(new ErrorReply('ERR syntax error'), TRACE).body).toMatchObject({ status: 500 });
+  });
+
+  it('answers a rate limit with 429 and the seconds until the window resets', () => {
+    const { body, headers } = toProblem(new RateLimitedError(2), TRACE);
+    expect(body).toMatchObject({ status: 429, code: 'RATE_LIMITED', title: 'Too Many Requests' });
+    expect(headers).toEqual({ 'retry-after': '2' });
   });
 
   it.each([

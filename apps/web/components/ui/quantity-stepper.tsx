@@ -7,14 +7,21 @@ import { IconButton } from './icon-button';
 
 type QuantityStepperProps = {
   value: number;
-  /** The drop's per-person limit. With a limit of 1 there is nothing to choose and nothing renders (§9.6). */
+  /** The most that can be chosen now: the limit, or fewer while fewer are left. Plus is disabled there. */
   max: number;
+  /**
+   * The drop's per-person limit, `max` by default. With a limit of 1 there is nothing to choose and nothing
+   * renders (§9.6). Fewer left than the limit only caps `max`, so the stepper keeps its place in the row.
+   */
+  limit?: number;
   onChange: (value: number) => void;
   /**
    * `md` is the 44 px pill; `lg` is 56 px, beside an lg Buy button, so the two pills share their top and
    * bottom edges. Its 44 px buttons stay inset, concentric with its rounded ends (§9.6).
    */
   size?: 'md' | 'lg';
+  /** Both buttons take the disabled look and ignore presses, while the chosen quantity is being reserved. */
+  disabled?: boolean;
 };
 
 /**
@@ -22,11 +29,18 @@ type QuantityStepperProps = {
  * place once the buyer changed it (a CSS keyframe on the remounted number, so the stepper needs no animation
  * library).
  */
-export function QuantityStepper({ value, max, onChange, size = 'md' }: QuantityStepperProps) {
+export function QuantityStepper({
+  value,
+  max,
+  limit = max,
+  onChange,
+  size = 'md',
+  disabled = false,
+}: QuantityStepperProps) {
   // Set by the buttons only, so the first render (and hydration) shows the number without motion. It is
   // batched with the parent's update from the same click, so it costs no extra render.
   const [changed, setChanged] = useState(false);
-  if (max < 2) return null;
+  if (limit < 2) return null;
 
   function step(next: number): void {
     setChanged(true);
@@ -45,7 +59,7 @@ export function QuantityStepper({ value, max, onChange, size = 'md' }: QuantityS
         label="Decrease quantity"
         icon={Minus}
         smallIcon
-        disabled={value <= 1}
+        disabled={disabled || value <= 1}
         onClick={() => step(value - 1)}
       />
       <output
@@ -63,7 +77,7 @@ export function QuantityStepper({ value, max, onChange, size = 'md' }: QuantityS
         label="Increase quantity"
         icon={Plus}
         smallIcon
-        disabled={value >= max}
+        disabled={disabled || value >= max}
         onClick={() => step(value + 1)}
       />
     </fieldset>

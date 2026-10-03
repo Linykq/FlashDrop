@@ -4,6 +4,19 @@
   "type": "module",
   "exports": "./src/index.ts",
   "scripts": {
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "embed-lua": "tsx scripts/embed-lua.ts"
+  },
+  "dependencies": {
+    "@flashdrop/config": "workspace:*",
+    "@flashdrop/db": "workspace:*",
+    "@flashdrop/domain": "workspace:*",
+    "pg": "catalog:",
+    "redis": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/pg": "catalog:",
+    "fast-check": "catalog:"
   }
 }

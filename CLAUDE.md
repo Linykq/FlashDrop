@@ -38,5 +38,5 @@ Apple-level polish, light-first with full dark mode. Follow `docs/design-system.
 - Only edit files inside the area your task assigns you. If you need a change elsewhere (a dependency, a shared type), report it instead of making it, unless your task says you own it.
 - Do not run `git commit`, `git push`, `git reset`, `git checkout -- .`, or `git stash`. The lead commits.
 - Do not run `pnpm add`/`pnpm remove` unless your task says you own dependency changes; report needed packages instead.
-- The Compose infra (Postgres 5433, Redis 6379, Kafka 9092) is shared. Start it with `pnpm infra:up` if it is down; never `down -v` it unless your task says so. Use unique ids instead of wiping data.
+- The Compose infra (Postgres 5433, Redis 6379, Kafka 9092, plus the throwaway `redis-test` on 6380 for tests that must replace the Functions library) is shared. Start it with `pnpm infra:up` if it is down; never `down -v` it unless your task says so. Use unique ids instead of wiping data.
 - Never commit secrets. `.env` is git-ignored; `.env.example` documents every variable.

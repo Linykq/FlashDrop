@@ -9,6 +9,11 @@ import { configDefaults, defineConfig } from 'vitest/config';
 const dotenv = fileURLToPath(new URL('.env', import.meta.url));
 if (existsSync(dotenv)) process.loadEnvFile(dotenv);
 
+// Tests use their own Redis (`redis-test` in compose.yaml), never the one the running stack uses: the
+// Functions library is global to a Redis, so a run from an edited working tree would otherwise load its Lua
+// under the stack's containers, or be served the stack's copy instead of its own (design §4.2).
+process.env.REDIS_URL = process.env.REDIS_TEST_URL || 'redis://127.0.0.1:6380';
+
 const exclude = [...configDefaults.exclude, '**/.next/**', '**/dist/**', '**/.turbo/**'];
 const integrationTests = '**/*.int.test.{ts,tsx}';
 

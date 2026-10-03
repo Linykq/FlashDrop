@@ -1,0 +1,2 @@
+ALTER TABLE "products" DROP CONSTRAINT "products_source_check";--> statement-breakpoint
+ALTER TABLE "products" ADD CONSTRAINT "products_source_check" CHECK ("products"."source" IN ('manual', 'llm', 'test'));

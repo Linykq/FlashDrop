@@ -6,6 +6,7 @@ import { getViewer } from '../../lib/server/session';
 import { initials } from '../../lib/text';
 import { Footer } from './footer';
 import { type NavAccount, NavigationBar, NavSentinel } from './nav-bar';
+import { SkipLink } from './skip-link';
 
 /**
  * The storefront chrome: navigation bar, <main> and footer, at least one viewport tall so a short page keeps
@@ -16,6 +17,7 @@ export function StoreShell({ children }: { children: ReactNode }) {
   // TODO(M5): pass `liveHref` (the LIVE drop's room, from liveRoomHref) to the bar and the footer.
   return (
     <div className="flex min-h-dvh flex-col">
+      <SkipLink />
       <Suspense fallback={<NavigationBar account={undefined} />}>
         <SessionNavigationBar />
       </Suspense>

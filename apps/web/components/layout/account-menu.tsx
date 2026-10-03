@@ -4,6 +4,7 @@ import { ChevronRight, LogOut } from 'lucide-react';
 import Link from 'next/link';
 import { useId, useRef } from 'react';
 import { cx } from '../../lib/cx';
+import { ORDERS_HREF } from '../../lib/routes';
 import { useSignOut } from '../../lib/use-sign-out';
 import { Avatar } from '../ui/avatar';
 import { Spinner } from '../ui/spinner';
@@ -13,7 +14,7 @@ const rowClass =
   'flex min-h-11 w-full items-center gap-2 rounded-md px-3 text-callout text-label transition-colors duration-100 ease-standard hover:bg-fill-quaternary hover:duration-200 active:bg-fill-tertiary active:duration-0';
 
 /**
- * The avatar and its menu: who is signed in, the account page and signing out. A native `popover`, which
+ * The avatar and its menu: who is signed in, the account page, the orders and signing out. A native `popover`, which
  * brings light dismiss, Esc and the invoker's expanded state without a library (design-system §8.6). It
  * floats on `material-thick`, so everything in it is `label` (§2.5).
  */
@@ -47,6 +48,10 @@ export function AccountMenu({ account }: { account: NavAccount }) {
         <div aria-hidden="true" className="mx-3 mb-1.5 h-px bg-separator" />
         <Link href="/login" onClick={close} className={rowClass}>
           <span className="flex-1">Account</span>
+          <ChevronRight size={16} />
+        </Link>
+        <Link href={ORDERS_HREF} onClick={close} className={rowClass}>
+          <span className="flex-1">Orders</span>
           <ChevronRight size={16} />
         </Link>
         {account.adminHref && (

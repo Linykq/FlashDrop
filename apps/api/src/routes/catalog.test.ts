@@ -89,6 +89,15 @@ describe('GET /api/v1/drops/:dropId/stock', () => {
     expect(StockSnapshot.parse(response.json())).toEqual({ ...LIVE_STOCK, serverNow: NOW.toISOString() });
   });
 
+  it('answers 503 RETRY, uncached, while the drop is being rebuilt in Redis', async () => {
+    state.rebuilding.add(LIVE_DROP.id);
+    const response = await app.inject({ url: `/api/v1/drops/${LIVE_DROP.id}/stock` });
+    expect(response.statusCode).toBe(503);
+    expect(response.headers['retry-after']).toBe('1');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.json()).toMatchObject({ code: 'RETRY' });
+  });
+
   it('answers an unknown drop with an uncached 404', async () => {
     const response = await app.inject({ url: '/api/v1/drops/11111111-1111-4111-8111-111111111111/stock' });
     expect(response.statusCode).toBe(404);

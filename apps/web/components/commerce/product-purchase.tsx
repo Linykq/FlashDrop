@@ -1,30 +1,31 @@
 import { type DropInfo, type Product, type StockSnapshot, uploadPath } from '@flashdrop/contracts';
-import { CalendarClock, ChevronRight } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import Link from 'next/link';
 import { unstable_rethrow } from 'next/navigation';
+import { type HeldOrder, liveHold } from '../../lib/hold';
 import { productJsonLd, serializeJsonLd } from '../../lib/json-ld';
+import type { LiveLevel } from '../../lib/live-stock';
 import { liveRoomHref, productHref } from '../../lib/routes';
 import { getStock } from '../../lib/server/catalog';
 import { log } from '../../lib/server/log';
+import { readMyOrders } from '../../lib/server/orders';
 import { requestOrigin } from '../../lib/server/request';
-import { getViewer } from '../../lib/server/session';
-import { describeStock, type StockState, toStockState } from '../../lib/stock';
+import { getViewer, type Viewer } from '../../lib/server/session';
+import { describeStock, type StockState, toLiveSeed } from '../../lib/stock';
 import { Skeleton, SkeletonText } from '../ui/skeleton';
-import { DropStatusPill } from '../ui/status-pill';
-import { Countdown } from './countdown';
-import { LiveBadge } from './live-badge';
-import { LocalTime } from './local-time';
-import { PurchasePanel } from './purchase-panel';
-import { StockText } from './stock-text';
+import { LiveDropStatus } from './live-drop-status';
+import { LivePurchasePanel } from './live-purchase-panel';
 
 /*
  * The request-time parts of the product page (SD §8.1): they read the uncached stock snapshot, so the raw
- * HTML carries the current number, and the session, for the Buy button. Each sits in its own <Suspense>
+ * HTML carries the current number, and the session, for the Buy button and the buyer's live hold on the drop.
+ * Each sits in its own <Suspense>
  * hole inside the cached product shell; `getStock` is memoised per request, so they share one api read.
+ * The snapshot seeds the drop's live stock store, which both islands then follow (SD §8.2).
  */
 
 /** The snapshot, or `null` when api cannot answer; the product shell around it still renders. */
-async function readStock(drop: DropInfo): Promise<{ stock: StockState; serverNow: number } | null> {
+async function readStock(drop: DropInfo): Promise<{ stock: LiveLevel; serverNow: number } | null> {
   let snapshot: StockSnapshot;
   try {
     snapshot = await getStock(drop.id);
@@ -33,39 +34,48 @@ async function readStock(drop: DropInfo): Promise<{ stock: StockState; serverNow
     log().warn({ err: error, dropId: drop.id }, 'stock snapshot unavailable');
     return null;
   }
-  return { stock: toStockState(snapshot, drop.status), serverNow: Date.parse(snapshot.serverNow) };
+  return { stock: toLiveSeed(snapshot, drop.status), serverNow: Date.parse(snapshot.serverNow) };
 }
 
-/**
- * "[LIVE] Ends in 12:04" above the title (§10.2). A scheduled drop shows when it opens, as the home hero does,
- * and leaves the state to LiveStock's countdown and the Buy button: a "Scheduled" pill would only repeat them
- * (§1.4). Paused and ended drops show their status pill.
- */
+/** The status line above the title (§10.2), live from the snapshot on. */
 export async function DropStatusLine({ drop }: { drop: DropInfo }) {
   const read = await readStock(drop);
   if (!read) return <DropStatusLineSkeleton />;
-  const { stock, serverNow } = read;
   return (
-    <div className="flex min-h-6 items-center gap-2 text-footnote text-label-secondary">
-      {stock.status === 'LIVE' ? (
-        <>
-          <LiveBadge />
-          <Countdown target={drop.endsAt} serverNow={serverNow} verb="Ends" />
-        </>
-      ) : stock.status === 'SCHEDULED' ? (
-        <span className="inline-flex items-center gap-1.5">
-          <CalendarClock size={16} />
-          <LocalTime iso={drop.startsAt} />
-        </span>
-      ) : (
-        <DropStatusPill status={stock.status} />
-      )}
-    </div>
+    <LiveDropStatus
+      dropId={drop.id}
+      seed={read.stock}
+      startsAt={drop.startsAt}
+      endsAt={drop.endsAt}
+      serverNow={read.serverNow}
+    />
   );
 }
 
 export function DropStatusLineSkeleton() {
   return <div aria-hidden="true" className="min-h-6" />;
+}
+
+/**
+ * The most recent orders searched for a live hold on the drop. A hold lives a few minutes at most, so it is
+ * always among a buyer's latest orders.
+ */
+const RECENT_ORDERS = 20;
+
+/**
+ * The signed-in viewer's live hold on the drop, which the panel offers back (§9.13), or `null`. Without one
+ * the page still sells: an api that can't list orders right now costs only the reminder, and is logged.
+ */
+async function readHeldOrder(viewer: Viewer | null, dropId: string): Promise<HeldOrder | null> {
+  if (viewer === null) return null;
+  try {
+    const read = await readMyOrders(RECENT_ORDERS);
+    return read.kind === 'ok' ? liveHold(read.value, dropId) : null;
+  } catch (error) {
+    unstable_rethrow(error);
+    log().warn({ err: error, dropId }, 'cannot list orders for the product page');
+    return null;
+  }
 }
 
 type LivePurchaseProps = { product: Product; drop: DropInfo };
@@ -76,7 +86,8 @@ type LivePurchaseProps = { product: Product; drop: DropInfo };
  * JSON-LD then describes the product without an offer.
  */
 export async function LivePurchase({ product, drop }: LivePurchaseProps) {
-  const [read, viewer] = await Promise.all([readStock(drop), getViewer()]);
+  const viewer = await getViewer();
+  const [read, heldOrder] = await Promise.all([readStock(drop), readHeldOrder(viewer, drop.id)]);
   if (!read) {
     return (
       <div className="mt-6">
@@ -93,9 +104,9 @@ export async function LivePurchase({ product, drop }: LivePurchaseProps) {
 
   return (
     <>
-      <StockText className="mt-6" stock={stock} startsAt={drop.startsAt} serverNow={serverNow} />
-      <PurchasePanel
-        stock={stock}
+      <LivePurchasePanel
+        dropId={drop.id}
+        seed={stock}
         perUserLimit={drop.perUserLimit}
         holdSeconds={drop.holdSeconds}
         startsAt={drop.startsAt}
@@ -104,6 +115,7 @@ export async function LivePurchase({ product, drop }: LivePurchaseProps) {
         currency={drop.currency}
         signedIn={viewer !== null}
         returnTo={href}
+        heldOrder={heldOrder}
       />
       {watchHref && (
         <Link

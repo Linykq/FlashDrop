@@ -13,8 +13,8 @@ import type { z } from 'zod';
  * Reads of the public api, through Caddy like the browser's, each parsed with the contract api answers
  * with, so a spec fails on a shape change before it asserts anything about the page.
  *
- * TODO(M2): specs read the seeded drops until `POST /api/v1/test/drops` exists; then each spec creates
- * its own product and drop through a fixture (design §13), and stock may change under it.
+ * These read the seeded catalog and accounts, which only the home page and sign-in specs look at. Specs
+ * that touch stock create their own drop instead (`fixtures.ts`, design §13).
  */
 
 async function getJson<T extends z.ZodType>(

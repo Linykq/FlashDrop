@@ -11,12 +11,20 @@ export const timestamptz = (name: string) => timestamp(name, { withTimezone: tru
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 /**
+ * `'a', 'b'` inlined, for `status IN (...)` in hand-written queries: a literal list (unlike a bound array)
+ * lets the planner match the predicate of a partial index such as `orders_due` or `orders_unsettled`.
+ */
+export function literalList(values: readonly string[]): SQL {
+  return sql.raw(values.map(literal).join(', '));
+}
+
+/**
  * `column IN ('a', 'b')` for CHECKs and partial indexes, built from the value sets in `@flashdrop/domain`,
  * so the database and the code cannot list different values. A changed set changes the generated SQL, and
  * `drizzle-kit generate` then writes the migration for it.
  */
 export function inList(column: AnyPgColumn, values: readonly string[]): SQL {
-  return sql`${column} IN (${sql.raw(values.map(literal).join(', '))})`;
+  return sql`${column} IN (${literalList(values)})`;
 }
 
 /**

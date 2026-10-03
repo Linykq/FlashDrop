@@ -7,6 +7,11 @@
   },
   "dependencies": {
     "@confluentinc/kafka-javascript": "catalog:",
-    "sharp": "catalog:"
+    "@flashdrop/config": "workspace:*",
+    "@flashdrop/db": "workspace:*",
+    "@flashdrop/domain": "workspace:*",
+    "@flashdrop/inventory": "workspace:*",
+    "sharp": "catalog:",
+    "zod": "catalog:"
   }
 }

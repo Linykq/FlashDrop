@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createLogger } from '@flashdrop/config';
 import { SESSION_COOKIE } from '@flashdrop/config/constants';
 import {
   DevUsersResponse,
@@ -23,55 +22,43 @@ import {
   users,
 } from '@flashdrop/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildApp } from './app';
 import type { Api } from './http/api';
-import { createPostgresCatalog } from './services/catalog';
-import { postgresCheck } from './services/health';
 import { createPostgresStockReader } from './services/stock';
-import { createPostgresUsers } from './services/users';
-import { createSeededDatabase, type SeededDatabase } from './test/database';
+import { ORIGIN } from './test/fakes';
+import { createTestStack, type TestStack } from './test/stack';
+import { wireServices } from './wiring';
 
 /*
  * The api against Postgres: a throwaway database with the real migrations and the real seed (drops placed
- * around NOW), so every query runs against the schema and data it serves in development.
+ * around NOW), so every query runs against the schema and data it serves in development. Stock comes from
+ * Postgres here, as it did in M1: the seed's drops are never armed in the shared Redis by these tests (the
+ * reservation suite covers the Redis reader with drops of its own).
  */
 
 const NOW = new Date('2026-10-02T12:34:56.789Z');
-const ORIGIN = 'http://127.0.0.1:3000';
-const SECRET = 'integration-session-secret-32-chars!';
-const logger = createLogger({ name: 'api-int', level: 'silent' });
 
 const LIVE_DROP = seedId(4, 1);
 const ENDED_DROP = seedId(4, 4);
 
-let test: SeededDatabase;
+let stack: TestStack;
+let test: TestStack['database'];
 let app: Api;
 
-function appOver(pool: ReturnType<typeof createPool>, uploadDir: string): Promise<Api> {
-  const db = createDb(pool);
-  return buildApp({
-    logger,
-    roles: ['http'],
-    allowedOrigins: [ORIGIN],
-    sessionSecret: SECRET,
-    uploadDir,
-    services: {
-      catalog: createPostgresCatalog(db),
-      stock: createPostgresStockReader(db),
-      users: createPostgresUsers(db),
-      checks: { postgres: postgresCheck(pool) },
-    },
+function appOver(pool: ReturnType<typeof createPool>): Promise<Api> {
+  const { services } = wireServices({ ...stack.infra, pool, now: () => NOW });
+  return stack.build({
+    services: { ...services, stock: createPostgresStockReader(createDb(pool)) },
     now: () => NOW,
   });
 }
 
 beforeAll(async () => {
-  test = await createSeededDatabase(NOW);
-  app = await appOver(test.pool, test.uploadDir);
+  stack = await createTestStack(NOW);
+  test = stack.database;
+  app = await appOver(test.pool);
 });
 afterAll(async () => {
-  await app?.close();
-  await test?.drop();
+  await stack?.close();
 });
 
 /** A product with a drop in the given state, with fresh ids. The drop runs for an hour from `startsAt`. */
@@ -278,7 +265,7 @@ describe('uploads', () => {
 describe('health', () => {
   it('is ready while Postgres answers', async () => {
     const response = await app.inject({ url: '/api/v1/health' });
-    expect(response.json()).toEqual({ status: 'ok', checks: { postgres: 'ok' } });
+    expect(response.json()).toEqual({ status: 'ok', checks: { postgres: 'ok', redis: 'ok' } });
   });
 
   it('answers 503 RETRY, not 500, while Postgres is unreachable', async () => {
@@ -287,7 +274,7 @@ describe('health', () => {
       logger: { warn: () => undefined },
       ...POOL_PROFILES.api,
     });
-    const down = await appOver(unreachable, test.uploadDir);
+    const down = await appOver(unreachable);
     try {
       for (const url of ['/api/v1/health', '/api/v1/drops', `/api/v1/drops/${LIVE_DROP}/stock`]) {
         const response = await down.inject({ url });
@@ -311,7 +298,7 @@ describe('health', () => {
       max: 1,
     });
     const held = await exhausted.connect();
-    const busy = await appOver(exhausted, test.uploadDir);
+    const busy = await appOver(exhausted);
     try {
       const started = performance.now();
       const response = await busy.inject({ url: '/api/v1/drops' });

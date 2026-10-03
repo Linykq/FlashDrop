@@ -1,5 +1,4 @@
-import { expect, test } from '@playwright/test';
-import { liveDrop, stockSnapshot } from './support/api';
+import { expect, productOf, stockOf, test } from './support/fixtures';
 import { decodeHtmlText, escapeRegExp, formatCount } from './support/text';
 
 /*
@@ -8,22 +7,25 @@ import { decodeHtmlText, escapeRegExp, formatCount } from './support/text';
  * sent; the stock arrives in the same response, streamed from the page's uncached Suspense hole. Where the
  * <title> sits is not asserted: Next 16.3 streams metadata into <body> for most user agents (spike §3.6).
  */
-test('the raw HTML of a product page carries its title and current stock', async ({ request }) => {
-  const drop = await liveDrop(request);
 
-  const response = await request.get(`/p/${drop.product.slug}`);
+test.use({ dropSettings: { stock: 37 } });
+
+test('the raw HTML of a product page carries its title and current stock', async ({ request, drop }) => {
+  const { product } = await productOf(request, drop.productSlug);
+
+  const response = await request.get(`/p/${drop.productSlug}`);
   expect(response.status()).toBe(200);
   expect(response.headers()['content-type']).toMatch(/^text\/html/);
   const html = await response.text();
 
-  // Stock is read from Postgres and nothing reserves before M2, so the snapshot equals what was rendered.
-  const stock = await stockSnapshot(request, drop.id);
-  expect(stock.avail, 'the LIVE drop has units left').toBeGreaterThan(0);
+  // The spec's own drop: nobody reserves from it, so the live level is what was rendered.
+  const stock = await stockOf(request, drop.id);
+  expect(stock).toMatchObject({ status: 'LIVE', avail: 37 });
 
   const titles = Array.from(html.matchAll(/<title>([^<]*)<\/title>/g), ([, text = '']) =>
     decodeHtmlText(text),
   );
-  expect(titles, 'the document title').toContainEqual(expect.stringContaining(drop.product.title));
+  expect(titles, 'the document title').toContainEqual(expect.stringContaining(product.title));
 
   // Matched as a whole text node: markup such as the class list "opacity-100 left-4" contains "100 left".
   expect(html).toMatch(new RegExp(`>(Only )?${escapeRegExp(formatCount(stock.avail))} left<`));

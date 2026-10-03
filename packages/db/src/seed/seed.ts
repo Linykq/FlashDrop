@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import type { Logger } from '@flashdrop/config';
 import type { ImageKey } from '@flashdrop/contracts';
 import { OPEN_DROP_STATUSES } from '@flashdrop/domain';
-import { and, eq, inArray, ne, notExists, or } from 'drizzle-orm';
+import { and, eq, inArray, ne, notExists, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { Db, Tx } from '../client';
+import { dropLockKey } from '../drops';
 import {
   dropInventory,
   drops,
@@ -32,8 +33,8 @@ export interface SeedOptions {
   readonly now?: Date;
   /**
    * Hands the seeded drops to Redis once Postgres has committed them: the seed arms its drops through the
-   * same service as `POST /admin/drops/:id/arm` (§15), which is `syncDropFromPostgres` (§4.7). M1 has no
-   * Redis, so nothing is passed yet. `packages/inventory` depends on this package, so the caller injects it.
+   * same service as `POST /admin/drops/:id/arm` (§15), which is `syncDropFromPostgres` (§4.7; `tools/seed.ts`
+   * passes it). `packages/inventory` depends on this package, so the caller injects it.
    */
   readonly armDrops?: (dropIds: readonly string[]) => Promise<void>;
 }
@@ -54,9 +55,9 @@ export interface SeedResult {
  * history is written only by the run that creates the drop, so re-running at the same `now` changes nothing.
  *
  * The exception: seeded drops that nobody has ordered from follow the clock. Each run moves their window and
- * status back around `now`, so every `stack:up` (which runs the seed) starts with a LIVE drop, although
- * nothing else changes a drop's status before M2's scheduler. A drop with orders keeps its window, because
- * its orders happened inside it. `pnpm db:reset-dev` starts over completely.
+ * status back around `now` (under each drop's lock, see `moveIdleDrops`), so every `stack:up` (which runs
+ * the seed) starts with a LIVE drop. A drop with orders keeps its window, because its orders happened
+ * inside it. `pnpm db:reset-dev` starts over completely.
  */
 export async function seedDatabase(db: Db, options: SeedOptions): Promise<SeedResult> {
   const catalog = await loadCatalog(options.catalogDir);
@@ -165,13 +166,19 @@ async function writePlan(tx: Tx, plan: SeedPlan) {
 /**
  * Moves existing seeded drops without orders to their planned window and status (see `seedDatabase`).
  * Returns how many changed.
+ *
+ * Each drop is moved under its drop lock (§4.7), like every other write of an armed drop's status: the
+ * transaction-level advisory lock on the same key conflicts with the session-level one that the scheduler,
+ * the reconciler and admin actions hold, and this commit releases it. `armDrops` then rebuilds the drop's
+ * Redis state from the moved window. Until it does, Redis may admit on the old window; the Postgres window
+ * backstop refuses anything outside the new one. The row is locked only after its advisory lock, as every
+ * holder of a drop lock does, so the two cannot deadlock.
  */
 async function moveIdleDrops(tx: Tx, planned: SeedPlan['drops']): Promise<number> {
   const other = alias(drops, 'other');
   let moved = 0;
   for (const { drop } of planned) {
-    // TODO(M2): hold the drop lock (§4.7) while moving an armed drop, like every other writer of its status;
-    // armDrops then rebuilds its Redis state from the moved window.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${dropLockKey(drop.id)})`);
     const rows = await tx
       .update(drops)
       .set({ startsAt: drop.startsAt, endsAt: drop.endsAt, status: drop.status })

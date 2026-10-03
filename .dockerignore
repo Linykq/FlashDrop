@@ -16,12 +16,16 @@ build
 **/.env.*
 !**/.env.example
 
-# Not read by any image build.
+# Not read by any image build. Both Dockerfiles `COPY . .` before bundling, so a file here that changes
+# (k6 results and the invariants report are rewritten by every load run and `verify:invariants`) would
+# invalidate that layer and rerun tsup and `next build` with no source change. tests/ holds no manifest.
 .git
 .github
 .vscode
 .idea
 docs
+tests
+invariants-report.json
 coverage
 playwright-report
 test-results

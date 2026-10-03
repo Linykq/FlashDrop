@@ -1,9 +1,13 @@
 import { uploadPath } from '@flashdrop/contracts';
-import { expect, test } from '@playwright/test';
 import { liveDrop, openDrops, seededBuyer, sessionUser, stockSnapshot } from './support/api';
+import { expect, productOf, stockOf, test } from './support/fixtures';
 import { escapeRegExp, formatPrice, stockLinePattern } from './support/text';
 
-/** The storefront's M1 paths (design §8.1, design-system §10.1, §10.2, §10.6), in a real browser. */
+/*
+ * The storefront's M1 paths (design §8.1, design-system §10.1, §10.2, §10.6), in a real browser. The home page
+ * shows the seeded catalog, which test drops never join (they are not listed); the product page uses the
+ * spec's own drop.
+ */
 
 test('home features the live drop and lists the upcoming ones', async ({ page, request }) => {
   const drops = await openDrops(request);
@@ -29,18 +33,20 @@ test('home features the live drop and lists the upcoming ones', async ({ page, r
   }
 });
 
-test('product page shows the gallery, price and stock', async ({ page, request }) => {
-  const drop = await liveDrop(request);
-  const { title, imageKeys } = drop.product;
+test('product page shows the gallery, price and stock', async ({ page, request, drop }) => {
+  const detail = await productOf(request, drop.productSlug);
+  const { title, imageKeys } = detail.product;
+  if (detail.drop === null) throw new Error(`${drop.productSlug} has no drop`);
+  const { priceCents, currency } = detail.drop;
   const [firstKey] = imageKeys;
-  if (firstKey === undefined) throw new Error(`${drop.product.slug} has no photos`);
+  if (firstKey === undefined) throw new Error(`${drop.productSlug} has no photos`);
 
   // The original photo, from api's content-addressed store through Caddy.
   const original = await request.get(uploadPath(firstKey));
   expect(original.status()).toBe(200);
   expect(original.headers()['content-type']).toBe('image/jpeg');
 
-  await page.goto(`/p/${drop.product.slug}`);
+  await page.goto(`/p/${drop.productSlug}`);
   const main = page.getByRole('main');
   await expect(main.getByRole('heading', { level: 1 })).toHaveText(title);
 
@@ -60,9 +66,9 @@ test('product page shows the gallery, price and stock', async ({ page, request }
 
   // The phone's sticky buy bar repeats price and stock; on desktop only the panel's copy is visible.
   await expect(
-    main.getByText(formatPrice(drop.priceCents, drop.currency), { exact: true }).filter({ visible: true }),
+    main.getByText(formatPrice(priceCents, currency), { exact: true }).filter({ visible: true }),
   ).toHaveCount(1);
-  const stock = await stockSnapshot(request, drop.id);
+  const stock = await stockOf(request, drop.id);
   await expect(main.getByText(stockLinePattern(stock.avail)).filter({ visible: true })).toHaveCount(1);
 });
 
