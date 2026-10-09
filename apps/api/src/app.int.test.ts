@@ -7,6 +7,7 @@ import {
   DropListResponse,
   MeResponse,
   ProductDetail,
+  RoomDetail,
   StockSnapshot,
 } from '@flashdrop/contracts';
 import {
@@ -15,8 +16,10 @@ import {
   dropInventory,
   drops,
   eq,
+  inArray,
   POOL_PROFILES,
   products,
+  rooms,
   SEED_USERS,
   seedId,
   users,
@@ -147,6 +150,43 @@ describe('catalog', () => {
       (await app.inject({ url: '/api/v1/products/ring-stoneware-vase' })).json(),
     );
     expect(none.drop).toBeNull();
+  });
+
+  it('returns a room with the drop its topic pins: the open one, else the latest ended, else none', async () => {
+    const studio = RoomDetail.parse((await app.inject({ url: '/api/v1/rooms/studio' })).json());
+    expect(studio.room).toEqual({
+      id: seedId(2, 1),
+      slug: 'studio',
+      title: 'FlashDrop Studio',
+      hlsUrl: '/hls/live.m3u8',
+    });
+    expect(studio.drop).toMatchObject({
+      id: LIVE_DROP,
+      product: { slug: 'sage-wireless-headphones' },
+      stock: { avail: 250, status: 'LIVE' },
+    });
+
+    const roomId = randomUUID();
+    const slug = `test-room-${roomId.slice(0, 8)}`;
+    await test.db
+      .insert(rooms)
+      .values({ id: roomId, slug, title: 'Integration Room', hlsUrl: '/hls/live.m3u8' });
+    const empty = RoomDetail.parse((await app.inject({ url: `/api/v1/rooms/${slug}` })).json());
+    expect(empty.drop).toBeNull();
+
+    // Test products, which the catalog never lists, so the other tests' listings stay as seeded.
+    const ended = await insertProduct('PUBLISHED', 'ENDED', new Date(NOW.getTime() - 7_200_000));
+    const draft = await insertProduct('PUBLISHED', 'DRAFT');
+    await test.db
+      .update(products)
+      .set({ source: 'test' })
+      .where(inArray(products.id, [ended.productId, draft.productId]));
+    await test.db.update(drops).set({ roomId }).where(eq(drops.id, ended.dropId));
+    await test.db.update(drops).set({ roomId }).where(eq(drops.id, draft.dropId));
+    const pinned = RoomDetail.parse((await app.inject({ url: `/api/v1/rooms/${slug}` })).json());
+    expect(pinned.drop).toMatchObject({ id: ended.dropId, status: 'ENDED', room: { slug } });
+
+    expect((await app.inject({ url: '/api/v1/rooms/no-such-room' })).statusCode).toBe(404);
   });
 
   it('hides DRAFT products and DRAFT drops everywhere', async () => {

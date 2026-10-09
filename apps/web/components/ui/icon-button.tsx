@@ -4,11 +4,13 @@ import { cx } from '../../lib/cx';
 
 export type IconButtonVariant = 'gray' | 'plain' | 'overlay';
 
+// A toggle that is on (`aria-pressed`) keeps its hover fill, so its state shows without hovering or a cue on
+// screen: a captions button looks the same on and off otherwise (§9.2).
 const variantClass: Record<IconButtonVariant, string> = {
-  gray: 'bg-fill-tertiary text-label hover:bg-fill-secondary active:bg-fill',
-  plain: 'text-label hover:bg-fill-quaternary active:bg-fill-tertiary',
+  gray: 'bg-fill-tertiary text-label hover:bg-fill-secondary active:bg-fill aria-pressed:bg-fill-secondary',
+  plain: 'text-label hover:bg-fill-quaternary active:bg-fill-tertiary aria-pressed:bg-fill-tertiary',
   // Only on `material-overlay`, where `label` is white: a white wash on hover and press (§9.2).
-  overlay: 'text-label hover:bg-label/16 active:bg-label/24',
+  overlay: 'text-label hover:bg-label/16 active:bg-label/24 aria-pressed:bg-label/16',
 };
 
 type IconButtonProps = Omit<
@@ -23,6 +25,8 @@ type IconButtonProps = Omit<
   size?: 'sm' | 'md';
   /** A 16 px icon in a 44 px button, where the button sits inside a control (the quantity stepper). */
   smallIcon?: boolean;
+  /** A 24 px icon in a 44 px button: the player's controls (§7, size lg). */
+  largeIcon?: boolean;
   /** Toggle state (mute, captions, pause updates), exposed as `aria-pressed`. */
   pressed?: boolean;
   disabled?: boolean;
@@ -36,6 +40,7 @@ export function IconButton({
   variant = 'plain',
   size = 'md',
   smallIcon = false,
+  largeIcon = false,
   pressed,
   disabled = false,
   type = 'button',
@@ -69,7 +74,7 @@ export function IconButton({
         className,
       )}
     >
-      <Icon size={size === 'sm' || smallIcon ? 16 : 20} />
+      <Icon size={size === 'sm' || smallIcon ? 16 : largeIcon ? 24 : 20} />
     </button>
   );
 }

@@ -15,11 +15,14 @@
     "@flashdrop/contracts": "workspace:*",
     "@flashdrop/domain": "workspace:*",
     "framer-motion": "catalog:",
+    "hls.js": "catalog:",
     "jose": "catalog:",
     "lucide-react": "catalog:",
     "next": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "react-is": "catalog:",
+    "recharts": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

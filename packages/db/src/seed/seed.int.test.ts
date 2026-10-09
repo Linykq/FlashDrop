@@ -4,10 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ImageKey, ProductAttributes, SessionUser } from '@flashdrop/contracts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { readDashboardCheck } from '../dashboard';
 import { DROP_LOCK_NAMESPACE } from '../drops';
 import { createTestDatabase, type TestDatabase } from '../test-database';
 import { REPO_CATALOG_DIR } from './catalog';
-import { SEED_USERS } from './plan';
+import { SEED_USERS, seedId } from './plan';
 import { type SeedResult, seedDatabase } from './seed';
 
 const NOW = new Date('2026-10-02T17:23:45.678Z');
@@ -179,6 +180,31 @@ describe('seedDatabase', () => {
         charged: 34_000,
       });
     }
+  });
+
+  it('writes the history to the outbox, so the pipeline carries it and INV-5 compares it', async () => {
+    const ended = seedId(4, 4);
+    const { rows } = await test.pool.query(
+      `SELECT ob.event_type, ob.partition_key, ob.published_at, ob.payload->>'occurredAt' AS occurred_at,
+              o.status, o.redis_settled_at
+       FROM outbox ob JOIN orders o ON o.id = (ob.payload->>'orderId')::uuid
+       WHERE o.drop_id = $1 ORDER BY ob.id`,
+      [ended],
+    );
+    expect(rows).toHaveLength(15);
+    expect(rows.slice(0, 3).map((row) => row.event_type)).toEqual([
+      'order.reserved',
+      'order.placed',
+      'order.paid',
+    ]);
+    for (const row of rows) {
+      // Unpublished, for the relay; the payment group skips a PAID order and settlement a settled one.
+      expect(row).toMatchObject({ published_at: null, status: 'PAID' });
+      expect(row.redis_settled_at).not.toBeNull();
+      expect(Date.parse(row.occurred_at)).toBeLessThan(NOW.getTime());
+    }
+    const check = await readDashboardCheck(test.db, ended);
+    expect(check).toMatchObject({ eventless: 0, truth: { reserved: 5, placed: 5, paid: 5, unitsSold: 50 } });
   });
 
   // Last: it moves the drops the tests above place around NOW.

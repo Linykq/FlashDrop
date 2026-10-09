@@ -1,0 +1,58 @@
+{
+  "description": "The first answer wraps the JSON in prose and a code fence (not valid JSON); the repair turn fixes it: READY after 2 calls.",
+  "image": "candle.jpg",
+  "responses": [
+    {
+      "id": "msg_fixture_0007",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "Here is the listing:\n```json\n{\n  \"title\": \"Amber Glass Jar Candle with Wooden Lid\",\n  \"description\": \"A candle poured into a ribbed amber glass jar and finished with a light ash wood lid. The warm glass glows when lit and the lid keeps dust out between uses, so it sits as neatly on a shelf as on a bedside table.\",\n  \"highlights\": [\n    \"Ribbed amber glass jar\",\n    \"Light wooden lid that doubles as a coaster\",\n    \"Warm glow through the glass\"\n  ],\n  \"category\": \"home\",\n  \"attributes\": {\n    \"brand\": null,\n    \"color\": \"Amber\",\n    \"material\": \"Glass, wax, wood\",\n    \"size\": null\n  },\n  \"condition\": \"new\",\n  \"tags\": [\n    \"candle\",\n    \"amber\",\n    \"glass jar\",\n    \"wooden lid\",\n    \"home\"\n  ],\n  \"uncertainties\": [\n    {\n      \"field\": \"size\",\n      \"note\": \"What is the net weight of the wax?\"\n    },\n    {\n      \"field\": \"material\",\n      \"note\": \"Which wax is it? The photo shows only the jar.\"\n    }\n  ]\n}\n```"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1208,
+        "output_tokens": 455,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    },
+    {
+      "id": "msg_fixture_0008",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Amber Glass Jar Candle with Wooden Lid\",\"description\":\"A candle poured into a ribbed amber glass jar and finished with a light ash wood lid. The warm glass glows when lit and the lid keeps dust out between uses, so it sits as neatly on a shelf as on a bedside table.\",\"highlights\":[\"Ribbed amber glass jar\",\"Light wooden lid that doubles as a coaster\",\"Warm glow through the glass\"],\"category\":\"home\",\"attributes\":{\"brand\":null,\"color\":\"Amber\",\"material\":\"Glass, wax, wood\",\"size\":null},\"condition\":\"new\",\"tags\":[\"candle\",\"amber\",\"glass jar\",\"wooden lid\",\"home\"],\"uncertainties\":[{\"field\":\"size\",\"note\":\"What is the net weight of the wax?\"},{\"field\":\"material\",\"note\":\"Which wax is it? The photo shows only the jar.\"}]}"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1729,
+        "output_tokens": 398,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    }
+  ]
+}

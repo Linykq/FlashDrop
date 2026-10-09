@@ -57,7 +57,7 @@ const ratio = z
   .transform(Number)
   .pipe(z.number().max(1, 'must be a number between 0 and 1'));
 
-const perSecond = z
+const positiveWhole = z
   .string()
   .regex(/^\d+$/, 'must be a whole number')
   .transform(Number)
@@ -106,8 +106,13 @@ export const RevalidateEnv = z.object({
 export const ApiEnv = z.object({
   API_ROLES: list(oneOf(API_ROLES)).prefault('http,ws'),
   WS_ALLOWED_ORIGINS: list(origin).prefault('http://127.0.0.1:3000,http://127.0.0.1:8080'),
-  RATE_LIMIT_IP_PER_SEC: perSecond.default(100),
-  RATE_LIMIT_USER_PER_SEC: perSecond.default(10),
+  RATE_LIMIT_IP_PER_SEC: positiveWhole.default(100),
+  RATE_LIMIT_USER_PER_SEC: positiveWhole.default(10),
+  /**
+   * Open WebSockets per client address on one api instance (§11). The default stays above one k6 host at the
+   * laptop profile (2,000 sockets over two instances); behind a real edge, lower it.
+   */
+  WS_MAX_SOCKETS_PER_IP: positiveWhole.default(2_000),
 });
 
 export const WorkerEnv = z.object({

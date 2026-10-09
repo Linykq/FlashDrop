@@ -27,9 +27,9 @@ test('a declined card fails the payment, and the unit goes back on sale', async 
   const orderId = await buy(page, drop.productSlug);
   await fillShipping(page);
   // The payment methods are one native radio group: the arrow keys move the choice.
-  await page.getByRole('radio', { name: 'Card ending 4242' }).focus();
+  await page.getByRole('radio', { name: 'Test card that approves' }).focus();
   await page.keyboard.press('ArrowDown');
-  await expect(page.getByRole('radio', { name: 'Declining card' })).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Test card that declines' })).toBeChecked();
   await payButton(page).click();
 
   await expect(page).toHaveURL(ORDER_URL);
@@ -38,9 +38,9 @@ test('a declined card fails the payment, and the unit goes back on sale', async 
     page.getByText('Your test card was declined, so we released your reservation.', { exact: true }),
   ).toBeVisible();
   const details = page.getByRole('region', { name: 'Order details' });
-  await expect(details.getByText('Declining card')).toBeVisible();
-  const tryAgain = page.getByRole('link', { name: 'Try again' });
-  await expect(tryAgain).toHaveAttribute('href', `/p/${drop.productSlug}`);
+  await expect(details.getByText('Test card that declines')).toBeVisible();
+  const back = page.getByRole('link', { name: 'Back to the drop' });
+  await expect(back).toHaveAttribute('href', `/p/${drop.productSlug}`);
 
   expect(await orderOf(page.request, orderId)).toMatchObject({
     status: 'PAYMENT_FAILED',
@@ -53,7 +53,7 @@ test('a declined card fails the payment, and the unit goes back on sale', async 
     .toMatchObject({ avail: 1, held: 0, sold: 0 });
 
   // The limit of 1 came back with the unit: the buyer can try again.
-  await tryAgain.click();
+  await back.click();
   await expect(page).toHaveURL(`/p/${drop.productSlug}`);
   const main = page.getByRole('main');
   await expect(main.getByText(stockLinePattern(1)).filter({ visible: true })).toBeVisible();

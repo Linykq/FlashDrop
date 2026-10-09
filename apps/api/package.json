@@ -9,17 +9,25 @@
   },
   "dependencies": {
     "@fastify/cookie": "catalog:",
+    "@fastify/multipart": "catalog:",
     "@fastify/rate-limit": "catalog:",
+    "@fastify/websocket": "catalog:",
     "@flashdrop/config": "workspace:*",
     "@flashdrop/contracts": "workspace:*",
     "@flashdrop/db": "workspace:*",
     "@flashdrop/domain": "workspace:*",
     "@flashdrop/inventory": "workspace:*",
+    "@flashdrop/llm": "workspace:*",
+    "@flashdrop/messaging": "workspace:*",
     "fastify": "catalog:",
+    "file-type": "catalog:",
     "jose": "catalog:",
+    "sharp": "catalog:",
+    "ws": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/ws": "catalog:",
     "redis": "catalog:"
   }
 }

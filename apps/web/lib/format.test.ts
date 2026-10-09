@@ -10,6 +10,7 @@ import {
   formatOpening,
   formatTime,
   plural,
+  shortId,
 } from './format';
 
 describe('formatMoney', () => {
@@ -38,6 +39,12 @@ describe('formatCountdown', () => {
     [8_049_000, '2:14:09'],
   ])('%i ms reads %s', (ms, text) => {
     expect(formatCountdown(ms)).toBe(text);
+  });
+});
+
+describe('shortId', () => {
+  it('quotes the first 8 hex characters, uppercase', () => {
+    expect(shortId('3f2a9c1b-4d5e-5f60-8a7b-9c0d1e2f3a4b')).toBe('3F2A9C1B');
   });
 });
 

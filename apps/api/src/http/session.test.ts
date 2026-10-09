@@ -17,8 +17,14 @@ describe('createSessionCodec', () => {
   it('round-trips the claims of an HS256 token that lives 12 hours', async () => {
     const token = await codec.issue(USER);
     expect(decodeProtectedHeader(token)).toEqual({ alg: 'HS256', typ: 'JWT' });
-    expect(await codec.verify(token)).toEqual({ sub: USER.id, role: 'admin', name: 'Mira Chen' });
     const payload = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString());
+    // `exp` is kept: the gateway closes a socket whose session expired.
+    expect(await codec.verify(token)).toEqual({
+      sub: USER.id,
+      role: 'admin',
+      name: 'Mira Chen',
+      exp: payload.exp,
+    });
     expect(payload.exp - payload.iat).toBe(SESSION_TTL_SECONDS);
   });
 
@@ -43,6 +49,12 @@ describe('createSessionCodec', () => {
       .setExpirationTime('1h')
       .sign(KEY);
     expect(await codec.verify(wrongRole)).toBeNull();
+    // A session that never expires would keep a WebSocket subscribed forever.
+    const endless = await new SignJWT({ role: 'admin', name: 'x' })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(USER.id)
+      .sign(KEY);
+    expect(await codec.verify(endless)).toBeNull();
   });
 
   it('rejects malformed input', async () => {

@@ -46,6 +46,11 @@ export const TestDropBody = z.object({
     .max(7 * 24 * 60 * 60)
     .default(30 * 60),
   priceCents: Cents.default(2_500),
+  /**
+   * Gives the drop a live room of its own, pinned to it and playing the local sample stream, for the live
+   * room spec (§13). Like test products, test rooms are reachable by URL but never listed.
+   */
+  room: z.boolean().optional(),
 });
 export type TestDropBody = z.output<typeof TestDropBody>;
 
@@ -55,5 +60,7 @@ export const TestDropResponse = z.object({
   productSlug: Slug,
   startsAt: IsoDateTime,
   endsAt: IsoDateTime,
+  /** The drop's own room (`room: true`), else null. */
+  room: z.object({ id: Uuid, slug: Slug }).nullable(),
 });
 export type TestDropResponse = z.infer<typeof TestDropResponse>;

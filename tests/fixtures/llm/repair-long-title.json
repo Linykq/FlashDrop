@@ -1,0 +1,58 @@
+{
+  "description": "The first answer has a 104-character title; the repair turn fixes it: READY after 2 calls.",
+  "image": "vase.jpg",
+  "responses": [
+    {
+      "id": "msg_fixture_0002",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Ribbed Ivory Stoneware Vase with Horizontal Rings, Matte Glaze and a Gently Tapered Neck for Dried Stems\",\"description\":\"A tall stoneware vase in a warm ivory glaze, shaped with even horizontal rings that catch the light. The matte finish and gently tapered neck suit dried stems or a single fresh branch on a shelf or table.\",\"highlights\":[\"Hand-thrown look with even horizontal rings\",\"Matte ivory glaze\",\"Tapered neck for single stems or dried bunches\"],\"category\":\"home\",\"attributes\":{\"brand\":null,\"color\":\"Ivory\",\"material\":\"Stoneware\",\"size\":null},\"condition\":\"new\",\"tags\":[\"vase\",\"stoneware\",\"ceramic\",\"ivory\",\"home decor\"],\"uncertainties\":[{\"field\":\"size\",\"note\":\"Nothing in the photo shows scale. How tall is the vase?\"}]}"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1206,
+        "output_tokens": 371,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    },
+    {
+      "id": "msg_fixture_0003",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Ribbed Ivory Stoneware Vase\",\"description\":\"A tall stoneware vase in a warm ivory glaze, shaped with even horizontal rings that catch the light. The matte finish and gently tapered neck suit dried stems or a single fresh branch on a shelf or table.\",\"highlights\":[\"Hand-thrown look with even horizontal rings\",\"Matte ivory glaze\",\"Tapered neck for single stems or dried bunches\"],\"category\":\"home\",\"attributes\":{\"brand\":null,\"color\":\"Ivory\",\"material\":\"Stoneware\",\"size\":null},\"condition\":\"new\",\"tags\":[\"vase\",\"stoneware\",\"ceramic\",\"ivory\",\"home decor\"],\"uncertainties\":[{\"field\":\"size\",\"note\":\"Nothing in the photo shows scale. How tall is the vase?\"}]}"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1683,
+        "output_tokens": 362,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    }
+  ]
+}

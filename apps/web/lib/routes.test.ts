@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { checkoutHref, loginHref, orderHref, orderPageHref, safeReturnTo } from './routes';
+import {
+  adminHref,
+  checkoutHref,
+  liveRoomHref,
+  loginHref,
+  orderHref,
+  orderPageHref,
+  safeReturnTo,
+} from './routes';
 
 describe('safeReturnTo', () => {
   it('keeps paths on this origin, with their query and hash', () => {
@@ -43,5 +51,17 @@ describe('orderHref', () => {
     for (const status of ['PENDING_PAYMENT', 'PAID', 'PAYMENT_FAILED', 'EXPIRED', 'CANCELLED'] as const) {
       expect(orderHref({ id, status })).toBe(`/orders/${id}`);
     }
+  });
+});
+
+describe('liveRoomHref and adminHref', () => {
+  it('links a drop that sells on stream to its room, and nothing otherwise', () => {
+    expect(liveRoomHref({ slug: 'studio', title: 'FlashDrop Studio' })).toBe('/live/studio');
+    expect(liveRoomHref(null)).toBeNull();
+  });
+
+  it('offers the admin area to admins only', () => {
+    expect(adminHref('admin')).toBe('/admin/drops');
+    expect(adminHref('buyer')).toBeNull();
   });
 });

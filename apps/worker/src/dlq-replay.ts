@@ -21,7 +21,7 @@ import { WORKER_POOL_PROFILE } from './postgres';
  * which would re-feed every group. It stops at the first letter that fails again and exits 1, naming its
  * offset, so the operator fixes the cause and replays from there (`--from-offset`).
  *
- *   pnpm dlq:replay [--only payment|settlement] [--from-offset N] [--dry-run]
+ *   pnpm dlq:replay [--only payment|settlement|dashboard] [--from-offset N] [--dry-run]
  *
  * Against the Compose stack that runs this file's bundle as a one-off of the consumers service, inside the
  * stack's network, because payment-mock publishes no host port: a payment letter (a close) replayed from the
@@ -29,7 +29,7 @@ import { WORKER_POOL_PROFILE } from './postgres';
  * processes, whose payment-mock listens on 127.0.0.1:4100 (`PAYMENT_MOCK_URL` in .env).
  */
 
-const CONSUMER_NAMES: readonly ConsumerName[] = ['payment', 'settlement'];
+const CONSUMER_NAMES: readonly ConsumerName[] = ['payment', 'settlement', 'dashboard'];
 
 const { values: args } = parseArgs({
   options: {

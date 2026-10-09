@@ -8,6 +8,7 @@ import { and, eq, inArray, ne, notExists, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { Db, Tx } from '../client';
 import { dropLockKey } from '../drops';
+import { insertOutboxEvents } from '../outbox';
 import {
   dropInventory,
   drops,
@@ -144,6 +145,11 @@ async function writePlan(tx: Tx, plan: SeedPlan) {
         .set(sale.pay)
         .where(and(eq(orders.id, sale.reserve.id), eq(orders.status, 'PENDING_PAYMENT')));
     }
+    // The history's events, in the same transaction as the orders they report (§5.4).
+    await insertOutboxEvents(
+      tx,
+      sales.flatMap((sale) => sale.events),
+    );
     await tx.insert(payments).values(sales.map((sale) => sale.payment));
     await tx.insert(pspCharges).values(sales.map((sale) => sale.charge));
     await tx.insert(userDropQuota).values(fresh.flatMap((planned) => planned.quotas));

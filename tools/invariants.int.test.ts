@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createLogger, KafkaEnv, loadEnv, RedisEnv } from '@flashdrop/config';
-import type { PaymentMethod } from '@flashdrop/contracts';
+import type { OrderEvent, PaymentMethod } from '@flashdrop/contracts';
 import {
   applyDropAction,
   createDb,
@@ -13,6 +13,7 @@ import {
   markPaymentFailed,
   POOL_PROFILES,
   parseRows,
+  projectSalesEvents,
   pspCharges,
   recordRefund,
   recordReservation,
@@ -36,7 +37,13 @@ import {
   settleRedis,
   syncDropFromPostgres,
 } from '@flashdrop/inventory';
-import { createConsumerRunner, createKafka, createPublisher, outboxRecord } from '@flashdrop/messaging';
+import {
+  createConsumerRunner,
+  createKafka,
+  createPublisher,
+  type OrderEventHandlers,
+  outboxRecord,
+} from '@flashdrop/messaging';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { z } from 'zod';
 import { createEventsProbe } from './event-samples';
@@ -401,30 +408,71 @@ describe('verify:invariants', () => {
   });
 });
 
+/**
+ * A throwaway topic, dead-letter topic and group on the Compose broker, a relay that empties the outbox into
+ * the topic instead of orders.v1, and a runner for the group. Everything is removed when the test finishes.
+ */
+async function testPipeline() {
+  const kafka = createKafka({
+    brokers: loadEnv([KafkaEnv]).KAFKA_BROKERS,
+    clientId: 'verify-invariants-test',
+    logLevel: 'error',
+  });
+  const logger = createLogger({ name: 'verify-invariants-test', level: 'silent' });
+  const admin = kafka.admin();
+  await admin.connect();
+  onTestFinished(() => admin.disconnect());
+  const topic = `fdtest.verify.${randomUUID()}`;
+  const dlqTopic = `fdtest.verify-dlq.${randomUUID()}`;
+  const groupId = `fdtest.verify.${randomUUID()}`;
+  await admin.createTopics({
+    topics: [
+      { topic, numPartitions: 2, replicationFactor: 1 },
+      { topic: dlqTopic, numPartitions: 1, replicationFactor: 1 },
+    ],
+  });
+  onTestFinished(async () => {
+    await admin.deleteGroups([groupId]).catch(() => undefined);
+    await admin.deleteTopics({ topics: [topic, dlqTopic] });
+  });
+  const publisher = createPublisher({ kafka, logger });
+  onTestFinished(() => publisher.close());
+
+  /** The relay's batches, sent to the test topic; returns how many events it published. */
+  async function relayAll(): Promise<number> {
+    let relayed = 0;
+    for (;;) {
+      const batch = await relayOutboxBatch(db, (rows) =>
+        publisher.publish(rows.map((row) => ({ ...outboxRecord(row), topic }))),
+      );
+      if (batch.kind !== 'published') throw new Error('another relay holds the lock of a throwaway database');
+      if (batch.messages.length === 0) return relayed;
+      relayed += batch.messages.length;
+    }
+  }
+
+  async function startGroup(name: string, handlers: OrderEventHandlers): Promise<void> {
+    const runner = createConsumerRunner({
+      kafka,
+      name,
+      groupId,
+      topic,
+      dlqTopic,
+      handlers,
+      dlq: publisher,
+      logger,
+      concurrency: 4,
+    });
+    onTestFinished(() => runner.stop());
+    await runner.start();
+  }
+
+  return { admin, topic, dlqTopic, groupId, publisher, relayAll, startGroup };
+}
+
 describe('verify:invariants on the event pipeline', () => {
   it('waits for the relay and every checked consumer group (INV-5)', async () => {
-    const kafka = createKafka({
-      brokers: loadEnv([KafkaEnv]).KAFKA_BROKERS,
-      clientId: 'verify-invariants-test',
-      logLevel: 'error',
-    });
-    const logger = createLogger({ name: 'verify-invariants-test', level: 'silent' });
-    const admin = kafka.admin();
-    await admin.connect();
-    onTestFinished(() => admin.disconnect());
-    const topic = `fdtest.verify.${randomUUID()}`;
-    const dlqTopic = `fdtest.verify-dlq.${randomUUID()}`;
-    const groupId = `fdtest.verify.${randomUUID()}`;
-    await admin.createTopics({
-      topics: [
-        { topic, numPartitions: 2, replicationFactor: 1 },
-        { topic: dlqTopic, numPartitions: 1, replicationFactor: 1 },
-      ],
-    });
-    onTestFinished(async () => {
-      await admin.deleteGroups([groupId]).catch(() => undefined);
-      await admin.deleteTopics({ topics: [topic, dlqTopic] });
-    });
+    const { admin, topic, dlqTopic, groupId, publisher, relayAll, startGroup } = await testPipeline();
     const events = createEventsProbe({ db, admin, topic, dlqTopic, groups: [{ name: 'test', groupId }] });
     const verifyAll = (dropId: string, timeoutMs = 0, maxDeadLetters?: number) =>
       verifyInvariants({ db, redis, events }, { dropIds: [dropId], timeoutMs, maxDeadLetters });
@@ -441,18 +489,7 @@ describe('verify:invariants on the event pipeline', () => {
       expect.stringMatching(/^INV-5 not quiescent: \d+ outbox rows not yet published, the oldest for /),
     ]);
 
-    // The relay's batches, sent to the test topic instead of orders.v1.
-    const publisher = createPublisher({ kafka, logger });
-    onTestFinished(() => publisher.close());
-    let relayed = 0;
-    for (;;) {
-      const batch = await relayOutboxBatch(db, (rows) =>
-        publisher.publish(rows.map((row) => ({ ...outboxRecord(row), topic }))),
-      );
-      if (batch.kind !== 'published') throw new Error('another relay holds the lock of a throwaway database');
-      if (batch.messages.length === 0) break;
-      relayed += batch.messages.length;
-    }
+    const relayed = await relayAll();
     expect(relayed).toBeGreaterThan(0);
     const unconsumed = await verifyAll(dropId);
     expect(messages(unconsumed)).toEqual([
@@ -465,19 +502,7 @@ describe('verify:invariants on the event pipeline', () => {
     ]);
 
     // A group that finishes every event (it acts on none of them).
-    const runner = createConsumerRunner({
-      kafka,
-      name: 'test',
-      groupId,
-      topic,
-      dlqTopic,
-      handlers: {},
-      dlq: publisher,
-      logger,
-      concurrency: 4,
-    });
-    onTestFinished(() => runner.stop());
-    await runner.start();
+    await startGroup('test', {});
     const report = await verifyAll(dropId, 30_000);
     expect(messages(report)).toEqual([]);
     expect(report.ok).toBe(true);
@@ -489,6 +514,8 @@ describe('verify:invariants on the event pipeline', () => {
       deadLetters: 0,
       maxDeadLetters: null,
     });
+    // Without the dashboard role's group among those checked, its projection is not compared.
+    expect(report.drops[0]?.dashboard).toBeNull();
 
     // A dead letter leaves every group at lag 0 (the runner commits past it), so only the DLQ shows it:
     // reported without a ceiling, a breach of INV-5 above one (`--max-dead-letters`, CI's jobs).
@@ -504,5 +531,47 @@ describe('verify:invariants on the event pipeline', () => {
     expect(messages(gated)).toEqual(['INV-5 1 dead letter in the DLQ topic, at most 0 allowed']);
     expect(gated.quiescence.reached).toBe(true);
     expect((await verifyAll(dropId, 30_000, 1)).ok).toBe(true);
+  });
+
+  it('holds each drop’s dashboard to its orders once the group that writes it caught up (INV-5, §9)', async () => {
+    const { admin, topic, dlqTopic, groupId, relayAll, startGroup } = await testPipeline();
+    const events = createEventsProbe({
+      db,
+      admin,
+      topic,
+      dlqTopic,
+      groups: [{ name: 'dashboard', groupId }],
+    });
+    const verifyAll = (dropId: string) =>
+      verifyInvariants({ db, redis, events }, { dropIds: [dropId], timeoutMs: 30_000 });
+    const dropId = await armedDrop(10);
+    const [buyer] = await createTestBuyers(db, 1);
+    if (buyer === undefined) throw new Error('createTestBuyers');
+    await reserve(dropId, buyer.id, 2);
+    await relayAll();
+    // The sales-dashboard group's effect, one event per transaction (the worker's consumer group-commits).
+    const project = async (event: OrderEvent) => {
+      await projectSalesEvents(db, [event]);
+    };
+    await startGroup('dashboard', {
+      'order.reserved': project,
+      'order.placed': project,
+      'order.paid': project,
+      'order.payment_failed': project,
+      'order.expired': project,
+      'order.cancelled': project,
+      'order.rejected': project,
+    });
+
+    const report = await verifyAll(dropId);
+    expect(messages(report)).toEqual([]);
+    expect(report.drops[0]?.dashboard).toMatchObject({ totals: { reserved: 1, placed: 0 }, eventless: 0 });
+
+    // The projection lost an event: INV-5 names the counter, and the minutes no longer add up either.
+    await db.execute(sql`UPDATE drop_sales_totals SET reserved = 0 WHERE drop_id = ${dropId}`);
+    expect(messages(await verifyAll(dropId))).toEqual([
+      'INV-5 dashboard reserved 0 != 1 from its orders',
+      'INV-5 dashboard minutes add up to reserved 1, its totals say 0',
+    ]);
   });
 });

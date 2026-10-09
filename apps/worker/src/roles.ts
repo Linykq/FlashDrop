@@ -5,6 +5,7 @@ import { closeUnpaidLoop } from './consumers/close-unpaid';
 import { createPspClient } from './consumers/psp-client';
 import type { WorkerDeps } from './deps';
 import type { ComponentHealth } from './health';
+import { type ListingRoleSettings, startListingRole } from './listing';
 import { createLoop } from './loop';
 import { startReconciler } from './reconciler';
 import { startRelay } from './relay';
@@ -25,6 +26,8 @@ export interface RoleContext {
   readonly publisher: Publisher;
   /** `PAYMENT_MOCK_URL`, for the payment consumer. */
   readonly paymentMockUrl: string;
+  /** `LlmEnv` and the fixtures directory, for the listing role. */
+  readonly listing: ListingRoleSettings;
 }
 
 export interface RunningRole {
@@ -44,7 +47,7 @@ const consumer =
     return { health: () => [runner.health()], stop: () => runner.stop() };
   };
 
-const IMPLEMENTED = {
+const STARTERS = {
   relay: async ({ deps, databaseUrl, publisher }) => {
     const relay = startRelay(deps, { databaseUrl, publisher });
     return { health: () => [relay.health()], stop: () => relay.stop() };
@@ -80,42 +83,18 @@ const IMPLEMENTED = {
     };
   },
   settlement: consumer('settlement'),
-} as const satisfies Partial<Record<WorkerRole, Starter>>;
-
-type ImplementedRole = keyof typeof IMPLEMENTED;
-
-/** The milestone that brings each remaining role (design §16). */
-const PLANNED = {
-  dashboard: 'M7',
-  listing: 'M8',
-} as const satisfies Record<Exclude<WorkerRole, ImplementedRole>, `M${number}`>;
-
-function isImplemented(role: WorkerRole): role is ImplementedRole {
-  return role in IMPLEMENTED;
-}
-
-/** Thrown at startup when `WORKER_ROLES` enables a role this build does not have yet. */
-export class RoleNotImplementedError extends Error {
-  override name = 'RoleNotImplementedError';
-}
+  dashboard: consumer('dashboard'),
+  listing: ({ deps, listing }) => startListingRole(deps, listing),
+} as const satisfies Record<WorkerRole, Starter>;
 
 /**
- * Starts every role in `roles`, or none: a role that is not implemented yet fails the start before any
- * role runs, naming the milestone that brings it, rather than running a worker that silently skips work it
- * was asked to do. A role that fails to start (Kafka unreachable, say) stops the ones already started.
+ * Starts every role in `roles`, in order. A role that fails to start (Kafka unreachable, say) stops the
+ * ones already started.
  */
 export async function startRoles(roles: readonly WorkerRole[], context: RoleContext): Promise<RunningRole[]> {
-  const missing = roles.filter((role): role is Exclude<WorkerRole, ImplementedRole> => !isImplemented(role));
-  if (missing.length > 0) {
-    const list = missing.map((role) => `${role} (until ${PLANNED[role]})`).join(', ');
-    throw new RoleNotImplementedError(
-      `WORKER_ROLES enables roles that are not implemented yet: ${list}. Remove them from WORKER_ROLES.`,
-    );
-  }
   const started: RunningRole[] = [];
   try {
-    for (const role of roles.filter(isImplemented))
-      started.push({ role, ...(await IMPLEMENTED[role](context)) });
+    for (const role of roles) started.push({ role, ...(await STARTERS[role](context)) });
   } catch (err) {
     await Promise.allSettled(started.map((role) => role.stop()));
     throw err;

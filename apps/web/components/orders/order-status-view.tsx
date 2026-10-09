@@ -1,6 +1,6 @@
 'use client';
 
-import type { OrderDetail } from '@flashdrop/contracts';
+import type { OrderDetail, OrderStatus } from '@flashdrop/contracts';
 import {
   Ban,
   CircleCheck,
@@ -11,7 +11,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { cx } from '../../lib/cx';
 import { focusOnLoad } from '../../lib/focus';
 import {
@@ -23,6 +23,7 @@ import {
   SLOW_PAYMENT_TEXT,
   statusAnnouncement,
 } from '../../lib/order-status';
+import { useUserEvents } from '../../lib/realtime/hooks';
 import { loginHref, ORDERS_HREF, orderPageHref } from '../../lib/routes';
 import { orderRequests, usePrefetchOrderRequests } from '../../lib/use-order-requests';
 import { useRefreshOnReturn } from '../../lib/use-refresh-on-return';
@@ -52,20 +53,21 @@ const outcomeIcon: Record<Exclude<OrderOutcome, 'processing' | 'paid'>, LucideIc
 type OrderStatusViewProps = {
   /** The order as the server rendered it. */
   order: OrderDetail;
-  /** The product page, where "Try again" and "Back to the drop" lead. */
+  /** The product page, where "Back to the drop" leads. */
   productHref: string;
 };
 
 /**
  * The order's live status (design-system §10.5): the glyph, the heading and its sentence, the steps while the
- * payment can still finish, the details, and the next step. While the payment runs the page reads the order's
- * status every 2 s (SD §8.1), and when it changed asks the server for the page again, so what is shown is
- * always the server's contract-checked render; the heading and text change in place, the glyph fades over,
- * and the Announcer reads the new heading politely. Focus starts on the heading, unless the buyer got somewhere
- * first, and never moves for an update. A payment still running after 15 s says it is taking longer than
- * usual and offers the order list, announced once: the order keeps processing without the page.
+ * payment can still finish, the details, and the next step. While the payment runs, the buyer's `user` topic
+ * pushes the order's new status the moment it changes, and the page also reads the status every 2 s (SD
+ * §8.1), the fallback for an event missed while the socket reconnects. Either way, a changed status asks the
+ * server for the page again, so what is shown is always the server's contract-checked render; the heading and
+ * text change in place, the glyph fades over, and the Announcer reads the new heading politely. Focus starts
+ * on the heading, unless the buyer got somewhere first, and never moves for an update. A payment still running
+ * after 15 s says it is taking longer than usual and offers the order list, announced once: the order keeps
+ * processing without the page.
  */
-// TODO(M5): also refresh when the `user` topic pushes an `order` message for this order (SD §7).
 export function OrderStatusView({ order, productHref }: OrderStatusViewProps) {
   const router = useRouter();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -75,6 +77,18 @@ export function OrderStatusView({ order, productHref }: OrderStatusViewProps) {
 
   usePrefetchOrderRequests();
   useRefreshOnReturn();
+
+  // The status a refresh was asked for, by the poll or the socket, so a slow refresh isn't asked for twice.
+  const refreshedFor = useRef<OrderStatus | null>(null);
+  const refreshFor = (status: OrderStatus) => {
+    if (status === order.status || status === refreshedFor.current) return;
+    refreshedFor.current = status;
+    router.refresh();
+  };
+
+  useUserEvents((event) => {
+    if (event.type === 'order' && event.orderId === order.id) refreshFor(event.status);
+  }, settling);
 
   useEffect(() => focusOnLoad(heading.current), []);
 
@@ -97,21 +111,17 @@ export function OrderStatusView({ order, productHref }: OrderStatusViewProps) {
     announce(statusAnnouncement(copy));
   }, [copy.heading, copy.text]);
 
+  const onPolled = useEffectEvent((status: OrderStatus) => refreshFor(status));
   useEffect(() => {
     if (!settling) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
 
-    // The status a refresh was asked for, so a slow refresh isn't asked for again by the next round.
-    let refreshedFor: string | null = null;
-
     async function poll(): Promise<void> {
       const requests = await orderRequests();
       const read = requests ? await requests.readOrder(order.id, controller.signal) : null;
-      if (read?.kind === 'ok' && read.order.status !== order.status && read.order.status !== refreshedFor) {
-        refreshedFor = read.order.status;
-        router.refresh();
-      } else if (read?.kind === 'signed-out') router.push(loginHref(orderPageHref(order.id)));
+      if (read?.kind === 'ok') onPolled(read.order.status);
+      else if (read?.kind === 'signed-out') router.push(loginHref(orderPageHref(order.id)));
       // A miss (offline, api restarting) just waits for the next round; not-found can't recover, so it stops.
       if (read?.kind === 'ok' || read?.kind === 'failed' || read === null) schedule();
     }
@@ -134,7 +144,7 @@ export function OrderStatusView({ order, productHref }: OrderStatusViewProps) {
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [settling, order.id, order.status, router]);
+  }, [settling, order.id, router]);
 
   return (
     <>

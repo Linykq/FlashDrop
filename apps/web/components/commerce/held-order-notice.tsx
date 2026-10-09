@@ -39,9 +39,12 @@ export function HeldOrderNotice({ order, serverNow, link, onEnd, className }: He
   return (
     // A query container: the link sits beside the text where the panel is wide enough, and below it, full
     // width, in the narrow panel of phones and tablets. In the narrowest (320 px phones) the time left takes a
-    // line of its own rather than breaking the sentence before it.
+    // line of its own rather than breaking the sentence before it. A translucent fill, not `bg-secondary`: the
+    // row sits on `bg` on the product page and on `surface` in the drop card, and in dark mode `bg-secondary`
+    // and `surface` are the same colour, which left only the row's padding showing there, like a misalignment.
+    // The quaternary fill, the lightest: on white the tertiary one takes `label-secondary` under 4.5:1.
     <div className={cx('@container', className)}>
-      <div className="flex flex-wrap items-center gap-3 rounded-lg bg-bg-secondary py-3 pr-3 pl-4">
+      <div className="flex flex-wrap items-center gap-3 rounded-lg bg-fill-quaternary py-3 pr-3 pl-4">
         <Timer className="shrink-0 text-accent-label" />
         <p className="min-w-0 flex-1 text-callout">
           <span className="font-medium">You have {formatCount(order.qty)} reserved</span>

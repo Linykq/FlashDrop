@@ -5,6 +5,8 @@ import {
   PhotoCredit,
   ProductAttributes,
   ProductDetail,
+  Room,
+  RoomDetail,
   StockSnapshot,
 } from './catalog';
 import { ImageKey, uploadPath } from './common';
@@ -118,6 +120,39 @@ describe('DropSummary and ProductDetail', () => {
 
   it('never serves a DRAFT drop', () => {
     expect(ProductDetail.shape.drop.safeParse({ ...drop, status: 'DRAFT' }).success).toBe(false);
+  });
+});
+
+describe('RoomDetail', () => {
+  const room = {
+    id: '5eed0002-0000-4000-8000-000000000001',
+    slug: 'studio',
+    title: 'FlashDrop Studio',
+    hlsUrl: '/hls/live.m3u8',
+  };
+
+  it('carries the room and its pinned drop, or none', () => {
+    const detail = {
+      room,
+      drop: { ...drop, product, stock: { avail: 1, held: 0, sold: 9, status: 'LIVE', gen: 2, seq: 7 } },
+    };
+    expect(RoomDetail.parse(detail)).toEqual(detail);
+    expect(RoomDetail.parse({ room, drop: null })).toEqual({ room, drop: null });
+  });
+
+  it.each(['/hls/live.m3u8', 'https://cdn.example.com/live.m3u8'])('plays %s', (hlsUrl) => {
+    expect(Room.safeParse({ ...room, hlsUrl }).success).toBe(true);
+  });
+
+  it.each([
+    '//evil.example/live.m3u8',
+    '/\\evil.example/live.m3u8',
+    'http://cdn.example.com/live.m3u8',
+    'javascript:alert(1)',
+    'hls/live.m3u8',
+    '/hls/live.m3u8 onerror',
+  ])('refuses the playlist %s', (hlsUrl) => {
+    expect(Room.safeParse({ ...room, hlsUrl }).success).toBe(false);
   });
 });
 

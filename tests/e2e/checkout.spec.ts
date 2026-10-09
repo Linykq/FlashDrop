@@ -24,7 +24,7 @@ test('Buy, check out with the approving card, and the order is paid', async ({
 }, testInfo) => {
   const orderId = await buy(page, drop.productSlug);
   await fillShipping(page);
-  await expect(page.getByRole('radio', { name: 'Card ending 4242' })).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Test card that approves' })).toBeChecked();
   await payButton(page).click();
 
   // Submitted: the order page, its heading focused, follows the payment without moving focus again.
@@ -34,7 +34,7 @@ test('Buy, check out with the approving card, and the order is paid', async ({
   await expect(orderHeading(page)).toHaveText('You got it.', { timeout: SETTLES_WITHIN_MS });
   await expect(page.getByText('Your order is confirmed and paid.', { exact: true })).toBeVisible();
   const details = page.getByRole('region', { name: 'Order details' });
-  await expect(details.getByText('Card ending 4242')).toBeVisible();
+  await expect(details.getByText('Test card that approves')).toBeVisible();
   await expect(details.getByText(new RegExp(`^${TEST_SHIPPING.name}, ${TEST_SHIPPING.line1}`))).toBeVisible();
   await expect(page.getByRole('link', { name: 'Back to drops' })).toBeVisible();
   // The demo's evidence (§16 M4 "Buy → PAID"), kept in the HTML report.

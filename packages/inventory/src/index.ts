@@ -2,7 +2,8 @@
  * @packageDocumentation
  * Redis admission (design §4): the `flashdrop` Functions library and its typed calls, key builders, the
  * per-drop lock, `syncDropFromPostgres` (arm and rebuild under the generation fence, §4.7), `settleRedis`
- * (§6.5), and the helpers the sweeper, the reconciler and `verify:invariants` build on.
+ * (§6.5), the helpers the sweeper and the reconciler build on, and the invariant checks of §1.1 across
+ * Postgres, the PSP ledger and Redis that `verify:invariants` and the admin health page share (§12).
  */
 export { fdConfirm, fdRateLimitHit, fdRebuild, fdRelease, fdReserve, fdSetStatus } from './calls';
 export {
@@ -43,6 +44,35 @@ export {
   type StructuralIssue,
   structuralIssue,
 } from './holds';
+export {
+  type CheckDropOptions,
+  type CheckStatus,
+  checkDashboard,
+  checkDeadLetters,
+  checkDrop,
+  checkEvents,
+  type DropSample,
+  EVENT_PENDING_KINDS,
+  type EventsSample,
+  INV5_SCOPE,
+  INVARIANTS,
+  type InvariantResult,
+  type LedgerCharge,
+  netCaptured,
+  PENDING_KINDS,
+  type PendingKind,
+  type PendingWork,
+  type PgDropSnapshot,
+  type PgOrder,
+  pendingEvents,
+  pendingWork,
+  pgAvailable,
+  type RedisRead,
+  redisDrift,
+  summarizeInvariants,
+  type Violation,
+} from './invariants/rules';
+export { type DropSampleDeps, readPgSnapshot, sampleDrop, unchangedSince } from './invariants/samples';
 export {
   type DropKeys,
   dashboardChannel,

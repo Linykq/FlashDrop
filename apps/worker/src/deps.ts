@@ -1,6 +1,7 @@
 import type { Logger } from '@flashdrop/config';
 import type { Db } from '@flashdrop/db';
 import type { DropLockDeps, FlashdropRedis, SyncNudger } from '@flashdrop/inventory';
+import type { TagRevalidator } from '@flashdrop/messaging';
 
 /** What the worker's roles share: one of each per process (design §2). */
 export interface WorkerDeps {
@@ -13,4 +14,6 @@ export interface WorkerDeps {
   /** `NOTIFY fd_sync`, for `settleRedis` and the scheduler when Redis has lost a drop. */
   readonly nudger: SyncNudger;
   readonly logger: Logger;
+  /** Asks `web` to drop a cache tag (§8.1); absent without `REVALIDATE_SECRET`. */
+  readonly revalidate?: TagRevalidator;
 }

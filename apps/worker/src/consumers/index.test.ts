@@ -7,4 +7,9 @@ describe('consumerConnections', () => {
     expect(consumerConnections(['payment'])).toBe(32);
     expect(consumerConnections(['payment', 'settlement'])).toBe(48);
   });
+
+  it('gives the dashboard one connection: its group commit runs one transaction at a time', () => {
+    expect(consumerConnections(['dashboard'])).toBe(1);
+    expect(consumerConnections(['payment', 'settlement', 'dashboard'])).toBe(49);
+  });
 });

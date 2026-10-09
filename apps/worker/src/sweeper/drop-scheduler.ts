@@ -1,3 +1,4 @@
+import { RoomChangedMessage } from '@flashdrop/contracts';
 import {
   applyDueDropTransition,
   type DropSchedule,
@@ -6,7 +7,7 @@ import {
   listDropSchedule,
   pgErrorOf,
 } from '@flashdrop/db';
-import { BugError, PUBLIC_DROP_STATUSES } from '@flashdrop/domain';
+import { BugError, type DropStatus, PUBLIC_DROP_STATUSES } from '@flashdrop/domain';
 import {
   assertDropLockHeld,
   dropKeys,
@@ -17,6 +18,7 @@ import {
   REDIS_DROP_STATUSES,
   type RedisDropStatus,
   readStock,
+  roomChannel,
   tryWithDropLock,
   withDeadline,
 } from '@flashdrop/inventory';
@@ -73,8 +75,9 @@ export async function dropScheduler(deps: WorkerDeps, signal: AbortSignal): Prom
     const schedule = await listDropSchedule(deps.db);
     // node-redis pipelines concurrent commands: one round trip for all of them.
     const statuses = await Promise.all(schedule.map((drop) => readRedisStatus(deps.redis, drop.id)));
+    let transitioned = false;
     for (const [i, drop] of schedule.entries()) {
-      if (signal.aborted) return;
+      if (signal.aborted) break;
       const redisStatus = statuses[i] ?? 'MISSING';
       if (!hasWork(drop, redisStatus)) {
         // Redis has lost the drop: the reconciler rebuilds it, with the Postgres status, from Postgres.
@@ -82,7 +85,8 @@ export async function dropScheduler(deps: WorkerDeps, signal: AbortSignal): Prom
         continue;
       }
       try {
-        await tryWithDropLock(deps.lock, drop.id, (lock) => scheduleDrop(deps, lock));
+        const scheduled = await tryWithDropLock(deps.lock, drop.id, (lock) => scheduleDrop(deps, lock));
+        if (scheduled.acquired && scheduled.value) transitioned = true;
       } catch (err) {
         // Another writer holds the drops row (lock_timeout): skip the drop, the next tick retries it.
         if (pgErrorOf(err)?.code === '55P03') {
@@ -94,18 +98,42 @@ export async function dropScheduler(deps: WorkerDeps, signal: AbortSignal): Prom
         deps.logger.error({ err, dropId: drop.id }, 'drop scheduling failed');
       }
     }
+    // The home page lists drops by status from a cached read (§4.6, §8.1): one best-effort ask per tick,
+    // after every drop lock is released, so a slow `web` never holds one.
+    if (transitioned) await deps.revalidate?.('drops');
   });
 }
 
-async function scheduleDrop(deps: WorkerDeps, lock: HeldDropLock): Promise<void> {
+/**
+ * Tells the drop's live room, if it has one, that the drop changed status (§7): every gateway holding the
+ * room re-reads its pinned drop and pushes it to the viewers. Best effort, after the transition committed:
+ * pub/sub is at-most-once anyway, and gateways re-read their rooms every 5 s, so a lost nudge only delays
+ * the room by that much.
+ */
+async function announceToRoom(deps: WorkerDeps, dropId: string, status: DropStatus): Promise<void> {
+  try {
+    const [row] = await deps.db.select({ roomId: drops.roomId }).from(drops).where(eq(drops.id, dropId));
+    if (row === undefined || row.roomId === null) return;
+    const message = RoomChangedMessage.parse({ type: 'drop', dropId, status });
+    const channel = roomChannel(row.roomId);
+    await withDeadline('room publish', REDIS_DEADLINE_MS, () =>
+      deps.redis.publish(channel, JSON.stringify(message)),
+    );
+  } catch (err) {
+    deps.logger.warn({ err, dropId }, 'room publish failed');
+  }
+}
+
+/** Applies the drop's due transition and repairs its Redis status; true when Postgres changed its status. */
+async function scheduleDrop(deps: WorkerDeps, lock: HeldDropLock): Promise<boolean> {
   const { dropId } = lock;
   const log = deps.logger.child({ dropId });
   const change = await applyDueDropTransition(deps.db, dropId);
   if (change !== undefined) {
     log.info({ from: change.from, to: change.to }, 'drop status changed');
-    // TODO(M5): publish fd:ch:room:<roomId> (the WebSocket protocol lands in M5) and POST
-    // WEB_INTERNAL_URL/_internal/revalidate for tag `drops` once web serves that route (§4.6, §8.1).
+    await announceToRoom(deps, dropId, change.to);
   }
+  const transitioned = change !== undefined;
 
   // Re-read under the lock: the unlocked pre-check is stale, and an admin action may have run in between.
   const [row] = await deps.db.select({ status: drops.status }).from(drops).where(eq(drops.id, dropId));
@@ -117,9 +145,9 @@ async function scheduleDrop(deps: WorkerDeps, lock: HeldDropLock): Promise<void>
   if (stock === null) {
     // Redis has lost the drop: the reconciler rebuilds it, with this status, from Postgres.
     await deps.nudger.nudge(dropId);
-    return;
+    return transitioned;
   }
-  if (stock.status === status || stock.status === 'RECONCILING') return;
+  if (stock.status === status || stock.status === 'RECONCILING') return transitioned;
 
   // A lock lost with its session may already have a new holder rebuilding the drop: stop writing.
   assertDropLockHeld(lock);
@@ -128,12 +156,12 @@ async function scheduleDrop(deps: WorkerDeps, lock: HeldDropLock): Promise<void>
     case 'OK':
     case 'NOOP':
       log.info({ from: stock.status, to: status }, 'redis drop status set from postgres');
-      return;
+      return transitioned;
     // The hash vanished or went RECONCILING since the read: only a rebuild can fix it now.
     case 'NO_DROP':
     case 'RETRY':
       await deps.nudger.nudge(dropId);
-      return;
+      return transitioned;
     case 'BAD_STATUS':
       throw new BugError(`fd_set_status refused ${status}`);
   }

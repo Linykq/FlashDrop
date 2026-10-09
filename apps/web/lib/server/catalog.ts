@@ -3,6 +3,7 @@ import {
   DropListResponse,
   type DropSummary,
   ProductDetail,
+  RoomDetail,
   type SessionUser,
   Slug,
   StockSnapshot,
@@ -63,6 +64,30 @@ async function getProductBySlug(slug: string): Promise<ProductDetail | null> {
 export const getStock = cache(
   async (dropId: string): Promise<StockSnapshot> => apiGet(`/api/v1/drops/${dropId}/stock`, StockSnapshot),
 );
+
+/**
+ * A live room and the drop it is pinned to, with that drop's stock, or `null` for an unknown slug. Never
+ * cached: the pinned drop and its stock change by the second, and the raw HTML carries them like the product
+ * page's (SD §8.1). Memoised per request, so metadata and the page share one api read.
+ */
+export const getRoom = cache(async (slug: string): Promise<RoomDetail | null> => {
+  if (!Slug.safeParse(slug).success) return null;
+  try {
+    return await apiGet(`/api/v1/rooms/${slug}`, RoomDetail);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+});
+
+/**
+ * The room of the drop that is LIVE right now, for the navigation bar's "Live" link (design-system §9.18):
+ * the LIVE drop that started first and sells on stream, from the cached drop list the home page also reads.
+ */
+export async function getLiveRoom(): Promise<DropSummary['room']> {
+  const drops = await getDrops(['LIVE', 'PAUSED', 'SCHEDULED'], 20);
+  return drops.find((drop) => drop.status === 'LIVE' && drop.room !== null)?.room ?? null;
+}
 
 /** The seeded accounts `/login` offers. They change only when the seed does. */
 export async function getDevUsers(): Promise<SessionUser[]> {

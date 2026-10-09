@@ -2,15 +2,14 @@ import { type DropInfo, type Product, type StockSnapshot, uploadPath } from '@fl
 import { ChevronRight } from 'lucide-react';
 import Link from 'next/link';
 import { unstable_rethrow } from 'next/navigation';
-import { type HeldOrder, liveHold } from '../../lib/hold';
 import { productJsonLd, serializeJsonLd } from '../../lib/json-ld';
 import type { LiveLevel } from '../../lib/live-stock';
 import { liveRoomHref, productHref } from '../../lib/routes';
 import { getStock } from '../../lib/server/catalog';
 import { log } from '../../lib/server/log';
-import { readMyOrders } from '../../lib/server/orders';
+import { readHeldOrder } from '../../lib/server/orders';
 import { requestOrigin } from '../../lib/server/request';
-import { getViewer, type Viewer } from '../../lib/server/session';
+import { getViewer } from '../../lib/server/session';
 import { describeStock, type StockState, toLiveSeed } from '../../lib/stock';
 import { Skeleton, SkeletonText } from '../ui/skeleton';
 import { LiveDropStatus } from './live-drop-status';
@@ -54,28 +53,6 @@ export async function DropStatusLine({ drop }: { drop: DropInfo }) {
 
 export function DropStatusLineSkeleton() {
   return <div aria-hidden="true" className="min-h-6" />;
-}
-
-/**
- * The most recent orders searched for a live hold on the drop. A hold lives a few minutes at most, so it is
- * always among a buyer's latest orders.
- */
-const RECENT_ORDERS = 20;
-
-/**
- * The signed-in viewer's live hold on the drop, which the panel offers back (§9.13), or `null`. Without one
- * the page still sells: an api that can't list orders right now costs only the reminder, and is logged.
- */
-async function readHeldOrder(viewer: Viewer | null, dropId: string): Promise<HeldOrder | null> {
-  if (viewer === null) return null;
-  try {
-    const read = await readMyOrders(RECENT_ORDERS);
-    return read.kind === 'ok' ? liveHold(read.value, dropId) : null;
-  } catch (error) {
-    unstable_rethrow(error);
-    log().warn({ err: error, dropId }, 'cannot list orders for the product page');
-    return null;
-  }
 }
 
 type LivePurchaseProps = { product: Product; drop: DropInfo };

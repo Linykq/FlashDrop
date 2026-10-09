@@ -8,14 +8,14 @@ import { COUNTDOWN_WINDOW_MS } from '../../lib/format';
 import { liveRoomHref, productHref } from '../../lib/routes';
 import { getStock } from '../../lib/server/catalog';
 import { log } from '../../lib/server/log';
-import { toStockState } from '../../lib/stock';
+import { toLiveSeed } from '../../lib/stock';
 import { ButtonLink } from '../ui/button';
 import { Skeleton, SkeletonText } from '../ui/skeleton';
 import { TitleText } from '../ui/title-text';
 import { Countdown } from './countdown';
 import { LiveBadge } from './live-badge';
+import { LiveStockText } from './live-stock-text';
 import { LocalTime } from './local-time';
-import { StockText } from './stock-text';
 
 /** `sizes` of the hero photo: `page-form` (600 px) from 735 px, the page margins on phones (§11.4). */
 const HERO_SIZES = '(min-width: 735px) 600px, calc(100vw - 40px)';
@@ -115,22 +115,23 @@ export function DropHero({ drop, intro, serverNow }: DropHeroProps) {
 
 /**
  * The hero's stock line, read uncached at request time like the product page's, because the list it came
- * from is cached for minutes. If api cannot answer, the list's own (slightly older) numbers stand in.
+ * from is cached for minutes, then live (SD §8.2). If api cannot answer, the list's own (slightly older)
+ * numbers seed it instead; the first newer level replaces them.
  */
 async function HeroStock({ drop, serverNow }: { drop: DropSummary; serverNow: number }) {
-  let stock = toStockState(drop.stock, drop.status);
+  let seed = toLiveSeed(drop.stock, drop.status);
   try {
-    const snapshot = await getStock(drop.id);
-    stock = toStockState(snapshot, drop.status);
+    seed = toLiveSeed(await getStock(drop.id), drop.status);
   } catch (error) {
     unstable_rethrow(error);
     log().warn({ err: error, dropId: drop.id }, 'hero stock snapshot unavailable; showing the cached list');
   }
   return (
-    <StockText
+    <LiveStockText
       className="mt-6 w-full"
       layout="compact"
-      stock={stock}
+      dropId={drop.id}
+      seed={seed}
       startsAt={drop.startsAt}
       serverNow={serverNow}
     />

@@ -1,11 +1,11 @@
 /**
  * `tsx tools/load-smoke-summary.ts [--results <dir>] [--invariants <file>]` (design §13): the step summary
  * of the CI `load-smoke` job. It reads the k6 summaries that tests/load writes (`burst-ci.json`,
- * `idempotency-storm.json`, and `expiry-soak.json` when that ran) and the `verify:invariants` report, and
- * prints Markdown tables for `$GITHUB_STEP_SUMMARY`: reserve latency and outcomes, checkout and payment
- * (submit to PAID), and the invariants with the event pipeline. A missing or unreadable file becomes a row
- * that says so instead of an error: the step also runs after a failed burst, whose own step already fails
- * the job.
+ * `idempotency-storm.json`, `ws-fanout-ci.json`, and `expiry-soak.json` when it ran) and the
+ * `verify:invariants` report, and prints Markdown tables for `$GITHUB_STEP_SUMMARY`: reserve latency and
+ * outcomes, checkout and payment (submit to PAID), WebSocket fan-out (propagation and frames per socket),
+ * and the invariants with the event pipeline. A missing or unreadable file becomes a row that says so
+ * instead of an error: the step also runs after a failed burst, whose own step already fails the job.
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -177,6 +177,40 @@ function checkoutLines(burst: K6Summary | string, storm: K6Summary | string): st
   return lines;
 }
 
+const fixed = (n: number | undefined, digits: number) => (n === undefined ? 'n/a' : n.toFixed(digits));
+
+/**
+ * The WebSocket fan-out (§7, §13): final levels, frames per socket and propagation. CI always runs it, so a
+ * missing summary (k6 failed before handleSummary) says so like the other runs' rows.
+ */
+function fanoutLines(fanout: K6Summary | string): string[] {
+  if (typeof fanout === 'string') return ['', '## WebSocket fan-out', '', `Not run: ${fanout}.`];
+  const failed = fanout.thresholds
+    .filter((threshold) => !threshold.ok)
+    .map((threshold) => `- \`${threshold.metric}: ${threshold.expression}\``);
+  return [
+    '',
+    '## WebSocket fan-out',
+    '',
+    '| Result | Sockets | Final level = Redis | Frames/s per socket (cap 10.5) | Most in 2 s (cap 23) | Most in a second | Changes in the busiest second | Propagation p50 | p95 | p99 | max |',
+    '|---|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|',
+    `| ${[
+      fanout.ok ? 'PASS' : '**FAIL**',
+      count(fanout, 'ws_opened'),
+      count(fanout, 'ws_final_level_matched'),
+      fixed(value(fanout, 'ws_storm_frames_per_second', 'max'), 1),
+      fixed(value(fanout, 'ws_peak_frames_per_window', 'max'), 0),
+      fixed(value(fanout, 'ws_peak_frames_per_second', 'max'), 0),
+      fixed(value(fanout, 'ws_peak_changes_per_second', 'min'), 0),
+      ms(value(fanout, 'ws_propagation', 'med')),
+      ms(value(fanout, 'ws_propagation', 'p(95)')),
+      ms(value(fanout, 'ws_propagation', 'p(99)')),
+      ms(value(fanout, 'ws_propagation', 'max')),
+    ].join(' | ')} |`,
+    ...(failed.length > 0 ? ['', '**Failed thresholds**', '', ...failed] : []),
+  ];
+}
+
 const lines = [
   '## Load smoke',
   '',
@@ -202,6 +236,7 @@ lines.push(
     summaries.get('burst-ci.json') ?? 'burst-ci.json is missing',
     summaries.get('idempotency-storm.json') ?? 'idempotency-storm.json is missing',
   ),
+  ...fanoutLines(await read(join(values.results, 'ws-fanout-ci.json'), K6Summary)),
 );
 
 const report = await read(values.invariants, InvariantsReport);

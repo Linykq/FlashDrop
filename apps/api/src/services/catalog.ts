@@ -5,10 +5,25 @@ import {
   type DropSummary,
   ProductAttributes,
   type ProductDetail,
+  type Room,
 } from '@flashdrop/contracts';
-import { and, asc, type Db, desc, drops, eq, inArray, ne, products, rooms, sql } from '@flashdrop/db';
+import {
+  and,
+  asc,
+  type Db,
+  desc,
+  drops,
+  eq,
+  inArray,
+  ne,
+  products,
+  rooms,
+  type SQL,
+  sql,
+} from '@flashdrop/db';
 import { alert, type DropStatus, PUBLIC_DROP_STATUSES } from '@flashdrop/domain';
 import { publicDropStatus } from './drop-status';
+import { createPostgresRoomReader, pinnedDropOf } from './rooms';
 import type { StockReader } from './stock';
 
 /** A catalog entry before its live stock is attached. */
@@ -23,9 +38,15 @@ export interface CatalogStore {
   listDrops(query: DropListQuery): Promise<DropListing[]>;
   /** A PUBLISHED product and its current drop; undefined for unknown and DRAFT products. */
   productBySlug(slug: string): Promise<ProductDetail | undefined>;
+  /**
+   * A room and the drop it is pinned to (null if none); undefined for an unknown room. The pinned drop is the
+   * one the gateway's `room:` topic names (`RoomReader`), so a page and its socket never disagree about it:
+   * the page reloads when the topic names another drop, and a disagreement would reload it forever.
+   */
+  roomBySlug(slug: string): Promise<{ room: Room; drop: DropListing | null } | undefined>;
 }
 
-// The columns of DropInfo, shared by both reads.
+// The columns of DropInfo, shared by every read.
 const dropColumns = {
   id: drops.id,
   status: drops.status,
@@ -53,6 +74,13 @@ interface DropRow {
   readonly roomTitle: string | null;
 }
 
+interface ListingRow extends DropRow {
+  readonly productId: string;
+  readonly productSlug: string;
+  readonly productTitle: string;
+  readonly imageKeys: string[];
+}
+
 function toDropInfo(row: DropRow): DropInfo {
   return {
     id: row.id,
@@ -68,23 +96,36 @@ function toDropInfo(row: DropRow): DropInfo {
   };
 }
 
+function toListing(row: ListingRow): DropListing {
+  return {
+    ...toDropInfo(row),
+    product: { id: row.productId, slug: row.productSlug, title: row.productTitle, imageKeys: row.imageKeys },
+  };
+}
+
 export function createPostgresCatalog(db: Db): CatalogStore {
+  const roomReader = createPostgresRoomReader(db);
+
+  function selectListings(where: SQL | undefined) {
+    return db
+      .select({
+        ...dropColumns,
+        productId: products.id,
+        productSlug: products.slug,
+        productTitle: products.title,
+        imageKeys: products.imageKeys,
+      })
+      .from(drops)
+      .innerJoin(products, eq(products.id, drops.productId))
+      .leftJoin(rooms, eq(rooms.id, drops.roomId))
+      .where(where);
+  }
+
   return {
     async listDrops({ status, limit }) {
-      const rows = await db
-        .select({
-          ...dropColumns,
-          productId: products.id,
-          productSlug: products.slug,
-          productTitle: products.title,
-          imageKeys: products.imageKeys,
-        })
-        .from(drops)
-        .innerJoin(products, eq(products.id, drops.productId))
-        .leftJoin(rooms, eq(rooms.id, drops.roomId))
-        .where(
-          and(inArray(drops.status, status), eq(products.status, 'PUBLISHED'), ne(products.source, 'test')),
-        )
+      const rows = await selectListings(
+        and(inArray(drops.status, status), eq(products.status, 'PUBLISHED'), ne(products.source, 'test')),
+      )
         // ENDED drops newest first, so a limited "recently ended" list gets the latest ones, not the oldest.
         .orderBy(
           sql`CASE ${drops.status} WHEN 'LIVE' THEN 0 WHEN 'ENDED' THEN 2 ELSE 1 END`,
@@ -93,15 +134,7 @@ export function createPostgresCatalog(db: Db): CatalogStore {
           asc(drops.id),
         )
         .limit(limit);
-      return rows.map((row) => ({
-        ...toDropInfo(row),
-        product: {
-          id: row.productId,
-          slug: row.productSlug,
-          title: row.productTitle,
-          imageKeys: row.imageKeys,
-        },
-      }));
+      return rows.map(toListing);
     },
 
     async productBySlug(slug) {
@@ -134,6 +167,20 @@ export function createPostgresCatalog(db: Db): CatalogStore {
         drop: drop === undefined ? null : toDropInfo(drop),
       };
     },
+
+    async roomBySlug(slug) {
+      const [room] = await db
+        .select({ id: rooms.id, slug: rooms.slug, title: rooms.title, hlsUrl: rooms.hlsUrl })
+        .from(rooms)
+        .where(eq(rooms.slug, slug))
+        .limit(1);
+      if (room === undefined) return undefined;
+      const pinned = await pinnedDropOf(roomReader, room.id);
+      if (pinned === null) return { room, drop: null };
+      // Test products included, as on their product pages: a spec's own room sells its own drop.
+      const [row] = await selectListings(eq(drops.id, pinned.dropId)).limit(1);
+      return { room, drop: row === undefined ? null : toListing(row) };
+    },
   };
 }
 
@@ -142,13 +189,11 @@ export function createPostgresCatalog(db: Db): CatalogStore {
  * together), so a missing level is a data fault: that drop is left out and logged rather than failing
  * the whole storefront.
  */
-export async function listDropSummaries(
-  catalog: CatalogStore,
+export async function withStock(
+  listings: readonly DropListing[],
   stock: StockReader,
-  query: DropListQuery,
   logger: Pick<Logger, 'error'>,
 ): Promise<DropSummary[]> {
-  const listings = await catalog.listDrops(query);
   const levels = await stock.read(listings.map((listing) => listing.id));
   return listings.flatMap((listing) => {
     const level = levels.get(listing.id);
@@ -158,4 +203,13 @@ export async function listDropSummaries(
     }
     return [{ ...listing, stock: level }];
   });
+}
+
+export async function listDropSummaries(
+  catalog: CatalogStore,
+  stock: StockReader,
+  query: DropListQuery,
+  logger: Pick<Logger, 'error'>,
+): Promise<DropSummary[]> {
+  return withStock(await catalog.listDrops(query), stock, logger);
 }

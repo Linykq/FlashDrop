@@ -14,8 +14,9 @@
  *                                                  every run; CI, on a fresh broker, passes 0)
  *
  * v2 (M3/M4) adds INV-4 (the PSP ledger against orders and payments) and INV-5 (the outbox drained and the
- * payment and inventory-settlement groups at the log end; the dashboard group joins in M7). Exit codes:
- * 0 every check passed, 1 a breach or no quiescence, 2 the check could not run.
+ * payment, inventory-settlement and sales-dashboard groups at the log end; from M7 also each drop's dashboard
+ * totals equal to its orders, §9). Exit codes: 0 every check passed, 1 a breach or no quiescence, 2 the
+ * check could not run.
  */
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
@@ -176,6 +177,17 @@ function formatReport(report: InvariantsReport): string {
         `    orders: ${counts(pg.orders) || 'none'}`,
         `    PSP charges: ${counts(ledger.charges) || 'none'}; captured ${ledger.capturedCents}, refunded ${ledger.refundedCents} cents`,
       );
+      const { dashboard } = drop;
+      if (dashboard !== null) {
+        const t = dashboard.totals;
+        lines.push(
+          `    dashboard: reserved ${t.reserved}, placed ${t.placed}, paid ${t.paid}, failed ${t.failed}, ` +
+            `expired ${t.expired}, cancelled ${t.cancelled}, rejected ${t.rejected}; ` +
+            `${t.unitsSold} units, ${t.revenueCents} cents` +
+            (dashboard.eventless === 0 ? '' : `; ${dashboard.eventless} orders without events left out`) +
+            (dashboard.skipped === undefined ? '' : `; not compared: ${dashboard.skipped}`),
+        );
+      }
     }
   }
 

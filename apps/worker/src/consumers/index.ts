@@ -8,6 +8,7 @@ import {
 } from '@flashdrop/messaging';
 import type { WorkerDeps } from '../deps';
 import { isTransientError } from '../loop';
+import { dashboardHandlers } from './dashboard';
 import { paymentHandlers } from './payment';
 import type { PspClient } from './psp-client';
 import { settlementHandlers } from './settlement';
@@ -17,7 +18,7 @@ import { settlementHandlers } from './settlement';
  * instance) per group, so one group's slow batch never stalls another's (M0 delta 5).
  */
 
-export type ConsumerName = 'payment' | 'settlement';
+export type ConsumerName = 'payment' | 'settlement' | 'dashboard';
 
 interface ConsumerSpec {
   readonly groupId: string;
@@ -25,6 +26,8 @@ interface ConsumerSpec {
   readonly concurrency: number;
   /** Messages per batch (`js.consumer.max.batch.size`); the runner's default when unset. */
   readonly maxBatchSize?: number;
+  /** Postgres connections its handlers hold at once; one per order in flight when unset. */
+  readonly connections?: number;
 }
 
 const CONSUMERS: Readonly<Record<ConsumerName, ConsumerSpec>> = {
@@ -36,16 +39,23 @@ const CONSUMERS: Readonly<Record<ConsumerName, ConsumerSpec>> = {
   // p50 (M4 integration). The batch deadline still bounds a batch: no new message starts after 5 s.
   payment: { groupId: CONSUMER_GROUPS.payment, concurrency: 32, maxBatchSize: 256 },
   settlement: { groupId: CONSUMER_GROUPS.settlement, concurrency: 16 },
+  // Group commit (dashboard/projector.ts): every order of a batch starts at once, so that their events share
+  // one projection transaction; those transactions run one at a time, on one connection.
+  dashboard: { groupId: CONSUMER_GROUPS.dashboard, concurrency: 256, maxBatchSize: 256, connections: 1 },
 };
 
 /**
  * Postgres connections the consumer roles among `roles` can use at once: one per order in flight, since each
- * handler holds at most one (a read, or its CAS transaction) at a time. The worker sizes its pool with it. A
+ * handler holds at most one (a read, or its CAS transaction) at a time, and one for the dashboard's group
+ * commit. The worker sizes its pool with it. A
  * pool smaller than the handlers queues them for a connection behind PAID CASes waiting on the hot
  * inventory row, until the 5 s connect timeout fails them as transient and stalls the partition.
  */
 export function consumerConnections(roles: readonly WorkerRole[]): number {
-  return roles.filter(isConsumerName).reduce((sum, name) => sum + CONSUMERS[name].concurrency, 0);
+  return roles.filter(isConsumerName).reduce((sum, name) => {
+    const spec = CONSUMERS[name];
+    return sum + (spec.connections ?? spec.concurrency);
+  }, 0);
 }
 
 function isConsumerName(role: WorkerRole): role is ConsumerName {
@@ -62,7 +72,11 @@ export interface ConsumerDeps extends Pick<WorkerDeps, 'db' | 'redis' | 'nudger'
  * `dlq:replay` runs exactly the handler, and the idempotency checks, of the first delivery (§6.4).
  */
 export function consumerRegistry(deps: ConsumerDeps): Readonly<Record<ConsumerName, OrderEventHandlers>> {
-  return { payment: paymentHandlers(deps), settlement: settlementHandlers(deps) };
+  return {
+    payment: paymentHandlers(deps),
+    settlement: settlementHandlers(deps),
+    dashboard: dashboardHandlers(deps),
+  };
 }
 
 export interface ConsumerRoleOptions {

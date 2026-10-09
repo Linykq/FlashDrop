@@ -2,6 +2,7 @@ import { WifiOff } from 'lucide-react';
 import { cx } from '../../lib/cx';
 import { describeStock, type StockState } from '../../lib/stock';
 import { Countdown } from './countdown';
+import { StockFigure } from './stock-figure';
 import { StockMeter } from './stock-meter';
 
 type StockTextProps = {
@@ -43,7 +44,12 @@ export function StockText({
   className,
 }: StockTextProps) {
   const view = describeStock(stock);
-  const primary = view.primary ?? <Countdown target={startsAt} serverNow={serverNow} verb="Starts" />;
+  const primary =
+    view.primary === null ? (
+      <Countdown target={startsAt} serverNow={serverNow} verb="Starts" />
+    ) : (
+      <StockFigure text={view.primary} />
+    );
   const urgentText = view.urgent && !onMaterial;
 
   return (

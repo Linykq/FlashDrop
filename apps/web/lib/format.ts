@@ -43,6 +43,11 @@ export function formatCount(count: number): string {
   return countFormatter.format(count);
 }
 
+/** "3F2A9C1B": the first 8 hex characters of a UUID, uppercase, as people quote an order or a drop (§10.5). */
+export function shortId(id: string): string {
+  return id.replaceAll('-', '').slice(0, 8).toUpperCase();
+}
+
 /**
  * `h:mm:ss` from one hour up, `m:ss` below, never negative. Seconds round up, so "0:00" appears only once the
  * deadline has passed and the last whole second still reads "0:01".

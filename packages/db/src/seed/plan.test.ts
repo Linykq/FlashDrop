@@ -1,4 +1,4 @@
-import type { ImageKey } from '@flashdrop/contracts';
+import { type ImageKey, OrderEvent } from '@flashdrop/contracts';
 import { describe, expect, it } from 'vitest';
 import { loadCatalog, REPO_CATALOG_DIR } from './catalog';
 import { planSeed, SEED_ROOM, SEED_USERS, seedId, seedProductId } from './plan';
@@ -66,6 +66,20 @@ describe('planSeed', () => {
       expect(sale.pay.paidAt?.getTime()).toBeLessThan(ended?.drop.endsAt.getTime() ?? 0);
       expect(sale.payment.amountCents).toBe(sale.reserve.qty * sale.reserve.unitPriceCents);
       expect(sale.charge.idempotencyKey).toBe(`charge:${sale.reserve.id}`);
+      // The events the live flow would have written, at the times it happened, valid envelopes all.
+      expect(sale.events.map((event) => [event.type, event.orderVersion, event.occurredAt])).toEqual([
+        ['order.reserved', 1, sale.reserve.createdAt?.toISOString()],
+        ['order.placed', 2, sale.place.updatedAt?.toISOString()],
+        ['order.paid', 3, sale.pay.paidAt?.toISOString()],
+      ]);
+      for (const event of sale.events) {
+        expect(OrderEvent.parse(event)).toMatchObject({ orderId: sale.reserve.id, dropId: ended?.drop.id });
+      }
+      expect(sale.events.at(-1)?.data).toEqual({
+        qty: sale.reserve.qty,
+        totalCents: sale.payment.amountCents,
+        pspChargeId: sale.charge.id,
+      });
     }
     expect(ended?.quotas.map((quota) => quota.claimed)).toEqual([10, 10, 10, 10, 10]);
   });

@@ -1,20 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { isNewer, parseSnapshot, stockAnnouncement } from './live-stock';
+import { parseSnapshot, stockAnnouncement } from './live-stock';
 import type { StockState } from './stock';
-
-describe('isNewer', () => {
-  it('orders versions by gen, then seq, and keeps equal ones out', () => {
-    expect(isNewer({ gen: 3, seq: 8 }, { gen: 3, seq: 7 })).toBe(true);
-    expect(isNewer({ gen: 3, seq: 7 }, { gen: 3, seq: 7 })).toBe(false);
-    expect(isNewer({ gen: 3, seq: 6 }, { gen: 3, seq: 7 })).toBe(false);
-  });
-
-  it('takes a rebuild (seq back at 0) over any number of older updates, and never the reverse', () => {
-    expect(isNewer({ gen: 4, seq: 0 }, { gen: 3, seq: 9_000 })).toBe(true);
-    expect(isNewer({ gen: 3, seq: 9_000 }, { gen: 4, seq: 0 })).toBe(false);
-    expect(isNewer({ gen: 1, seq: 0 }, { gen: -1, seq: 0 })).toBe(true);
-  });
-});
 
 describe('parseSnapshot', () => {
   const body = {

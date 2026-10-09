@@ -1,7 +1,16 @@
-import AxeBuilder from '@axe-core/playwright';
 import type { OrderStatus, PaymentMethod } from '@flashdrop/contracts';
-import type { Page, TestInfo } from '@playwright/test';
-import { formReady, orderHeading, payButton, SETTLES_WITHIN_MS } from './support/checkout';
+import type { Page } from '@playwright/test';
+import { choosePhotos, dashboardOf, settledListingJob, signInAdmin, uploadListing } from './support/admin';
+import { expectNoBlockingViolations, MODES, modeTitle } from './support/axe';
+import {
+  fastForwardHold,
+  firstOrderRead,
+  formReady,
+  holdCard,
+  orderHeading,
+  payButton,
+  SETTLES_WITHIN_MS,
+} from './support/checkout';
 import {
   checkoutViaApi,
   createDrop,
@@ -13,40 +22,16 @@ import {
 } from './support/fixtures';
 
 /*
- * The axe gate of design §13: 0 serious or critical violations on every page built so far, in both themes.
- * Every violation, whatever its impact, is attached to the test, so lesser ones stay visible. The theme
- * follows `prefers-color-scheme` unless a stored override exists, and a fresh context has none. Pages that
- * show stock or a hold use the spec's own drop (support/fixtures.ts); home and sign-in show the seed.
+ * The axe gate of design §13 (support/axe.ts): 0 serious or critical violations on every page built so far,
+ * in every checkout state (idle, holding, its last minute, error, expired, paid and declined) and the admin's
+ * states (the drops list with its New drop sheet, empty and with errors; a drop's page with its End and
+ * Reconcile confirmations; the dashboard; health; the listing upload, also refusing a file; the review, also
+ * after a failed approve and after the fix), in both themes, each with motion and with
+ * `reducedMotion: 'reduce'`, which turns the motion off rather than waiting it out. The live room's scans
+ * need the stream to play, so they run in Google Chrome (live-room-a11y.spec.ts). The theme follows
+ * `prefers-color-scheme` unless a stored override exists, and a fresh context has none. Pages that show
+ * stock or a hold use the spec's own drop (support/fixtures.ts); home and sign-in show the seed.
  */
-
-const BLOCKING_IMPACTS = new Set(['serious', 'critical']);
-
-/** Waits until the page is what a reader sees: streamed parts in, fonts loaded, entrance motion done. */
-async function settle(page: Page): Promise<void> {
-  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
-  await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-    // Contrast is judged at rest. An infinite animation never finishes, so it is not waited for.
-    const finite = document
-      .getAnimations()
-      .filter((animation) => animation.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY);
-    await Promise.all(finite.map((animation) => animation.finished.catch(() => undefined)));
-  });
-}
-
-async function expectNoBlockingViolations(page: Page, testInfo: TestInfo): Promise<void> {
-  await settle(page);
-  const { violations } = await new AxeBuilder({ page }).analyze();
-  await testInfo.attach('axe-violations.json', {
-    body: JSON.stringify(violations, null, 2),
-    contentType: 'application/json',
-  });
-  const blocking = violations
-    .filter(({ impact }) => impact != null && BLOCKING_IMPACTS.has(impact))
-    .map(({ id, impact, help, nodes }) => ({ id, impact, help, targets: nodes.map(({ target }) => target) }));
-  expect(blocking).toEqual([]);
-}
 
 /** A placed order of the spec's buyer, waited on until the payment consumer decided it. */
 async function decidedOrder(
@@ -64,9 +49,9 @@ async function decidedOrder(
   return order.id;
 }
 
-for (const colorScheme of ['light', 'dark'] as const) {
-  test.describe(`${colorScheme} theme`, () => {
-    test.use({ colorScheme });
+for (const mode of MODES) {
+  test.describe(modeTitle(mode), () => {
+    test.use(mode);
 
     test('home page has no serious or critical axe violations', async ({ page }, testInfo) => {
       await page.goto('/');
@@ -92,6 +77,29 @@ for (const colorScheme of ['light', 'dark'] as const) {
       const order = await reserveViaApi(page.request, baseURL, drop.id);
       await page.goto(`/checkout/${order.id}`);
       await expect(page.getByRole('region', { name: 'Reserved for you' })).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+    });
+
+    test('checkout in its last minute, offering the extension and then with it, has no serious or critical axe violations', async ({
+      page,
+      drop,
+      buyer: _,
+      baseURL,
+    }, testInfo) => {
+      // The warning colours and the extension row, a minute from the end of a 120 s hold under page.clock.
+      await page.clock.install();
+      const order = await reserveViaApi(page.request, baseURL, drop.id);
+      const firstRead = firstOrderRead(page);
+      await page.goto(`/checkout/${order.id}`);
+      const card = holdCard(page);
+      await expect(card).toBeVisible();
+      await firstRead;
+      await fastForwardHold(page, 50);
+      const extend = card.getByRole('button', { name: 'Add 1 minute' });
+      await expect(extend).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+      await extend.click();
+      await expect(card.getByText('1 minute added', { exact: true })).toBeVisible();
       await expectNoBlockingViolations(page, testInfo);
     });
 
@@ -161,28 +169,123 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expect(page.getByRole('heading', { name: 'Reservation expired' })).toBeVisible();
       await expectNoBlockingViolations(page, testInfo);
     });
+
+    test('admin dashboard has no serious or critical axe violations', async ({
+      page,
+      context,
+      drop,
+      buyer: _,
+      baseURL,
+    }, testInfo) => {
+      await decidedOrder(page, baseURL, drop.id, 'pm_ok', 'PAID');
+      await signInAdmin(context, baseURL);
+      await expect
+        .poll(async () => (await dashboardOf(page.request, drop.id)).projection.totals.paid, {
+          timeout: SETTLES_WITHIN_MS,
+        })
+        .toBe(1);
+      await page.goto(`/admin/dashboard/${drop.id}`);
+      await expect(page.getByRole('img', { name: /^Funnel:/ })).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+    });
+
+    test('admin drops list and its New drop sheet, empty and with errors, have no serious or critical axe violations', async ({
+      page,
+      context,
+      baseURL,
+    }, testInfo) => {
+      await signInAdmin(context, baseURL);
+      await page.goto('/admin/drops');
+      await expectNoBlockingViolations(page, testInfo);
+      await page.getByRole('button', { name: 'New drop' }).first().click();
+      const sheet = page.getByRole('dialog', { name: 'New drop' });
+      await expect(sheet).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+      // No product and no price: each problem under its field, found before anything is sent.
+      await sheet.getByRole('button', { name: 'Create draft' }).click();
+      await expect(sheet.getByText('Choose a product.', { exact: true })).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+      await sheet.getByRole('button', { name: 'Cancel' }).click();
+      await expect(sheet).toBeHidden();
+    });
+
+    // Arm's confirmation is Reconcile's layout (a filled action and a gray Cancel) with other words: arming
+    // needs a DRAFT, which only the New drop sheet makes, and a draft from every run would pile up in the
+    // shared catalog.
+    test('admin drop page with its End and Reconcile confirmations has no serious or critical axe violations', async ({
+      page,
+      context,
+      drop,
+      baseURL,
+    }, testInfo) => {
+      await signInAdmin(context, baseURL);
+      await page.goto(`/admin/drops/${drop.id}`);
+      await expectNoBlockingViolations(page, testInfo);
+      for (const [action, title] of [
+        ['End drop', 'End this drop now?'],
+        ['Reconcile', 'Rebuild live stock?'],
+      ] as const) {
+        await page.getByRole('button', { name: action }).click();
+        const dialog = page.getByRole('alertdialog', { name: title });
+        await expect(dialog).toBeVisible();
+        await expectNoBlockingViolations(page, testInfo);
+        await dialog.getByRole('button', { name: 'Cancel' }).click();
+        await expect(dialog).toBeHidden();
+      }
+    });
+
+    test('admin health has no serious or critical axe violations', async ({
+      page,
+      context,
+      baseURL,
+    }, testInfo) => {
+      await signInAdmin(context, baseURL);
+      await page.goto('/admin/health');
+      await expectNoBlockingViolations(page, testInfo);
+    });
+
+    test('admin listing upload and review have no serious or critical axe violations', async ({
+      page,
+      context,
+      baseURL,
+    }, testInfo) => {
+      await signInAdmin(context, baseURL);
+      await page.goto('/admin/listings/new');
+      await expectNoBlockingViolations(page, testInfo);
+      // A file the form refuses, with its reason under the drop zone.
+      await choosePhotos(page, {
+        name: 'notes.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('not a photo'),
+      });
+      // Shown under the drop zone (and announced through a status region, which is not what this waits for).
+      await expect(
+        page.getByRole('listitem').filter({ hasText: "notes.txt isn't a JPEG, PNG or WebP." }),
+      ).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+      // NEEDS_REVIEW, the review state with the most on it: the banner, issues and an uncertainty prompt.
+      const jobId = await uploadListing(
+        page.request,
+        baseURL,
+        'shirt.jpg',
+        `a11y run ${crypto.randomUUID()}`,
+      );
+      expect((await settledListingJob(page.request, jobId)).status).toBe('NEEDS_REVIEW');
+      await page.goto(`/admin/listings/${jobId}`);
+      await expect(page.getByRole('heading', { level: 1, name: 'Review listing' })).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+      // A failed approve: the error summary, with focus, and each field's error.
+      await page.getByRole('button', { name: 'Approve and publish' }).click();
+      const summary = page.getByRole('region', { name: /^Fix \d+ fields? to publish$/ });
+      await expect(summary).toBeFocused();
+      await expectNoBlockingViolations(page, testInfo);
+      // The size given, the summary goes with the last error it listed.
+      await page.getByRole('textbox', { name: 'Size', exact: true }).fill('M');
+      await expect(summary).toHaveCount(0);
+      await expectNoBlockingViolations(page, testInfo);
+    });
   });
 }
-
-test.describe('reduced motion', () => {
-  test.use({ reducedMotion: 'reduce' });
-
-  test('checkout and a paid order have no serious or critical axe violations', async ({
-    page,
-    drop,
-    buyer: _,
-    baseURL,
-  }, testInfo) => {
-    const order = await reserveViaApi(page.request, baseURL, drop.id);
-    await page.goto(`/checkout/${order.id}`);
-    await expect(page.getByRole('region', { name: 'Reserved for you' })).toBeVisible();
-    await expectNoBlockingViolations(page, testInfo);
-    const paid = await decidedOrder(page, baseURL, drop.id, 'pm_ok', 'PAID');
-    await page.goto(`/orders/${paid}`);
-    await expect(orderHeading(page)).toHaveText('You got it.');
-    await expectNoBlockingViolations(page, testInfo);
-  });
-});
 
 test.describe('forced colours', () => {
   test.use({ forcedColors: 'active' });

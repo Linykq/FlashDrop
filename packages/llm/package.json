@@ -7,6 +7,11 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "sharp": "catalog:"
+    "@anthropic-ai/sdk": "catalog:",
+    "@flashdrop/config": "workspace:*",
+    "@flashdrop/contracts": "workspace:*",
+    "@flashdrop/domain": "workspace:*",
+    "sharp": "catalog:",
+    "zod": "catalog:"
   }
 }

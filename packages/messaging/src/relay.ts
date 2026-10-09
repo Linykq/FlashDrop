@@ -1,6 +1,7 @@
 import type { Logger } from '@flashdrop/config';
 import {
   type Db,
+  deleteExpiredProcessedEvents,
   deletePublishedOutbox,
   type OutboxMessage,
   RELAY_BATCH,
@@ -23,7 +24,8 @@ import { type OutgoingRecord, PublishError, type Publisher } from './publisher';
  *     one fenced batch in one transaction (`relayOutboxBatch`): advisory xact lock, claim up to 500 rows
  *     FOR UPDATE in id order, publish them awaiting the broker acks, mark them, commit
  *     on failure: the transaction rolled back (or none was opened); back off 1 s -> 30 s with full jitter
- *   hourly, beside the loop: delete rows published more than 7 days ago, 5,000 per statement
+ *   hourly, beside the loop: delete rows published more than 7 days ago, then consumer dedupe records past
+ *   their 45 days (`processed_events`, §3), 5,000 per statement
  *
  * - Every send settles (acked or failed) within `message.timeout.ms` (10 s), below the relay session's
  *   `transaction_timeout` (20 s), and the publisher rejects only after every record settled, so a failed
@@ -43,6 +45,8 @@ export interface RelayStore {
   ): Promise<RelayBatch>;
   /** Deletes the rows past retention; returns how many. */
   deletePublished(): Promise<number>;
+  /** Deletes the consumers' dedupe records past retention; returns how many. */
+  deleteProcessed(): Promise<number>;
 }
 
 /** The store over `db`, which must come from a pool with `POOL_PROFILES.relay` (§5.4 session limits). */
@@ -50,6 +54,7 @@ export function outboxRelayStore(db: Db): RelayStore {
   return {
     publishBatch: (publish, limit) => relayOutboxBatch(db, publish, { limit }),
     deletePublished: () => deletePublishedOutbox(db),
+    deleteProcessed: () => deleteExpiredProcessedEvents(db),
   };
 }
 
@@ -249,6 +254,9 @@ export function createRelay(options: RelayOptions): Relay {
       try {
         const deleted = await store.deletePublished();
         if (deleted > 0) logger.info({ deleted }, 'deleted published outbox rows past retention');
+        // The relay is the pipeline's one hourly housekeeper; the consumers keep no timer of their own.
+        const records = await store.deleteProcessed();
+        if (records > 0) logger.info({ deleted: records }, 'deleted consumer dedupe records past retention');
       } catch (err) {
         logger.warn({ err }, 'outbox cleanup failed');
         nextInMs = CLEANUP_RETRY_MS;

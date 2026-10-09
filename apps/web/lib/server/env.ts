@@ -1,4 +1,4 @@
-import { CoreEnv, type Env, loadEnv, SessionEnv, WebEnv } from '@flashdrop/config';
+import { CoreEnv, type Env, loadEnv, RevalidateEnv, SessionEnv, WebEnv } from '@flashdrop/config';
 
 /*
  * web's runtime settings, each group validated on first use at request time and never at module scope:
@@ -9,10 +9,12 @@ import { CoreEnv, type Env, loadEnv, SessionEnv, WebEnv } from '@flashdrop/confi
 const apiSchemas = [WebEnv] as const;
 const sessionSchemas = [SessionEnv] as const;
 const coreSchemas = [CoreEnv] as const;
+const revalidateSchemas = [RevalidateEnv] as const;
 
 let api: Env<typeof apiSchemas> | undefined;
 let session: Env<typeof sessionSchemas> | undefined;
 let core: Env<typeof coreSchemas> | undefined;
+let revalidate: Env<typeof revalidateSchemas> | undefined;
 
 /** Where Server Components reach api: `http://api:4000` in Compose, `http://127.0.0.1:4000` in dev. */
 export function apiEnv(): Env<typeof apiSchemas> {
@@ -29,4 +31,10 @@ export function sessionEnv(): Env<typeof sessionSchemas> {
 export function coreEnv(): Env<typeof coreSchemas> {
   core ??= loadEnv(coreSchemas);
   return core;
+}
+
+/** The secret `worker` and `api` send to `POST /_internal/revalidate` (SD §8.1). */
+export function revalidateEnv(): Env<typeof revalidateSchemas> {
+  revalidate ??= loadEnv(revalidateSchemas);
+  return revalidate;
 }

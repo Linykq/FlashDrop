@@ -14,6 +14,7 @@ const DROP = {
   productSlug: 'test-drop-0123456789abcdef',
   startsAt: '2026-10-02T12:00:00.000Z',
   endsAt: '2026-10-02T13:00:00.000Z',
+  room: null,
 };
 
 let app: Api | undefined;

@@ -166,10 +166,18 @@ export const outbox = pgTable(
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     publishedAt: timestamptz('published_at'),
   },
-  (t) => [index('outbox_pending').on(t.id).where(sql`${t.publishedAt} IS NULL`)],
+  (t) => [
+    index('outbox_pending').on(t.id).where(sql`${t.publishedAt} IS NULL`),
+    // A drop's events by its product, for INV-5's truth (`readDashboardChecks`): without it every health
+    // check scanned the whole outbox.
+    index('outbox_partition_key').on(t.partitionKey),
+  ],
 );
 
-/** Exactly-once effects for consumers. Rows are kept 45 days: past Kafka's retention plus a DLQ replay. */
+/**
+ * Exactly-once effects for consumers. Rows are kept 45 days, past Kafka's retention plus a DLQ replay; the
+ * relay's hourly cleanup deletes older ones (`deleteExpiredProcessedEvents`).
+ */
 export const processedEvents = pgTable(
   'processed_events',
   {

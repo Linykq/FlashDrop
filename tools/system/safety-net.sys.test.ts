@@ -24,7 +24,8 @@ import {
 } from './support';
 
 /*
- * M3 demo (design §4.6, §6.4 "a DLQ'd event never leaks stock"): with every consumer stopped, stock still
+ * M3 demo (design §4.6, §6.4 "a DLQ'd event never leaks stock"): with the payment and settlement consumers
+ * stopped (the `consumers` service; the dashboard's run apart and play no part in stock), stock still
  * comes back. Postgres decides every outcome without Kafka (cancel at once, the sweeper's expiry at the
  * deadline) and gives the units back in the same transactions; the sweeper's settle-safety-net then applies
  * each outcome to Redis once it is 10 s old, so a lost, slow or absent settlement consumer only delays the

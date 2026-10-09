@@ -25,6 +25,8 @@ build
 .idea
 docs
 tests
+# Except the listing fixtures: the worker's listing role answers from them without an API key (§10).
+!tests/fixtures
 invariants-report.json
 coverage
 playwright-report

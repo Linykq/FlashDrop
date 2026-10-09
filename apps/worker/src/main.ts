@@ -1,4 +1,5 @@
 import { hostname } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { createLogger } from '@flashdrop/config';
 import { createDb, createPool } from '@flashdrop/db';
 import {
@@ -7,7 +8,7 @@ import {
   DROP_LOCK_POOL_PROFILE,
   type FlashdropRedis,
 } from '@flashdrop/inventory';
-import { createKafka, createPublisher } from '@flashdrop/messaging';
+import { createKafka, createPublisher, createWebRevalidator } from '@flashdrop/messaging';
 import { consumerConnections } from './consumers';
 import { loadWorkerEnv } from './env';
 import { type HealthServer, startHealthServer } from './health';
@@ -106,6 +107,15 @@ startup = (async () => {
       lock: { pool: lockPool, logger },
       nudger: createSyncNudger({ db, logger }),
       logger,
+      ...(env.REVALIDATE_SECRET === undefined
+        ? {}
+        : {
+            revalidate: createWebRevalidator({
+              webUrl: env.WEB_INTERNAL_URL,
+              secret: env.REVALIDATE_SECRET,
+              logger,
+            }),
+          }),
     };
     roles = await startRoles(env.WORKER_ROLES, {
       deps,
@@ -113,6 +123,9 @@ startup = (async () => {
       kafka,
       publisher,
       paymentMockUrl: env.PAYMENT_MOCK_URL,
+      // Resolved from this entry, which sits at the same depth in the source tree (src/main.ts) as in the
+      // image (dist/main.js); code inlined from packages would resolve against the bundle instead.
+      listing: { ...env, fixturesDir: fileURLToPath(new URL('../../../tests/fixtures', import.meta.url)) },
     });
     health = await startHealthServer({
       host: env.HEALTH_HOST,

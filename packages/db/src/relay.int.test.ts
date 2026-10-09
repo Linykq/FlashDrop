@@ -7,9 +7,9 @@ import { createDb, type Db } from './client';
 import { isTransientDbError } from './errors';
 import { insertOutboxEvents, orderEvent } from './outbox';
 import { createPool, POOL_PROFILES } from './pool';
-import { insertProcessedEvents } from './processed-events';
+import { deleteExpiredProcessedEvents, insertProcessedEvents, uuidv7Floor } from './processed-events';
 import { deletePublishedOutbox, type OutboxMessage, outboxBacklog, relayOutboxBatch } from './relay';
-import { outbox } from './schema';
+import { outbox, processedEvents } from './schema';
 import { createTestDatabase, type TestDatabase, waitForLockWaiters } from './test-database';
 import { gate, reached } from './test-fixtures';
 import { transaction } from './transaction';
@@ -318,5 +318,45 @@ describe('insertProcessedEvents', () => {
 
     const all = claims.flatMap((set) => [...set]);
     expect(all.sort()).toEqual([...ids].sort());
+  });
+});
+
+describe('deleteExpiredProcessedEvents', () => {
+  /** A uuidv7 as `uuidv7()` writes one, made `daysAgo` days ago. */
+  const eventIdOf = (daysAgo: number) =>
+    `${uuidv7Floor(Date.now() - daysAgo * 86_400_000).slice(0, 14)}7${randomUUID().slice(15)}`;
+
+  it('deletes records whose event and insert are both past 45 days, per consumer, in batches', async () => {
+    // This test database belongs to this file, so every consumer row here is the test's.
+    const consumers = ['retention-a', 'retention-b'];
+    const row = (consumer: string, eventDays: number, processedDays: number) => ({
+      consumer,
+      eventId: eventIdOf(eventDays),
+      processedAt: sql`now() - make_interval(days => ${processedDays})`,
+    });
+    const old = [row('retention-a', 50, 49), row('retention-a', 46, 46), row('retention-b', 60, 59)];
+    const kept = [
+      row('retention-a', 44, 44),
+      // An old event replayed from the DLQ recently: its record stays a full retention after the insert.
+      row('retention-b', 50, 3),
+      row('retention-b', 1, 1),
+    ];
+    await db.insert(processedEvents).values([...old, ...kept]);
+
+    const deleted = await deleteExpiredProcessedEvents(db, { batchSize: 1, consumers });
+
+    expect(deleted).toBe(3);
+    const left = await db
+      .select({ eventId: processedEvents.eventId })
+      .from(processedEvents)
+      .where(inArray(processedEvents.consumer, consumers));
+    expect(left.map((r) => r.eventId).sort()).toEqual(kept.map((r) => r.eventId).sort());
+    expect(await deleteExpiredProcessedEvents(db, { consumers })).toBe(0);
+  });
+
+  it('floors a millisecond below every uuidv7 created in it or later', () => {
+    const at = Date.parse('2026-10-09T12:00:00.000Z');
+    expect(uuidv7Floor(at)).toBe('01a12088-d200-0000-0000-000000000000');
+    expect(eventIdOf(0) > uuidv7Floor(Date.now() - 1_000)).toBe(true);
   });
 });

@@ -16,8 +16,9 @@ type BannerProps = {
   tone: BannerTone;
   /** Replaces the tone's icon where §7 has a specific glyph for the message (`WifiOff` for paused updates). */
   icon?: LucideIcon;
-  title?: string;
-  children: ReactNode;
+  /** A headline; it may carry links (the health summary's). */
+  title?: ReactNode;
+  children?: ReactNode;
   /** A plain sm button or a link: the next step. */
   action?: ReactNode;
   /** Shows a dismiss button. Only from a Client Component, which owns the banner's visibility. */
@@ -56,7 +57,7 @@ export function Banner({
       <Icon className={cx('shrink-0', ink)} />
       <div className="min-w-0 flex-1">
         {title && <p className="text-headline text-label">{title}</p>}
-        <div className="text-callout text-label">{children}</div>
+        {children && <div className="text-callout text-label">{children}</div>}
         {action && <div className="mt-2">{action}</div>}
       </div>
       {onDismiss && <IconButton label="Dismiss" icon={X} size="sm" className="-my-1" onClick={onDismiss} />}

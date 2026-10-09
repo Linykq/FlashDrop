@@ -16,12 +16,15 @@ export type SessionUser = z.infer<typeof SessionUser>;
 
 /**
  * Claims of the `fd_session` HS256 JWT (§11). `web`'s `proxy.ts` gates `/admin` on `role`, and `api`
- * checks it again on every admin route. `iat` and `exp` are set and verified by `jose`.
+ * checks it again on every admin route. `iat` and `exp` are set and verified by `jose`; `exp` (seconds since
+ * the epoch) is kept because a WebSocket outlives the request that opened it, and the gateway closes a
+ * socket whose session expired.
  */
 export const SessionClaims = z.object({
   sub: Uuid,
   role: UserRole,
   name: z.string().min(1),
+  exp: z.int().positive(),
 });
 export type SessionClaims = z.infer<typeof SessionClaims>;
 

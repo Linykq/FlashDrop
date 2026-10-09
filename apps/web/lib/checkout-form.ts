@@ -69,10 +69,10 @@ export function fieldId(field: CheckoutField): string {
 
 /** The payment-mock's test methods (SD §6.5, `PAYMENT_METHODS`) by name, as checkout and the order page say it. */
 const PAYMENT_METHOD_TITLES: Readonly<Record<PaymentMethod, string>> = {
-  pm_ok: 'Card ending 4242',
-  pm_decline: 'Declining card',
-  pm_slow: 'Slow card',
-  pm_flaky: 'Unreliable card',
+  pm_ok: 'Test card that approves',
+  pm_decline: 'Test card that declines',
+  pm_slow: 'Slow test card',
+  pm_flaky: 'Unreliable test card',
 };
 
 /**
@@ -86,11 +86,11 @@ export const CHECKOUT_PAYMENT_METHODS: readonly {
   title: string;
   description: string;
 }[] = [
-  { method: 'pm_ok', title: PAYMENT_METHOD_TITLES.pm_ok, description: 'Test card that always approves.' },
+  { method: 'pm_ok', title: PAYMENT_METHOD_TITLES.pm_ok, description: 'Always succeeds.' },
   {
     method: 'pm_decline',
     title: PAYMENT_METHOD_TITLES.pm_decline,
-    description: 'Test card that is always declined, so you can see what happens.',
+    description: 'Always declined, so you can see what happens.',
   },
 ];
 

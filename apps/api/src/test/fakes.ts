@@ -1,11 +1,22 @@
 import { createLogger } from '@flashdrop/config';
-import type { AdminDrop, DropListQuery, ProductDetail, SessionUser, StockLevel } from '@flashdrop/contracts';
+import {
+  type AdminDashboardResponse,
+  type AdminDrop,
+  type AdminHealthResponse,
+  type DropListQuery,
+  INVARIANT_IDS,
+  type ProductDetail,
+  type Room,
+  type SessionUser,
+  type StockLevel,
+} from '@flashdrop/contracts';
 import type { NewReservation, OrderRecord, OrderWithProduct, RejectedTombstone } from '@flashdrop/db';
 import {
   cancelReplay,
   canTransition,
   checkoutReplay,
   HOLD_EXTENSION_SECONDS,
+  NotFoundError,
   type PostgresRefusal,
 } from '@flashdrop/domain';
 import { checkoutFingerprint } from '@flashdrop/domain/identity';
@@ -16,6 +27,8 @@ import { createSessionCodec } from '../http/session';
 import type { DropListing } from '../services/catalog';
 import { createOrderService, type OrderPorts } from '../services/orders';
 import { createReservationService, type ReservePorts } from '../services/reserve';
+import { createFakeAdminCatalog } from './catalog-fake';
+import { createFakeListings } from './listings-fake';
 
 /*
  * In-memory services for `inject()` tests: the routes, plugins and DTO validation run for real, without
@@ -57,6 +70,13 @@ export const LIVE_DROP: DropListing = {
     title: 'Sage Wireless Over-Ear Headphones',
     imageKeys: [IMAGE_KEY],
   },
+};
+
+export const ROOM: Room = {
+  id: '5eed0002-0000-4000-8000-000000000001',
+  slug: 'studio',
+  title: 'FlashDrop Studio',
+  hlsUrl: '/hls/live.m3u8',
 };
 
 export const LIVE_STOCK: StockLevel = { avail: 240, held: 6, sold: 4, status: 'LIVE', gen: 0, seq: 0 };
@@ -126,6 +146,8 @@ export interface FakeState {
   /** Drops whose Redis state is RECONCILING or missing: their stock snapshot is `RETRY`. */
   readonly rebuilding: Set<string>;
   readonly products: Map<string, ProductDetail>;
+  /** Rooms by slug, with the drop each is pinned to. */
+  readonly rooms: Map<string, { room: Room; drop: DropListing | null }>;
   readonly users: Map<string, SessionUser>;
   /** Every query `listDrops` received, to assert on parsed query strings. */
   readonly listQueries: DropListQuery[];
@@ -136,7 +158,78 @@ export interface FakeState {
   readonly admin: { readonly calls: string[]; fail: Error | undefined };
   /** Rate-limit counters by Redis key; a test clears them to start a new window. */
   readonly rateLimitHits: Map<string, number>;
+  /** Admin dashboards by drop id; any other drop is 404. */
+  readonly dashboards: Map<string, AdminDashboardResponse>;
+  /** What the admin health check answers. */
+  health: AdminHealthResponse;
 }
+
+const EVENTS_QUIET = {
+  outbox: { pending: 0, oldestSeconds: null },
+  consumers: [{ name: 'dashboard', groupId: 'sales-dashboard', lag: 0, partitions: [] }],
+  deadLetters: 0,
+  deadLettersRetained: 0,
+} as const satisfies AdminHealthResponse['events'];
+
+/** The live drop's dashboard: four units sold so far, in one minute. */
+export const DASHBOARD: AdminDashboardResponse = {
+  drop: {
+    id: LIVE_DROP.id,
+    status: 'LIVE',
+    startsAt: LIVE_DROP.startsAt,
+    endsAt: LIVE_DROP.endsAt,
+    priceCents: LIVE_DROP.priceCents,
+    currency: LIVE_DROP.currency,
+    total: 250,
+    product: { id: LIVE_DROP.product.id, slug: LIVE_DROP.product.slug, title: LIVE_DROP.product.title },
+  },
+  projection: {
+    version: 3,
+    totals: {
+      reserved: 9,
+      placed: 5,
+      paid: 3,
+      failed: 1,
+      expired: 1,
+      cancelled: 0,
+      rejected: 0,
+      unitsSold: 4,
+      revenueCents: 4 * LIVE_DROP.priceCents,
+      lastEventAt: '2026-10-02T11:59:30.000Z',
+    },
+  },
+  series: [],
+  soldOutMinute: null,
+  stock: LIVE_STOCK,
+  health: { ...EVENTS_QUIET, redisDriftUnits: 0 },
+  serverNow: NOW.toISOString(),
+};
+
+/** Every invariant holding on one idle drop. */
+export const HEALTH: AdminHealthResponse = {
+  checkedAt: NOW.toISOString(),
+  invariants: INVARIANT_IDS.map((id) => ({
+    id,
+    title: id,
+    status: 'holds',
+    detail: '1 drop',
+    violations: [],
+    moreViolations: 0,
+  })),
+  events: EVENTS_QUIET,
+  quarantined: 0,
+  drops: [
+    {
+      dropId: LIVE_DROP.id,
+      status: 'LIVE',
+      idle: true,
+      pending: [],
+      redisDriftUnits: 0,
+      rebuildingSince: null,
+    },
+  ],
+  unavailable: [],
+};
 
 export function fakeState(): FakeState {
   return {
@@ -144,6 +237,7 @@ export function fakeState(): FakeState {
     stock: new Map([[LIVE_DROP.id, LIVE_STOCK]]),
     rebuilding: new Set(),
     products: new Map([[PRODUCT.product.slug, PRODUCT]]),
+    rooms: new Map([[ROOM.slug, { room: ROOM, drop: LIVE_DROP }]]),
     users: new Map([
       [ADMIN.id, ADMIN],
       [BUYER.id, BUYER],
@@ -162,6 +256,8 @@ export function fakeState(): FakeState {
     },
     admin: { calls: [], fail: undefined },
     rateLimitHits: new Map(),
+    dashboards: new Map([[LIVE_DROP.id, DASHBOARD]]),
+    health: HEALTH,
   };
 }
 
@@ -331,6 +427,7 @@ export function fakeServices(state: FakeState): AppServices {
         return state.drops;
       },
       productBySlug: async (slug) => state.products.get(slug),
+      roomBySlug: async (slug) => state.rooms.get(slug),
     },
     stock: {
       read: async (ids) => {
@@ -355,6 +452,21 @@ export function fakeServices(state: FakeState): AppServices {
       patch: (dropId) => adminCall(`patch ${dropId}`),
       act: (dropId, action) => adminCall(`${action} ${dropId}`),
     },
+    adminDashboard: {
+      read: async (dropId) => {
+        const dashboard = state.dashboards.get(dropId);
+        if (dashboard === undefined) throw new NotFoundError('drop');
+        return dashboard;
+      },
+    },
+    adminHealth: {
+      read: async () => state.health,
+      events: async () => state.health.events,
+      drift: async () => 0,
+      close: async () => undefined,
+    },
+    adminCatalog: createFakeAdminCatalog(),
+    listings: createFakeListings(),
     rateLimitCounter: async (key) => {
       const count = (state.rateLimitHits.get(key) ?? 0) + 1;
       state.rateLimitHits.set(key, count);

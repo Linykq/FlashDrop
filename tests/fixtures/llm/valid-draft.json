@@ -1,0 +1,32 @@
+{
+  "description": "A valid listing on the first call, opening with an empty thinking block: READY after 1 call.",
+  "image": "headphones.jpg",
+  "responses": [
+    {
+      "id": "msg_fixture_0001",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Sage Wireless Over-Ear Headphones\",\"description\":\"Over-ear wireless headphones in a soft sage green with ivory accents. Generously cushioned ear cups and a padded headband sit on a slim adjustable frame, finished in a matte coating that keeps fingerprints out of sight.\",\"highlights\":[\"Cushioned over-ear cups for long listening sessions\",\"Padded, adjustable headband\",\"Matte sage finish with ivory accents\"],\"category\":\"audio\",\"attributes\":{\"brand\":null,\"color\":\"Sage green and ivory\",\"material\":\"Matte polymer, faux leather\",\"size\":null},\"condition\":\"new\",\"tags\":[\"headphones\",\"wireless\",\"over-ear\",\"sage\",\"audio\"],\"uncertainties\":[{\"field\":\"brand\",\"note\":\"No logo is legible on the headband or cups. Which brand is it?\"}]}"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1214,
+        "output_tokens": 386,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    }
+  ]
+}

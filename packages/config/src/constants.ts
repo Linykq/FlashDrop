@@ -22,6 +22,13 @@ export const CONSUMER_GROUPS = {
   dashboard: 'sales-dashboard',
 } as const;
 
+/**
+ * The group whose committed offsets on `orders.v1.dlq` record how far `dlq:replay` has handled the dead
+ * letters (§6.4). No consumer ever joins it: the replay commits its progress, and the admin health tile
+ * counts the letters past it as the ones still to act on.
+ */
+export const DLQ_REPLAY_GROUP = 'dlq-replay';
+
 /** Roles an `api` process can serve, selected with `API_ROLES` (§2, §7). */
 export const API_ROLES = ['http', 'ws'] as const;
 export type ApiRole = (typeof API_ROLES)[number];

@@ -3,8 +3,8 @@
 #   docker buildx bake --load     both targets, into the local image store (`pnpm stack:up` runs this)
 #   docker buildx bake --print    the resolved build definition
 #
-# compose.yaml runs them as flashdrop/node:<IMAGE_TAG> (migrate, api-1, api-2, worker, payment-mock) and
-# flashdrop/web:<IMAGE_TAG>.
+# compose.yaml runs them as flashdrop/node:<IMAGE_TAG> (migrate, api-1, api-2, worker, listing, consumers,
+# dashboard-consumers, payment-mock) and flashdrop/web:<IMAGE_TAG>.
 # Always pass `--load` (bake-action: `load: true`): with the docker-container driver, a build without it
 # stays in the builder's cache, and Compose, which never pulls these images, finds nothing to run.
 #

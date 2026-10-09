@@ -12,6 +12,7 @@
     "@flashdrop/db": "workspace:*",
     "@flashdrop/domain": "workspace:*",
     "@flashdrop/inventory": "workspace:*",
+    "@flashdrop/llm": "workspace:*",
     "@flashdrop/messaging": "workspace:*",
     "sharp": "catalog:",
     "zod": "catalog:"

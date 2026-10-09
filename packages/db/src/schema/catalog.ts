@@ -11,6 +11,7 @@ import {
   type AnyPgColumn,
   char,
   check,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -115,6 +116,8 @@ export const drops = pgTable(
     check('drops_payment_seconds_check', sql`${t.paymentSeconds} BETWEEN 10 AND 1800`),
     // So "the product's current drop" is always well defined.
     uniqueIndex('one_open_drop_per_product').on(t.productId).where(inList(t.status, OPEN_DROP_STATUSES)),
+    // A live room's pinned drop (the gateway's `room:` topic, §7): every gateway re-reads its rooms every 5 s.
+    index('drops_room_id').on(t.roomId).where(sql`${t.status} <> 'DRAFT'`),
   ],
 );
 

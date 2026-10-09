@@ -5,12 +5,15 @@
  * protocol (§7) and the `ListingWire` / `ListingDraft` LLM schemas (§10).
  */
 export * from './admin';
+export * from './admin-catalog';
 export * from './auth';
 export * from './catalog';
 export * from './checkout';
 export * from './common';
+export * from './dashboard';
 export * from './events';
 export * from './health';
+export * from './listing';
 export * from './problem';
 export * from './psp';
 export * from './realtime';

@@ -37,11 +37,18 @@ async function ordersOn(request: APIRequestContext, dropId: string) {
   return OrderListResponse.parse(await response.json()).orders.filter((order) => order.dropId === dropId);
 }
 
+/** The gateway's URLs: `/ws`, and `/ws/1` or `/ws/2` for a page pinned with `?ws=` (design §7). */
+const GATEWAY = /\/ws(\/\d+)?$/;
+
 /**
- * Serves the page's stock polls the level it rendered, until `page.unroute(STOCK_POLLS)`: the buyer then
- * presses on stock that is no longer true, as in a burst between two polls.
+ * Keeps the page on the level it rendered, as in a burst between two updates, until
+ * `page.unroute(STOCK_POLLS)`: the buyer then presses on stock that is no longer true. Call it before
+ * `page.goto`. The page's socket is answered by a gateway that never sends a frame, so the level stays
+ * and the client, connected, does not fall back to polling; the stock polls it makes anyway (after a
+ * refusal) are served the rendered level until the unroute.
  */
 async function holdStockStill(page: Page, request: APIRequestContext, dropId: string): Promise<void> {
+  await page.routeWebSocket(GATEWAY, () => {});
   const rendered = await stockOf(request, dropId);
   await page.route(STOCK_POLLS, (route) =>
     route.fulfill({ json: { ...rendered, serverNow: new Date().toISOString() } }),
@@ -159,8 +166,8 @@ test.describe('refused on stale stock', () => {
     request,
     baseURL,
   }) => {
-    await page.goto(`/p/${drop.productSlug}`);
     await holdStockStill(page, request, drop.id);
+    await page.goto(`/p/${drop.productSlug}`);
     const main = page.getByRole('main');
     await main.getByRole('button', { name: 'Increase quantity' }).click();
     await claim(browser, request, baseURL, drop.id, 2);
@@ -187,7 +194,9 @@ test.describe('refused on stale stock', () => {
 });
 
 test.describe('on a phone', () => {
-  test.use({ viewport: { width: 390, height: 844 }, dropSettings: { stock: 1, perUserLimit: 1 } });
+  // A short phone (iPhone SE): a test product has no highlights or details, so on a taller screen its page is
+  // short enough that the buy row stays in view at the footer, and the bar rightly never shows.
+  test.use({ viewport: { width: 375, height: 667 }, dropSettings: { stock: 1, perUserLimit: 1 } });
 
   test('a refusal in the buy bar leaves focus on the row, described by its note', async ({
     page,
@@ -197,8 +206,8 @@ test.describe('on a phone', () => {
     request,
     baseURL,
   }) => {
-    await page.goto(`/p/${drop.productSlug}`);
     await holdStockStill(page, request, drop.id);
+    await page.goto(`/p/${drop.productSlug}`);
     // The row out of view: the sticky buy bar takes over (design-system §10.2).
     await page.getByRole('contentinfo').scrollIntoViewIfNeeded();
     const bar = page.locator('[data-bottom-bar]');

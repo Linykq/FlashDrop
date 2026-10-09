@@ -4,11 +4,13 @@ import {
   DropListResponse,
   ProductDetail,
   ProductSlugParams,
+  RoomDetail,
+  RoomSlugParams,
   StockSnapshot,
 } from '@flashdrop/contracts';
 import { NotFoundError, RetryError } from '@flashdrop/domain';
 import type { Api } from '../http/api';
-import { type CatalogStore, listDropSummaries } from '../services/catalog';
+import { type CatalogStore, listDropSummaries, withStock } from '../services/catalog';
 import type { StockReader } from '../services/stock';
 
 export interface CatalogDeps {
@@ -17,7 +19,7 @@ export interface CatalogDeps {
   readonly now: () => Date;
 }
 
-/** The catalog `web` renders server-side, and the uncached stock snapshot (design §5.1, §8.1). */
+/** The catalog and live rooms `web` renders server-side, and the uncached stock snapshot (design §5.1, §8.1). */
 export function catalogRoutes(app: Api, { catalog, stock, now }: CatalogDeps): void {
   app.get(
     '/drops',
@@ -32,6 +34,17 @@ export function catalogRoutes(app: Api, { catalog, stock, now }: CatalogDeps): v
       const detail = await catalog.productBySlug(request.params.slug);
       if (detail === undefined) throw new NotFoundError('Product');
       return detail;
+    },
+  );
+
+  app.get(
+    '/rooms/:slug',
+    { schema: { params: RoomSlugParams, response: { 200: RoomDetail } } },
+    async (request) => {
+      const detail = await catalog.roomBySlug(request.params.slug);
+      if (detail === undefined) throw new NotFoundError('Room');
+      const [drop] = detail.drop === null ? [] : await withStock([detail.drop], stock, request.log);
+      return { room: detail.room, drop: drop ?? null };
     },
   );
 

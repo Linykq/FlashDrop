@@ -1,0 +1,58 @@
+{
+  "description": "The first answer stops at max_tokens with truncated JSON. At effort low: NEEDS_REVIEW after 1 call; at a higher effort: one retry at low, READY after 2 calls.",
+  "image": "mugs.jpg",
+  "responses": [
+    {
+      "id": "msg_fixture_0005",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Stone and Charcoal Stoneware Mug Set\",\"description\":\"Two stoneware mugs, one in a speckled stone glaze and one in deep charcoal, served on a pale wooden tray. Rounded bod"
+        }
+      ],
+      "stop_reason": "max_tokens",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1211,
+        "output_tokens": 16000,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    },
+    {
+      "id": "msg_fixture_0006",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Stone and Charcoal Stoneware Mug Set\",\"description\":\"Two stoneware mugs, one in a speckled stone glaze and one in deep charcoal, served on a pale wooden tray. Rounded bodies and generous handles make them comfortable for a slow morning coffee or tea.\",\"highlights\":[\"Two mugs in complementary stone and charcoal glazes\",\"Rounded bodies with generous handles\",\"Pale wooden serving tray included\"],\"category\":\"home\",\"attributes\":{\"brand\":null,\"color\":\"Stone and charcoal\",\"material\":\"Glazed stoneware, wood\",\"size\":null},\"condition\":\"new\",\"tags\":[\"mugs\",\"stoneware\",\"coffee\",\"tea\",\"gift set\"],\"uncertainties\":[{\"field\":\"size\",\"note\":\"What is the capacity of each mug?\"}]}"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1211,
+        "output_tokens": 402,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    }
+  ]
+}

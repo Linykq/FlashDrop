@@ -1,6 +1,6 @@
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { refreshLiveStock } from './live-stock';
+import { holdStockAnnouncements, refreshLiveStock } from './live-stock';
 import type { RefusalCode, ReserveOutcome, ReserveRequest, RetryCause } from './reserve';
 import { forgetReserveKey, reserveKey } from './reserve-key';
 import { checkoutHref, loginHref } from './routes';
@@ -57,15 +57,22 @@ async function send(request: ReserveRequest, signal: AbortSignal): Promise<Reser
 /**
  * One press. A final refusal forgets the key, whether or not the page is still there to show it: the next
  * press is a new intent. It also refreshes the drop's stock and waits for it, briefly, because the note is
- * worded from that stock (§9.13), and the note and LiveStock must agree from the frame they appear in.
+ * worded from that stock (§9.13), and the note and LiveStock must agree from the frame they appear in. The
+ * stock frame that carries the press's own hold arrives while it is in flight; the press speaks for it, so
+ * it is not announced as a stock change.
  */
 async function press(request: ReserveRequest, signal: AbortSignal): Promise<ReserveOutcome> {
-  const outcome = await send(request, signal);
-  if (outcome.kind === 'refused') {
-    forgetReserveKey(request.dropId);
-    await refreshLiveStock(request.dropId);
+  const release = holdStockAnnouncements(request.dropId);
+  try {
+    const outcome = await send(request, signal);
+    if (outcome.kind === 'refused') {
+      forgetReserveKey(request.dropId);
+      await refreshLiveStock(request.dropId);
+    }
+    return outcome;
+  } finally {
+    release();
   }
-  return outcome;
 }
 
 /**
@@ -88,7 +95,8 @@ export function useReserve(
   // Back or on a link to it: hiding runs these cleanups and revealing runs the effect again, with state kept.
   // So leaving abandons the request, and a page shown again starts at Buy, never at the "Reserved" or
   // "Reserving…" it was left with. An abandoned request keeps its key, so a later press replays its answer:
-  // a hold it made is found again, never made twice.
+  // a hold it made is found again, never made twice. A live room that pins another drop starts over the same
+  // way: the button now sells that drop.
   useEffect(() => {
     setState(IDLE);
     return () => {
@@ -96,7 +104,7 @@ export function useReserve(
       running.current = null;
       clearTimeout(toCheckout.current);
     };
-  }, []);
+  }, [dropId]);
 
   useEffect(() => {
     if (!prefetch) return;

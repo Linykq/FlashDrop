@@ -7,8 +7,12 @@ import {
   Uuid,
 } from '@flashdrop/contracts';
 import { cookies } from 'next/headers';
+import { unstable_rethrow } from 'next/navigation';
 import { cache } from 'react';
+import { type HeldOrder, liveHold } from '../hold';
 import { ApiError, apiGet } from './api';
+import { log } from './log';
+import type { Viewer } from './session';
 
 /*
  * The signed-in buyer's orders, read by Server Components with the buyer's own session (SD §5.1): api answers
@@ -60,3 +64,26 @@ export const readMyOrders = cache(
       return orders;
     }),
 );
+
+/**
+ * The most recent orders searched for a live hold on a drop. A hold lives a few minutes at most, so it is
+ * always among a buyer's latest orders.
+ */
+const RECENT_ORDERS = 20;
+
+/**
+ * The signed-in viewer's live hold on the drop, which the Buy button offers back (design-system §9.13), or
+ * `null`. Without one the page still sells: an api that can't list orders right now costs only the
+ * reminder, and is logged.
+ */
+export async function readHeldOrder(viewer: Viewer | null, dropId: string): Promise<HeldOrder | null> {
+  if (viewer === null) return null;
+  try {
+    const read = await readMyOrders(RECENT_ORDERS);
+    return read.kind === 'ok' ? liveHold(read.value, dropId) : null;
+  } catch (error) {
+    unstable_rethrow(error);
+    log().warn({ err: error, dropId }, 'cannot list orders to find a live hold');
+    return null;
+  }
+}

@@ -65,29 +65,42 @@ export interface ReservationLimits {
 
 const WINDOW_MS = 1_000;
 
+export interface LimitSpec {
+  /** Names the counter: `rateLimitKey(route, subject)`. */
+  readonly route: string;
+  readonly max: number;
+  readonly windowMs: number;
+  readonly subject: (request: FastifyRequest) => string;
+}
+
 /**
- * Registers the plugin (no global limit) and returns the reservation limits. Two limits on one route need
- * `createRateLimit`: the plugin's per-route hook runs only once per request, whatever the number of limits.
- * A Redis failure propagates (`skipOnError` stays off): the reserve itself needs Redis, so the request
- * answers 503 `RETRY` either way.
+ * A fixed-window limit as an `onRequest` hook that answers 429 `RATE_LIMITED`. Needs the plugin registered
+ * on `app` or an ancestor (`registerRateLimits`). Built on `createRateLimit` because the plugin's per-route
+ * hook runs only once per request, whatever the number of limits on the route.
+ */
+export function rateLimitHook(app: Api, spec: LimitSpec): onRequestAsyncHookHandler {
+  const check = app.createRateLimit({
+    max: spec.max,
+    timeWindow: spec.windowMs,
+    keyGenerator: (request) => rateLimitKey(spec.route, spec.subject(request)),
+  });
+  return async (request) => {
+    const result = await check(request);
+    if (!result.isAllowed && result.isExceeded) {
+      throw new RateLimitedError(Math.max(1, result.ttlInSeconds));
+    }
+  };
+}
+
+/**
+ * Registers the plugin (no global limit) and returns the reservation limits. A Redis failure propagates
+ * (`skipOnError` stays off): the reserve itself needs Redis, so the request answers 503 `RETRY` either way.
  */
 export async function registerRateLimits(app: Api, settings: RateLimitSettings): Promise<ReservationLimits> {
   await app.register(fastifyRateLimit, { global: false, store: redisRateLimitStore(settings.counter) });
 
-  const limiter = (route: string, max: number, subject: (request: FastifyRequest) => string) => {
-    const check = app.createRateLimit({
-      max,
-      timeWindow: WINDOW_MS,
-      keyGenerator: (request) => rateLimitKey(route, subject(request)),
-    });
-    const hook: onRequestAsyncHookHandler = async (request) => {
-      const result = await check(request);
-      if (!result.isAllowed && result.isExceeded) {
-        throw new RateLimitedError(Math.max(1, result.ttlInSeconds));
-      }
-    };
-    return hook;
-  };
+  const limiter = (route: string, max: number, subject: (request: FastifyRequest) => string) =>
+    rateLimitHook(app, { route, max, windowMs: WINDOW_MS, subject });
 
   return {
     // trustProxy makes request.ip the client behind Caddy; IPv6 clients are limited per /64, like the plugin.

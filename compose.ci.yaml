@@ -1,7 +1,6 @@
 # CI overrides of compose.yaml (design §13), for the e2e, load-smoke and system jobs:
-# `COMPOSE_FILE=compose.yaml:compose.ci.yaml`. The design's other override (the LLM fixture provider)
-# arrives with the milestone that builds what it configures. Hold and payment windows are not
-# overridden: every spec and load script creates its own drop with its own windows (POST /test/drops).
+# `COMPOSE_FILE=compose.yaml:compose.ci.yaml`. Hold and payment windows are not overridden: every spec and
+# load script creates its own drop with its own windows (POST /test/drops).
 
 x-ci-api-env: &ci-api-env
   # Playwright fixtures and k6 create their own drops and sessions through /api/v1/test/* (§13). The job
@@ -26,6 +25,13 @@ services:
 
   api-2:
     environment: *ci-api-env
+
+  # The listing generator answers from the recorded fixtures (tests/fixtures), whatever the runner's
+  # environment holds: CI never calls Anthropic and needs no secret (§10, §13).
+  listing:
+    environment:
+      LLM_PROVIDER: fixture
+      ANTHROPIC_API_KEY: ''
 
   # A fixed 50 ms PSP (§13): runs finish sooner, and the error and timeout-after-success rates stay as in
   # compose.yaml, so CI still exercises retries and unknown outcomes.

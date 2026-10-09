@@ -1,5 +1,8 @@
-import type { OrderEvent } from '@flashdrop/contracts';
-import { cancelOrder, eq, getOrder, payments } from '@flashdrop/db';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { OrderEvent } from '@flashdrop/contracts';
+import { cancelOrder, eq, getOrder, payments, REPO_CATALOG_DIR, seedDatabase, sql } from '@flashdrop/db';
 import { createSubscriber, dropKeys, readStock, userChannel } from '@flashdrop/inventory';
 import {
   classifyFailure,
@@ -7,7 +10,7 @@ import {
   type HandlerContext,
   type OrderEventHandlers,
 } from '@flashdrop/messaging';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { isTransientError } from '../loop';
 import { expireOrders } from '../sweeper/expire-orders';
 import { type FakePsp, startFakePsp } from '../test/fake-psp';
@@ -359,5 +362,39 @@ describe('order.expired and order.cancelled', () => {
     await pay(await eventOf(env, orderId, 'order.expired'));
 
     expect(psp.isClosed(orderId)).toBe(false);
+  });
+});
+
+describe('seeded history', () => {
+  it("passes through the payment and settlement groups without a PSP call or a change: the seed's sales are paid and settled", async () => {
+    const uploadDir = await mkdtemp(join(tmpdir(), 'fd-seed-events-'));
+    onTestFinished(() => rm(uploadDir, { recursive: true, force: true }));
+    await seedDatabase(env.db, {
+      catalogDir: REPO_CATALOG_DIR,
+      uploadDir,
+      logger: { info: () => undefined },
+    });
+    const { rows } = await env.db.execute(sql`
+      SELECT ob.payload FROM outbox ob JOIN orders o ON o.id = (ob.payload->>'orderId')::uuid
+      WHERE o.idempotency_key LIKE 'seed-reserve-%' ORDER BY ob.id`);
+    const events = rows.map((row) => OrderEvent.parse(row.payload));
+    expect(events.map((event) => event.type).slice(0, 3)).toEqual([
+      'order.reserved',
+      'order.placed',
+      'order.paid',
+    ]);
+    const before = await env.db.execute(sql`SELECT id, status, version, updated_at FROM orders ORDER BY id`);
+
+    for (const event of events) {
+      await dispatchOrderEvent(payment, event, context);
+      await dispatchOrderEvent(settlement, event, context);
+    }
+
+    for (const orderId of new Set(events.map((event) => event.orderId))) {
+      expect(psp.attempts(orderId)).toBe(0);
+      expect(psp.closes(orderId)).toBe(0);
+    }
+    const after = await env.db.execute(sql`SELECT id, status, version, updated_at FROM orders ORDER BY id`);
+    expect(after.rows).toEqual(before.rows);
   });
 });

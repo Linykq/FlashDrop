@@ -64,6 +64,11 @@ export const listingJobs = pgTable(
     productId: uuid('product_id').references(() => products.id),
     /** The worker's lease on a RUNNING job. */
     lockedUntil: timestamptz('locked_until'),
+    /**
+     * Since when the model has been unavailable to this job (rate limits, overload, the network): set by the
+     * first release since its last answered call, cleared by the next answered call (§10).
+     */
+    unavailableSince: timestamptz('unavailable_since'),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => [check('listing_jobs_status_check', inList(t.status, LISTING_JOB_STATUSES))],

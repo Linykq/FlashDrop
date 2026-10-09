@@ -2,6 +2,7 @@ import { hostname } from 'node:os';
 import { createLogger } from '@flashdrop/config';
 import { createPool, POOL_PROFILES } from '@flashdrop/db';
 import { connectCommandClient, DROP_LOCK_POOL_PROFILE } from '@flashdrop/inventory';
+import { createKafka } from '@flashdrop/messaging';
 import { buildApp } from './app';
 import { loadApiEnv } from './env';
 import { wireServices } from './wiring';
@@ -28,9 +29,23 @@ const lockPool = createPool({
   max: 4,
   applicationName: `api-lock:${hostname()}`,
 });
+// The admin health checks' own (`Infrastructure.adminPool`): its samples never queue behind a burst's.
+const adminPool = createPool({
+  connectionString: env.DATABASE_URL,
+  logger,
+  ...POOL_PROFILES.api,
+  max: 2,
+  applicationName: `api-admin:${hostname()}`,
+});
 // Loads the Functions library (FUNCTION LOAD REPLACE); every call reloads it if Redis lost it (§4.2).
 const redis = await connectCommandClient({ url: env.REDIS_URL, name: `api-cmd:${hostname()}`, logger });
-const { services, testRoutes } = wireServices({ pool, lockPool, redis, logger });
+// Nothing connects until the admin health page first reads consumer lag.
+const kafka = createKafka({
+  brokers: env.KAFKA_BROKERS,
+  clientId: `api:${hostname()}`,
+  logger: logger.child({ component: 'kafka' }),
+});
+const { services, testRoutes, realtime } = wireServices({ pool, lockPool, adminPool, redis, kafka, logger });
 
 const app = await buildApp({
   logger,
@@ -39,6 +54,7 @@ const app = await buildApp({
   sessionSecret: env.SESSION_SECRET,
   uploadDir: env.UPLOAD_DIR,
   services,
+  realtime: { ...realtime, maxSocketsPerAddress: env.WS_MAX_SOCKETS_PER_IP },
   rateLimits: { userPerSecond: env.RATE_LIMIT_USER_PER_SEC, ipPerSecond: env.RATE_LIMIT_IP_PER_SEC },
   // TestingEnv requires the secret whenever the routes are enabled.
   ...(env.ENABLE_TEST_ROUTES && env.TEST_ROUTES_SECRET !== undefined
@@ -47,7 +63,13 @@ const app = await buildApp({
 });
 // After the server has stopped and in-flight requests have finished, so none loses its connection.
 app.addHook('onClose', async () => {
-  await Promise.allSettled([pool.end(), lockPool.end(), redis.close()]);
+  await Promise.allSettled([
+    pool.end(),
+    lockPool.end(),
+    adminPool.end(),
+    redis.close(),
+    services.adminHealth.close(),
+  ]);
 });
 
 let closing = false;

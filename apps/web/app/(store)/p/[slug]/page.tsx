@@ -12,11 +12,13 @@ import {
   LivePurchaseSkeleton,
   ProductJsonLd,
 } from '../../../../components/commerce/product-purchase';
+import { ButtonLink } from '../../../../components/ui/button';
 import { Skeleton, SkeletonText } from '../../../../components/ui/skeleton';
 import { TitleText } from '../../../../components/ui/title-text';
-import { productHref } from '../../../../lib/routes';
+import { newDropHref, productHref } from '../../../../lib/routes';
 import { getProduct } from '../../../../lib/server/catalog';
 import { requestOrigin } from '../../../../lib/server/request';
+import { getViewer } from '../../../../lib/server/session';
 import { summarize } from '../../../../lib/text';
 
 /*
@@ -89,8 +91,10 @@ async function ProductView({ params }: Pick<PageProps<'/p/[slug]'>, 'params'>) {
               <h1 className="text-title-1">
                 <TitleText text={product.title} />
               </h1>
-              {/* TODO(M8): admins also get a tinted md "Create drop" link to /admin/drops?new=<productId>. */}
               <p className="mt-3 text-footnote text-label-secondary">This product isn't in a drop yet.</p>
+              <Suspense fallback={null}>
+                <CreateDropLink productId={product.id} />
+              </Suspense>
               <ProductJsonLd product={product} offer={null} />
             </>
           )
@@ -98,6 +102,20 @@ async function ProductView({ params }: Pick<PageProps<'/p/[slug]'>, 'params'>) {
       />
       <ProductDetails product={product} />
     </>
+  );
+}
+
+/**
+ * Admins can put a product without a drop on sale from its page (§10.2): the "New drop" sheet opens with it
+ * chosen. Read from the session in its own hole, so the product shell stays cached.
+ */
+async function CreateDropLink({ productId }: { productId: string }) {
+  const viewer = await getViewer();
+  if (viewer?.role !== 'admin') return null;
+  return (
+    <ButtonLink href={newDropHref(productId)} variant="tinted" className="mt-6">
+      Create drop
+    </ButtonLink>
   );
 }
 

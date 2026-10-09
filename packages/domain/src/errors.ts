@@ -83,6 +83,31 @@ export class ValidationError extends DomainError {
   }
 }
 
+/**
+ * A compare-and-set lost to another writer, so the work now belongs to someone else (a lease taken over, a
+ * fenced job). Nothing to retry: the winner carries on.
+ */
+export class ConflictError extends DomainError {
+  override name = 'ConflictError';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super('CONFLICT', message, options);
+  }
+}
+
+/**
+ * Input accepted earlier that the work it was submitted for cannot use (a stored photo gone missing, a photo
+ * no recorded answer exists for). The same input fails the same way every time, so it is reported, never
+ * retried; the message is meant for the person who submitted it.
+ */
+export class UnprocessableInputError extends DomainError {
+  override name = 'UnprocessableInputError';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super('VALIDATION_FAILED', message, options);
+  }
+}
+
 /** 503 with `Retry-After`: the caller should retry the same request, with the same Idempotency-Key. */
 export class RetryError extends DomainError {
   override name = 'RetryError';
@@ -116,8 +141,19 @@ export class BugError extends DomainError {
   }
 }
 
-/** The invariants of design §1.1. */
-export type InvariantId = `INV-${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`;
+/** The invariants of design §1.1, in order: the one list the checks, the health API and the tools share. */
+export const INVARIANT_IDS = [
+  'INV-1',
+  'INV-2',
+  'INV-3',
+  'INV-4',
+  'INV-5',
+  'INV-6',
+  'INV-7',
+  'INV-8',
+  'INV-9',
+] as const;
+export type InvariantId = (typeof INVARIANT_IDS)[number];
 
 /**
  * Stored state that breaks one of the §1.1 invariants, found at run time: Redis holding the opposite

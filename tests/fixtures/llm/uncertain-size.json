@@ -1,0 +1,32 @@
+{
+  "description": "Apparel requires a size the photo does not show, and the model lists it as uncertain instead of guessing: NEEDS_REVIEW after 1 call, no repair turn spent.",
+  "image": "shirt.jpg",
+  "responses": [
+    {
+      "id": "msg_fixture_0014",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Oatmeal Linen Band Collar Shirt\",\"description\":\"A relaxed shirt in washed linen with a band collar and a full button placket, in a natural oatmeal tone. The soft, slightly crumpled texture of the fabric keeps it casual and breathable for warm days.\",\"highlights\":[\"Washed linen with a soft, lived-in texture\",\"Band collar and full button placket\",\"Natural oatmeal colour\"],\"category\":\"apparel\",\"attributes\":{\"brand\":null,\"color\":\"Natural oatmeal\",\"material\":\"Linen\",\"size\":null},\"condition\":\"new\",\"tags\":[\"shirt\",\"linen\",\"band collar\",\"oatmeal\",\"summer\"],\"uncertainties\":[{\"field\":\"size\",\"note\":\"No size label is visible. Which size is this shirt?\"}]}"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1210,
+        "output_tokens": 366,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    }
+  ]
+}

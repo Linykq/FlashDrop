@@ -1,0 +1,84 @@
+name: LLM eval
+
+# The listing generator against the live Anthropic API (design §10): `pnpm eval:listings` on its ten
+# known-answer cases, reporting the schema pass rate, field accuracy, cost and cache reads per effort. It
+# spends real money, so it runs only when started by hand; CI proper never calls a model and needs no secret
+# (it runs the fixtures instead).
+#
+# With `record`, it re-records the fixtures instead (§13): one job per photo in tests/fixtures/images at the
+# first effort, each job's raw answers uploaded as the `recorded-fixtures` artifact. Nothing is pushed: a
+# person reviews them and commits the ones that replace hand-written fixtures (tests/fixtures/README.md).
+on:
+  workflow_dispatch:
+    inputs:
+      effort:
+        description: Effort levels to sweep, comma-separated (low, medium, high, xhigh, max); record uses the first
+        required: true
+        default: low,medium
+      model:
+        description: Model id (empty for LISTING_MODEL's default, claude-sonnet-5-5)
+        required: false
+        default: ''
+      record:
+        description: Re-record the fixtures instead of running the eval
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    name: ${{ inputs.record && 'Record listing fixtures' || 'Listing eval' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Environment protection rules (required reviewers) can gate the secret further.
+    environment: llm-eval
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:native
+      - name: Run the eval
+        if: ${{ !inputs.record }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EFFORT: ${{ inputs.effort }}
+          MODEL: ${{ inputs.model }}
+        # Inputs reach the shell as environment variables, never interpolated into the script.
+        run: pnpm eval:listings --effort "$EFFORT" ${MODEL:+--model "$MODEL"} --out eval-listings-report.json
+      - name: Upload the report
+        if: ${{ always() && !inputs.record }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-listings-report
+          path: eval-listings-report.json
+          if-no-files-found: ignore
+          retention-days: 30
+      # Into the runner's temporary directory, not the checkout: the committed fixtures stay as they are.
+      - name: Record the fixtures
+        if: ${{ inputs.record }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EFFORT: ${{ inputs.effort }}
+          MODEL: ${{ inputs.model }}
+        run: pnpm eval:listings --effort "$EFFORT" ${MODEL:+--model "$MODEL"} --record "$RUNNER_TEMP/recorded-fixtures"
+      - name: Upload the recordings
+        if: ${{ always() && inputs.record }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: recorded-fixtures
+          path: ${{ runner.temp }}/recorded-fixtures/
+          if-no-files-found: error
+          retention-days: 30

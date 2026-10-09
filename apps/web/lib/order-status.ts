@@ -23,7 +23,7 @@ export type OutcomeAction =
   | { kind: 'drops'; label: 'Back to drops' }
   /** A payment that takes longer than usual: the buyer may leave, and finds the order in the list. */
   | { kind: 'orders'; label: 'Your orders' }
-  | { kind: 'product'; label: 'Try again' | 'Back to the drop' };
+  | { kind: 'product'; label: 'Back to the drop' };
 
 export type OrderStatusCopy = {
   outcome: OrderOutcome;
@@ -89,7 +89,8 @@ export function orderStatusCopy(
   { slow = false }: { slow?: boolean } = {},
 ): OrderStatusCopy {
   const outcome = orderOutcome(order);
-  const tryAgain = { kind: 'product', label: 'Try again' } as const;
+  // The drop may have sold out since: the way back says where it goes, not that buying again will work.
+  const backToDrop = { kind: 'product', label: 'Back to the drop' } as const;
   switch (outcome) {
     case 'processing':
       return {
@@ -115,18 +116,18 @@ export function orderStatusCopy(
         tone: 'danger',
         heading: 'Payment declined',
         text: 'Your test card was declined, so we released your reservation.',
-        action: tryAgain,
+        action: backToDrop,
         steps: null,
       };
     case 'payment-timeout':
-      return { outcome, tone: 'neutral', ...PAYMENT_TIMEOUT, action: tryAgain, steps: null };
+      return { outcome, tone: 'neutral', ...PAYMENT_TIMEOUT, action: backToDrop, steps: null };
     case 'expired':
       return {
         outcome,
         tone: 'neutral',
         heading: 'Reservation expired',
         text: 'The hold ended before checkout was finished.',
-        action: tryAgain,
+        action: backToDrop,
         steps: null,
       };
     case 'cancelled':
@@ -139,7 +140,7 @@ export function orderStatusCopy(
         text: wasSubmitted(order)
           ? 'We released your reservation. Any charge is refunded.'
           : 'You left checkout, so we released your reservation.',
-        action: { kind: 'product', label: 'Back to the drop' },
+        action: backToDrop,
         steps: null,
       };
     case 'rejected':
@@ -148,7 +149,7 @@ export function orderStatusCopy(
         tone: 'neutral',
         heading: 'Not reserved',
         text: rejectionText(order.closeReason),
-        action: { kind: 'product', label: 'Back to the drop' },
+        action: backToDrop,
         steps: null,
       };
   }
@@ -165,11 +166,6 @@ export function statusAnnouncement({ heading, text }: Pick<OrderStatusCopy, 'hea
 /** Whether the order may still change on its own, so the page keeps asking (SD §8.1: every 2 s). */
 export function isSettling(status: OrderStatus): boolean {
   return status === 'PENDING_PAYMENT';
-}
-
-/** "3F2A9C1B": the first 8 hex characters of the id, uppercase, as buyers quote it (§10.5). */
-export function shortOrderId(id: string): string {
-  return id.replaceAll('-', '').slice(0, 8).toUpperCase();
 }
 
 /** "Mira Chen, 1 Main St, Apt 4, Springfield, IL 62701": one line that wraps, as the details list shows it. */

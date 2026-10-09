@@ -261,6 +261,9 @@ services:
       # `RATE_LIMIT_IP_PER_SEC=100000 RATE_LIMIT_USER_PER_SEC=1000` (compose.ci.yaml does the same).
       RATE_LIMIT_IP_PER_SEC: ${RATE_LIMIT_IP_PER_SEC:-100}
       RATE_LIMIT_USER_PER_SEC: ${RATE_LIMIT_USER_PER_SEC:-10}
+      # Approving a listing asks web to revalidate the product's cache tag (§8.1, §10).
+      WEB_INTERNAL_URL: http://web:3000
+      REVALIDATE_SECRET: ${REVALIDATE_SECRET:-dev-only-revalidate-secret-not-for-production}
     networks:
       default:
         # `api` resolves to both instances, for web's server-side calls (API_INTERNAL_URL).
@@ -284,6 +287,7 @@ services:
 
   # The singleton background loops (design §2, §4.6, §4.7, §5.4). Each loop elects itself per tick through a
   # Postgres advisory lock, and the relay fences each batch with one, so a second replica would only stand by.
+  # Nothing else runs in this process: while it is down, nothing publishes the outbox or expires an order.
   worker:
     <<: *app-service
     image: flashdrop/node:${IMAGE_TAG:-dev}
@@ -291,9 +295,10 @@ services:
     command: [node, apps/worker/dist/main.js]
     environment:
       <<: *app-env
-      # listing joins in M8; the worker refuses to start a role it does not have.
       WORKER_ROLES: relay,sweeper,reconciler
+      # The drop scheduler asks web to revalidate its cached drop list on every status transition (§4.6, §8.1).
       WEB_INTERNAL_URL: http://web:3000
+      REVALIDATE_SECRET: ${REVALIDATE_SECRET:-dev-only-revalidate-secret-not-for-production}
     depends_on:
       # The seed has armed the drops the loops will look after.
       migrate:
@@ -309,9 +314,43 @@ services:
       # (apps/worker/src/health.ts).
       test: [CMD, node, healthcheck.mjs, http://127.0.0.1:4200/health]
 
-  # The consumer groups (design §6.3): the same image and entry as `worker`, other roles. Two replicas share
-  # each group's 6 partitions, so killing one shows a rebalance: `docker kill flashdrop-consumers-1`
-  # (`docker compose kill consumers` kills both). dashboard joins in M7.
+  # The LLM listing generator (design §10): the worker image with the listing role alone, so a provider or
+  # fixture failure, and the restarts it causes, never take the relay, expiry or the settle safety net down
+  # with it, and the API key and the photos stay out of their process. Jobs are claimed with SKIP LOCKED and
+  # fenced by a lease, so a second replica would share the queue.
+  #
+  # The provider is the recorded fixtures (tests/fixtures) unless the shell or .env says otherwise: a key
+  # alone never switches it, so `pnpm test:e2e` asserts on the fixtures and costs nothing whoever runs it. A
+  # live demo opts in:  LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-... pnpm stack:up
+  listing:
+    <<: *app-service
+    image: flashdrop/node:${IMAGE_TAG:-dev}
+    hostname: listing
+    command: [node, apps/worker/dist/main.js]
+    environment:
+      <<: *app-env
+      WORKER_ROLES: listing
+      LLM_PROVIDER: ${LLM_PROVIDER:-fixture}
+      LISTING_MODEL: ${LISTING_MODEL:-claude-sonnet-5-5}
+      LISTING_EFFORT: ${LISTING_EFFORT:-low}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      # The photos api stored for listing jobs; this service only reads them.
+      - uploads:/data/uploads:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      # Job status goes to the uploader's user topic through Redis pub/sub (§7, §10).
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *app-healthcheck
+      # Healthy while the claim loop completes its ticks (apps/worker/src/health.ts).
+      test: [CMD, node, healthcheck.mjs, http://127.0.0.1:4200/health]
+
+  # The money consumer groups (design §6.3, §6.5): the same image and entry as `worker`, other roles. Two
+  # replicas share each group's 6 partitions, so killing one shows a rebalance: `docker kill
+  # flashdrop-consumers-1` (`docker compose kill consumers` kills both).
   consumers:
     <<: *app-service
     image: flashdrop/node:${IMAGE_TAG:-dev}
@@ -335,6 +374,30 @@ services:
       <<: *app-healthcheck
       # Healthy only while each of its groups owns a partition (§6.4), so `up --wait` returns once the
       # consumers can actually receive events.
+      test: [CMD, node, healthcheck.mjs, http://127.0.0.1:4200/health]
+
+  # The sales-dashboard group (design §9), apart from the money groups: `pnpm dash:rebuild --compose` stops
+  # and starts only this service, so a rebuild during a drop never pauses a charge or a settlement, and its
+  # replay of the whole retained topic never shares an event loop with them.
+  dashboard-consumers:
+    <<: *app-service
+    image: flashdrop/node:${IMAGE_TAG:-dev}
+    command: [node, apps/worker/dist/main.js]
+    deploy:
+      replicas: 2
+    environment:
+      <<: *app-env
+      WORKER_ROLES: dashboard
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      <<: *app-healthcheck
+      # As `consumers`: healthy only while the group owns a partition (§6.4).
       test: [CMD, node, healthcheck.mjs, http://127.0.0.1:4200/health]
 
   # The simulated PSP (design §6.5), reached by the payment consumers at http://payment-mock:4100. Not
@@ -402,5 +465,5 @@ volumes:
   postgres-data:
   redis-data:
   kafka-data:
-  # Listing photos: written by api, read by the worker's listing role (§10).
+  # Listing photos: written by api, read by the listing service (§10).
   uploads:

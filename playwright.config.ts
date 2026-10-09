@@ -14,6 +14,9 @@ const baseURL = z
 
 const ci = Boolean(process.env.CI);
 
+/** The specs that need the stream to play, the live room's axe scans among them (see `projects`). */
+const LIVE_ROOM = /live-room(-[a-z0-9]+)*\.spec\.ts$/;
+
 export default defineConfig({
   testDir: 'tests/e2e',
   globalSetup: './tests/e2e/global-setup.ts',
@@ -34,5 +37,13 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] }, testIgnore: LIVE_ROOM },
+    // The live room plays the H.264/AAC sample stream (§8.1). Playwright's own Chromium build is not promised
+    // those proprietary codecs (on Linux hls.js then fails on the avc1 SourceBuffer and the player shows its
+    // error card; on Windows it borrows the OS decoders); Google Chrome ships them on every platform, and
+    // GitHub's Ubuntu runner image includes it. Its axe scans (live-room-a11y.spec) need the playing player
+    // too: its controls exist only then.
+    { name: 'chrome', use: { ...devices['Desktop Chrome'], channel: 'chrome' }, testMatch: LIVE_ROOM },
+  ],
 });

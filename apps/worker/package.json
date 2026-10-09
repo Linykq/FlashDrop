@@ -14,6 +14,7 @@
     "@flashdrop/db": "workspace:*",
     "@flashdrop/domain": "workspace:*",
     "@flashdrop/inventory": "workspace:*",
+    "@flashdrop/llm": "workspace:*",
     "@flashdrop/messaging": "workspace:*",
     "pg": "catalog:",
     "zod": "catalog:"

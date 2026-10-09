@@ -56,7 +56,7 @@ export function PurchaseRow({ max, disabledLabel }: { max: number; disabledLabel
     { idle: quantity > 1 ? `Buy ${quantity}` : 'Buy', reserving: 'Reserving…', reserved: 'Reserved' }[state];
 
   return (
-    <>
+    <div className="flex items-center gap-3">
       <QuantityStepper value={quantity} max={max} size="lg" onChange={setQuantity} />
       <Button
         size="lg"
@@ -68,7 +68,7 @@ export function PurchaseRow({ max, disabledLabel }: { max: number; disabledLabel
       >
         {label}
       </Button>
-    </>
+    </div>
   );
 }
 

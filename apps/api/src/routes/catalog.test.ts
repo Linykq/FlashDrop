@@ -1,7 +1,16 @@
-import { DropListResponse, ProductDetail, StockSnapshot } from '@flashdrop/contracts';
+import { DropListResponse, ProductDetail, RoomDetail, StockSnapshot } from '@flashdrop/contracts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Api } from '../http/api';
-import { buildTestApp, type FakeState, fakeState, LIVE_DROP, LIVE_STOCK, NOW, PRODUCT } from '../test/fakes';
+import {
+  buildTestApp,
+  type FakeState,
+  fakeState,
+  LIVE_DROP,
+  LIVE_STOCK,
+  NOW,
+  PRODUCT,
+  ROOM,
+} from '../test/fakes';
 
 let app: Api;
 let state: FakeState;
@@ -78,6 +87,46 @@ describe('GET /api/v1/products/:slug', () => {
       code: 'INTERNAL',
       traceId: expect.stringMatching(/^[0-9a-f]{32}$/),
     });
+  });
+});
+
+describe('GET /api/v1/rooms/:slug', () => {
+  const ROOM_URL = `/api/v1/rooms/${ROOM.slug}`;
+
+  it('returns the room and its pinned drop with its stock', async () => {
+    const response = await app.inject({ url: ROOM_URL });
+    expect(response.statusCode).toBe(200);
+    expect(RoomDetail.parse(response.json())).toEqual({
+      room: ROOM,
+      drop: { ...LIVE_DROP, stock: LIVE_STOCK },
+    });
+  });
+
+  it('returns a room with nothing pinned', async () => {
+    state.rooms.set(ROOM.slug, { room: ROOM, drop: null });
+    const response = await app.inject({ url: ROOM_URL });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ room: ROOM, drop: null });
+  });
+
+  it('leaves out a pinned drop whose stock level is missing instead of failing the page', async () => {
+    state.stock.clear();
+    const response = await app.inject({ url: ROOM_URL });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ room: ROOM, drop: null });
+  });
+
+  it('answers 404 for an unknown room and 400 for a slug that cannot exist', async () => {
+    const unknown = await app.inject({ url: '/api/v1/rooms/no-such-room' });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json()).toMatchObject({ code: 'NOT_FOUND', detail: 'Room not found' });
+    expect((await app.inject({ url: '/api/v1/rooms/Not_A_Slug' })).statusCode).toBe(400);
+  });
+
+  it('never sends a playlist the contract does not allow', async () => {
+    state.rooms.set(ROOM.slug, { room: { ...ROOM, hlsUrl: '//evil.example/live.m3u8' }, drop: null });
+    const response = await app.inject({ url: ROOM_URL });
+    expect(response.statusCode).toBe(500);
   });
 });
 

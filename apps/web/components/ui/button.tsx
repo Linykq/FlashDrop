@@ -4,7 +4,8 @@ import { cx } from '../../lib/cx';
 import { Spinner } from './spinner';
 
 export type ButtonVariant = 'filled' | 'tinted' | 'gray' | 'plain';
-export type ButtonSize = 'sm' | 'md' | 'lg';
+/** `adaptive`: sm on a phone and md from 735 px, for a row of admin actions that must fit a phone (§9.0). */
+export type ButtonSize = 'sm' | 'md' | 'lg' | 'adaptive';
 
 /** A Lucide icon, or a component wrapping one (the Buy button's animated check), sized by the button. */
 export type ButtonIcon = ComponentType<{ size: number }>;
@@ -45,10 +46,17 @@ const colorClass: { [V in ButtonVariant]: { default: Colors } & Partial<Record<T
     default: { rest: 'bg-fill-tertiary text-label', feedback: 'hover:bg-fill-secondary active:bg-fill' },
     destructive: { rest: 'bg-fill-tertiary text-danger', feedback: 'hover:bg-fill-secondary active:bg-fill' },
   },
+  // A plain toggle that is on ("Pause updates", `aria-pressed`) keeps a fill, as an icon toggle does.
   plain: {
-    default: { rest: 'text-accent-label', feedback: 'hover:bg-fill-quaternary active:bg-fill-tertiary' },
+    default: {
+      rest: 'text-accent-label aria-pressed:bg-fill-tertiary',
+      feedback: 'hover:bg-fill-quaternary active:bg-fill-tertiary',
+    },
     destructive: { rest: 'text-danger', feedback: 'hover:bg-fill-quaternary active:bg-fill-tertiary' },
-    neutral: { rest: 'text-label', feedback: 'hover:bg-fill-quaternary active:bg-fill-tertiary' },
+    neutral: {
+      rest: 'text-label aria-pressed:bg-fill-tertiary',
+      feedback: 'hover:bg-fill-quaternary active:bg-fill-tertiary',
+    },
   },
 };
 
@@ -66,18 +74,21 @@ const sizeClass: Record<ButtonSize, string> = {
   sm: 'h-8 gap-1.5 text-footnote font-medium',
   md: 'h-11 gap-1.5 text-callout font-medium',
   lg: 'h-14 gap-2 text-body font-medium',
+  adaptive: 'h-8 gap-1.5 text-footnote font-medium sm:h-11 sm:text-callout',
 };
 const paddingStart: Record<ButtonSize, [plain: string, icon: string]> = {
   sm: ['pl-3', 'pl-2.5'],
   md: ['pl-5', 'pl-4'],
   lg: ['pl-7', 'pl-6'],
+  adaptive: ['pl-3 sm:pl-5', 'pl-2.5 sm:pl-4'],
 };
 const paddingEnd: Record<ButtonSize, [plain: string, icon: string]> = {
   sm: ['pr-3', 'pr-2.5'],
   md: ['pr-5', 'pr-4'],
   lg: ['pr-7', 'pr-6'],
+  adaptive: ['pr-3 sm:pr-5', 'pr-2.5 sm:pr-4'],
 };
-const iconSize: Record<ButtonSize, 16 | 20> = { sm: 16, md: 16, lg: 20 };
+const iconSize: Record<ButtonSize, 16 | 20> = { sm: 16, md: 16, lg: 20, adaptive: 16 };
 
 type StyleProps = Appearance & {
   size?: ButtonSize;

@@ -11,6 +11,7 @@ class FakeOutbox implements RelayStore {
   otherRelayHoldsLock = false;
   claims = 0;
   cleanups = 0;
+  processedCleanups = 0;
   cleanup: () => Promise<number> = async () => 0;
 
   add(count: number, createdAt = new Date()): OutboxMessage[] {
@@ -48,6 +49,11 @@ class FakeOutbox implements RelayStore {
   deletePublished(): Promise<number> {
     this.cleanups++;
     return this.cleanup();
+  }
+
+  async deleteProcessed(): Promise<number> {
+    this.processedCleanups++;
+    return 0;
   }
 }
 
@@ -199,8 +205,11 @@ describe('createRelay', () => {
 
     await vi.waitFor(() => expect(store.published.size).toBe(2));
     expect(store.cleanups).toBe(1);
+    expect(store.processedCleanups).toBe(0);
     store.cleanup = async () => 0;
     slow.resolve(5_000);
+    // Each run prunes the consumers' dedupe records after the outbox rows.
+    await vi.waitFor(() => expect(store.processedCleanups).toBeGreaterThanOrEqual(1));
     await vi.waitFor(() => expect(store.cleanups).toBeGreaterThanOrEqual(2));
   });
 

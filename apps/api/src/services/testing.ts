@@ -31,6 +31,7 @@ export function createTestRouteService(deps: {
         productSlug: drop.productSlug,
         startsAt: drop.startsAt.toISOString(),
         endsAt: drop.endsAt.toISOString(),
+        room: drop.room,
       };
     },
   };

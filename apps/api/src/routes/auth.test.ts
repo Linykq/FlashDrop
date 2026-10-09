@@ -51,7 +51,12 @@ describe('POST /api/v1/auth/dev-login', () => {
     });
     expect(cookie?.secure).toBeUndefined();
     const claims = await createSessionCodec(SECRET).verify(cookie?.value ?? '');
-    expect(claims).toEqual({ sub: BUYER.id, role: 'buyer', name: BUYER.displayName });
+    expect(claims).toEqual({
+      sub: BUYER.id,
+      role: 'buyer',
+      name: BUYER.displayName,
+      exp: expect.any(Number),
+    });
   });
 
   it('marks the cookie Secure behind an https edge', async () => {

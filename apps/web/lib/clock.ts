@@ -87,6 +87,14 @@ export function noteServerTime(serverNow: number, sentAt: number, receivedAt: nu
 }
 
 /**
+ * The server's clock now, by the tab's best measurement, else by `fallbackOffset` (server minus device), for
+ * code that needs one reading rather than a ticking countdown (the live room's stream position).
+ */
+export function serverClockNow(fallbackOffset: number): number {
+  return Date.now() + (measured?.offset ?? fallbackOffset);
+}
+
+/**
  * When the first byte of a response arrived, in device time: `responseStart` is on the monotonic clock
  * (`performance.now()`), so it is measured back from now on that clock, and a device clock adjusted since
  * doesn't skew it. `null` without navigation timing.
@@ -115,8 +123,8 @@ const subscribeNever = () => () => {};
  * The current time in server terms, ticking once a second. `serverNow` is the server's clock when it rendered
  * the page (SSR passes it down): it is both the value used for the server render and hydration, so the markup
  * matches, and the page's first estimate of the offset, until a request measures it (`noteServerTime`).
- * Checkout's hold ends 2 s early for what remains of the error (SD §8.3), and live pages refine it with the
- * socket's `hello.serverTime` (M5).
+ * Checkout's hold ends 2 s early for what remains of the error (SD §8.3), and pages with live data refine it
+ * with the socket's `hello.serverTime` (`realtime/`).
  */
 export function useServerTime(serverNow: number): number {
   // `true` only while this component hydrates the server's markup (React renders the server snapshot then).

@@ -65,6 +65,8 @@ COPY --from=prod-deps /repo/ ./
 COPY --from=build /repo/out/ ./
 COPY packages/db/drizzle/ packages/db/drizzle/
 COPY assets/catalog/ assets/catalog/
+# The listing role's recorded answers and their photos (LLM_PROVIDER=fixture, design §10).
+COPY tests/fixtures/ tests/fixtures/
 COPY infra/docker/healthcheck.mjs ./
 # Compose mounts the shared uploads volume here; a new named volume copies this directory's ownership.
 RUN install --directory --owner=node --group=node /data/uploads

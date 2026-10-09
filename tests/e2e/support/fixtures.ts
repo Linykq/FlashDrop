@@ -44,6 +44,8 @@ const DEFAULT_DROP: z.input<typeof TestDropBody> = {
 export interface TestDrop {
   readonly id: string;
   readonly productSlug: string;
+  /** The drop's own live room, with `dropSettings: { room: true }`; null otherwise. */
+  readonly room: { readonly id: string; readonly slug: string } | null;
   readonly settings: z.input<typeof TestDropBody>;
 }
 
@@ -137,7 +139,7 @@ export async function createDrop(
   settings: DropSettings = {},
 ): Promise<TestDrop> {
   const body = { ...DEFAULT_DROP, ...settings };
-  const { dropId, productSlug } = await postTestRoute(
+  const { dropId, productSlug, room } = await postTestRoute(
     request,
     baseURL,
     '/api/v1/test/drops',
@@ -151,7 +153,7 @@ export async function createDrop(
       timeout: 10_000,
     })
     .toBe('LIVE');
-  return { id: dropId, productSlug, settings: body };
+  return { id: dropId, productSlug, room, settings: body };
 }
 
 /** A fresh buyer, signed in to `context` with the session api signed for it. */

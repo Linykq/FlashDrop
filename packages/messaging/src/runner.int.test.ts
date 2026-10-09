@@ -199,6 +199,22 @@ describe('consumer runner', () => {
         throw new Error('another consumer ran');
       },
     };
+    // Each replay records its progress in its own group here (`dlq-replay` in production): the admin
+    // health tile counts the letters past it as the ones still to act on.
+    const progressOf = async (progressGroup: string) =>
+      (await fetchGroupLag(s.admin, progressGroup, s.dlqTopic)).map((p) => [p.committed, p.lag]);
+    const done = testGroup(s.admin, 'dlq-progress');
+    const dryRun = await replayDlq({
+      kafka,
+      topic: s.dlqTopic,
+      logger: quiet.logger,
+      consumers: { 'test-consumer': { 'order.paid': async () => undefined } },
+      dryRun: true,
+      progressGroup: done,
+    });
+    expect(dryRun.replayed.map((l) => l.offset)).toEqual(['2']);
+    expect(await progressOf(done)).toEqual([[null, 3]]);
+
     const report = await replayDlq({
       kafka,
       topic: s.dlqTopic,
@@ -207,12 +223,15 @@ describe('consumer runner', () => {
         'test-consumer': { 'order.paid': async (event) => void replayed.push(event.eventId) },
         other: neverRun,
       },
+      progressGroup: done,
     });
     expect(replayed).toEqual([broken.eventId]);
     expect(report.replayed.map((l) => l.offset)).toEqual(['2']);
     expect(report.unhandled).toEqual([]);
     expect(report.invalid.map((l) => l.offset)).toEqual(['0', '1']);
     expect(report.failed).toBeUndefined();
+    // Undecodable letters are reported once and can never be replayed: they count as dealt with.
+    expect(await progressOf(done)).toEqual([['3', 0]]);
 
     // A consumer that no longer handles the type: the letter is reported as unhandled, not as replayed.
     const withoutHandler = await replayDlq({
@@ -220,22 +239,46 @@ describe('consumer runner', () => {
       topic: s.dlqTopic,
       logger: quiet.logger,
       consumers: { 'test-consumer': {} },
+      progressGroup: done,
     });
     expect(withoutHandler.replayed).toEqual([]);
     expect(withoutHandler.unhandled.map((l) => l.offset)).toEqual(['2']);
 
-    // A failing handler stops the replay at that letter.
-    const failing = await replayDlq({
+    // A failing handler stops the replay at that letter, and the progress there. A replay of letters
+    // already handled never moves the progress back.
+    const failingHandlers = {
+      'test-consumer': { 'order.paid': () => Promise.reject(new TransientError('psp down')) },
+    };
+    const stuck = testGroup(s.admin, 'dlq-progress');
+    for (const progressGroup of [done, stuck]) {
+      const failing = await replayDlq({
+        kafka,
+        topic: s.dlqTopic,
+        logger: quiet.logger,
+        consumers: failingHandlers,
+        progressGroup,
+      });
+      expect(failing.failed).toMatchObject({
+        offset: '2',
+        consumer: 'test-consumer',
+        error: 'TransientError: psp down',
+      });
+    }
+    expect(await progressOf(done)).toEqual([['3', 0]]);
+    expect(await progressOf(stuck)).toEqual([['2', 1]]);
+
+    // Letters left to another consumer are not dealt with: the progress stays before them.
+    const otherOnly = testGroup(s.admin, 'dlq-progress');
+    const onlyOther = await replayDlq({
       kafka,
       topic: s.dlqTopic,
       logger: quiet.logger,
-      consumers: { 'test-consumer': { 'order.paid': () => Promise.reject(new TransientError('psp down')) } },
+      consumers: { 'test-consumer': {}, other: neverRun },
+      only: 'other',
+      progressGroup: otherOnly,
     });
-    expect(failing.failed).toMatchObject({
-      offset: '2',
-      consumer: 'test-consumer',
-      error: 'TransientError: psp down',
-    });
+    expect(onlyOther.skipped).toBe(3);
+    expect(await progressOf(otherOnly)).toEqual([[null, 3]]);
   });
 
   it('retries a transient failure by pausing and seeking, never reordering an order and never dead-lettering', async () => {

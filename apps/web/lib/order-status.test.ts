@@ -4,7 +4,6 @@ import {
   isSettling,
   orderStatusCopy,
   SLOW_PAYMENT_TEXT,
-  shortOrderId,
   statusAnnouncement,
 } from './order-status';
 
@@ -54,7 +53,7 @@ describe('orderStatusCopy', () => {
       outcome: 'declined',
       tone: 'danger',
       heading: 'Payment declined',
-      action: { kind: 'product', label: 'Try again' },
+      action: { kind: 'product', label: 'Back to the drop' },
       steps: null,
     });
     expect(
@@ -72,7 +71,7 @@ describe('orderStatusCopy', () => {
       outcome: 'expired',
       heading: 'Reservation expired',
       text: 'The hold ended before checkout was finished.',
-      action: { kind: 'product', label: 'Try again' },
+      action: { kind: 'product', label: 'Back to the drop' },
     });
     expect(orderStatusCopy({ ...base, status: 'EXPIRED' }).outcome).toBe('payment-timeout');
   });
@@ -105,12 +104,6 @@ describe('isSettling', () => {
     for (const status of ['PAID', 'PAYMENT_FAILED', 'EXPIRED', 'CANCELLED', 'REJECTED'] as const) {
       expect(isSettling(status)).toBe(false);
     }
-  });
-});
-
-describe('shortOrderId', () => {
-  it('quotes the first 8 hex characters, uppercase', () => {
-    expect(shortOrderId('3f2a9c1b-4d5e-5f60-8a7b-9c0d1e2f3a4b')).toBe('3F2A9C1B');
   });
 });
 

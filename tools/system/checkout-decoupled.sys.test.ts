@@ -22,8 +22,8 @@ import {
  * `checkout-decoupled` (design §5.4 "Kafka down", §13): checkout submit is one CAS plus an outbox row in
  * Postgres, and the request ends there. With the broker and the PSP both stopped it still answers 202 at
  * once, and the outbox grows; once they are back, the relay publishes the backlog, the payment consumer
- * charges each order exactly once, and INV-5 holds (outbox drained, every group at lag 0). The consumers ride
- * out the broker restart in place: nothing restarts them.
+ * charges each order exactly once, and INV-5 holds (outbox drained, every group at lag 0). The consumers, the
+ * money groups' and the dashboard's, ride out the broker restart in place: nothing restarts them.
  */
 
 let stores: Stores;
@@ -50,7 +50,10 @@ describe('checkout decoupled from Kafka and the PSP', () => {
       30_000,
     );
 
-    const consumers = await containerStarts('consumers');
+    const consumers = {
+      ...(await containerStarts('consumers')),
+      ...(await containerStarts('dashboard-consumers')),
+    };
     await stopServices('kafka', 'payment-mock');
     const submitted = Date.now();
     const statuses = await Promise.all(buyers.map((buyer, i) => checkout(buyer, orders[i] ?? '')));
@@ -84,7 +87,10 @@ describe('checkout decoupled from Kafka and the PSP', () => {
     }
     const paidMs = Date.now() - restarted;
     // The same consumer processes, still running: a broker restart must not take them down.
-    expect(await containerStarts('consumers')).toEqual(consumers);
+    expect({
+      ...(await containerStarts('consumers')),
+      ...(await containerStarts('dashboard-consumers')),
+    }).toEqual(consumers);
     const report = await verifyDrops(stores, [drop.dropId]);
     expect(problemsIn(report)).toEqual([]);
     expect(report.ok).toBe(true);

@@ -150,6 +150,13 @@
     background-color: var(--color-accent-tint-hover);
   }
 
+  /* Live stream captions (§10.3): only the backdrop and the face. The browser sizes cues relative to the
+     video, so they grow with it in fullscreen. */
+  ::cue {
+    background-color: rgb(0 0 0 / 0.72);
+    font-family: var(--font-sans);
+  }
+
   input:autofill,
   select:autofill,
   textarea:autofill {

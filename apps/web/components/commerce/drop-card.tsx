@@ -12,8 +12,8 @@ import { StockText } from './stock-text';
 
 type DropCardProps = {
   title: string;
-  /** A same-origin `/uploads/<key>` path, or a static import. */
-  image: string | StaticImageData;
+  /** A same-origin `/uploads/<key>` path, or a static import; `null` leaves the well empty. */
+  image: string | StaticImageData | null;
   priceCents: number;
   currency: string;
   stock: StockState;
@@ -22,7 +22,9 @@ type DropCardProps = {
   startsAt: string;
   endsAt: string;
   serverNow: number;
-  /** The purchase row: the lg quantity stepper and the lg Buy button, 12 px apart. */
+  /** Live updates stopped arriving: LiveStock says so (§9.9). */
+  paused?: boolean;
+  /** The purchase area: the lg quantity stepper and the lg Buy button, 12 px apart, and any note under them. */
   children: ReactNode;
   className?: string;
 };
@@ -44,6 +46,7 @@ export function DropCard({
   startsAt,
   endsAt,
   serverNow,
+  paused = false,
   children,
   className,
 }: DropCardProps) {
@@ -51,7 +54,7 @@ export function DropCard({
     <section aria-label={title} className={cx(cardClass, className)}>
       <div className="flex gap-4">
         <div className="relative size-18 shrink-0 overflow-clip rounded-md bg-bg-secondary">
-          <Image src={image} alt="" fill sizes="72px" className="object-cover" />
+          {image && <Image src={image} alt="" fill sizes="72px" className="object-cover" />}
         </div>
         <div className="min-w-0">
           <div className="flex min-h-6 items-center gap-2 text-footnote text-label-secondary">
@@ -72,8 +75,15 @@ export function DropCard({
           </p>
         </div>
       </div>
-      <StockText className="mt-5" stock={stock} startsAt={startsAt} serverNow={serverNow} meter="sm" />
-      <div className="mt-4 flex items-center gap-3">{children}</div>
+      <StockText
+        className="mt-5"
+        stock={stock}
+        startsAt={startsAt}
+        serverNow={serverNow}
+        meter="sm"
+        paused={paused}
+      />
+      <div className="mt-4">{children}</div>
       <p className="mt-3 text-footnote text-label-secondary">
         Limit {formatCount(perUserLimit)} per person · Held {formatDuration(holdSeconds)} at checkout
       </p>

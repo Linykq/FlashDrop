@@ -1,14 +1,6 @@
 import type { OrderStatus, RoomSummary } from '@flashdrop/contracts';
 
-/*
- * Links between storefront areas, in one place. Areas that later milestones build are not linked until
- * they exist, so nothing leads to a 404; each switch below is the single place to turn its links on.
- */
-
-// TODO(M5): true once /live/[slug] exists; turns on "Watch live", the bar's "Live" link and the footer's.
-const LIVE_ROOM_OPEN = false;
-// TODO(M7): true once the admin area exists; turns on "Admin" and "Open admin" for admins.
-const ADMIN_OPEN = false;
+/* Links between storefront areas, in one place. */
 
 export function productHref(slug: string): string {
   return `/p/${slug}`;
@@ -35,11 +27,16 @@ export const ORDERS_HREF = '/orders';
 
 /** The room of a drop that sells on stream, or `null` when there is nothing to link to. */
 export function liveRoomHref(room: RoomSummary | null): string | null {
-  return LIVE_ROOM_OPEN && room ? `/live/${room.slug}` : null;
+  return room ? `/live/${room.slug}` : null;
 }
 
 export function adminHref(role: 'buyer' | 'admin'): string | null {
-  return ADMIN_OPEN && role === 'admin' ? '/admin/drops' : null;
+  return role === 'admin' ? '/admin/drops' : null;
+}
+
+/** The admin drops page with its "New drop" sheet open on a product (design-system §10.2, §10.8). */
+export function newDropHref(productId: string): string {
+  return `/admin/drops?${new URLSearchParams({ new: productId })}`;
 }
 
 /** `/login`, returning to `returnTo` afterwards (design-system §9.13, §10.0). */

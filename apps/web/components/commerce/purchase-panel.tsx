@@ -44,6 +44,11 @@ type PurchasePanelProps = {
   returnTo: string;
   /** The viewer's live hold on this drop when the page was rendered (§9.13), or `null`. */
   heldOrder: HeldOrder | null;
+  /**
+   * `page` on the product page: the terms below the row, and the sticky buy bar on phones. `card` in a drop
+   * card (§9.12), which states the terms itself and sits in the first viewport, so it needs no bar.
+   */
+  layout?: 'page' | 'card';
 };
 
 /**
@@ -64,6 +69,7 @@ export function PurchasePanel({
   signedIn,
   returnTo,
   heldOrder,
+  layout = 'page',
 }: PurchasePanelProps) {
   const [endedHold, setEndedHold] = useState<string | null>(null);
   const held = heldOrder !== null && heldOrder.id !== endedHold ? heldOrder : null;
@@ -83,7 +89,7 @@ export function PurchasePanel({
   const noteId = useId();
   const pressedIn = useRef<'row' | 'bar'>('row');
   const rowInView = useWhollyInView(row);
-  const phone = useMediaQuery('(width < 735px)');
+  const phone = useMediaQuery('(width < 735px)') && layout === 'page';
 
   // After a reload, offer the unfinished request again: the same quantity reuses its key and replays it.
   useEffect(() => {
@@ -146,7 +152,7 @@ export function PurchasePanel({
         serverNow={serverNow}
         link={link}
         onEnd={() => setEndedHold(held.id)}
-        className="mt-6"
+        className={layout === 'page' ? 'mt-6' : undefined}
       />
     );
 
@@ -190,7 +196,10 @@ export function PurchasePanel({
     <>
       {heldNotice(!atLimit)}
       {/* A label longer than the room beside the stepper wraps the button onto its own full-width line. */}
-      <div ref={row} className={cx(held ? 'mt-3' : 'mt-6', 'flex flex-wrap items-center gap-3')}>
+      <div
+        ref={row}
+        className={cx(held ? 'mt-3' : layout === 'page' && 'mt-6', 'flex flex-wrap items-center gap-3')}
+      >
         {choosing && (
           <QuantityStepper
             value={chosen}
@@ -220,10 +229,12 @@ export function PurchasePanel({
         <ReserveNoteLine id={noteId} ref={noteRef} note={noteFor(state.problem)} action={noteAction} />
       )}
       {/* One footnote under the row, so there is one rhythm below the button. */}
-      <p className="mt-3 text-footnote text-label-secondary">
-        Limit {formatCount(perUserLimit)} per person. We hold your item for {formatDuration(holdSeconds)} at
-        checkout.
-      </p>
+      {layout === 'page' && (
+        <p className="mt-3 text-footnote text-label-secondary">
+          Limit {formatCount(perUserLimit)} per person. We hold your item for {formatDuration(holdSeconds)} at
+          checkout.
+        </p>
+      )}
       {phone && actionable && (
         // Mounted while there is an action to keep in reach, so it fades both ways as the row leaves and
         // returns (200 ms, §6.4). `data-bottom-bar` is present only while it shows: base.css then reserves its

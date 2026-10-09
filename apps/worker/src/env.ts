@@ -2,9 +2,11 @@ import {
   CoreEnv,
   type EnvSource,
   KafkaEnv,
+  LlmEnv,
   loadEnv,
   PostgresEnv,
   RedisEnv,
+  RevalidateEnv,
   TestHooksEnv,
   WorkerEnv,
 } from '@flashdrop/config';
@@ -26,11 +28,31 @@ export const HealthEnv = z.object({
 });
 
 /**
+ * Optional: with `REVALIDATE_SECRET`, the drop scheduler asks `web` at `WEB_INTERNAL_URL` to revalidate the
+ * `drops` tag on every status transition (§4.6, §8.1). Without it the home page catches up when its cache
+ * entry expires (`cacheLife('minutes')`).
+ */
+export const WorkerRevalidateEnv = RevalidateEnv.partial();
+
+/**
  * Everything the worker reads from the environment. `FD_TEST_HOOKS` is read by `@flashdrop/db` at the first
  * hook point, inside a payment or expiry transaction; validated here, a bad value fails the start instead.
  */
 export function loadWorkerEnv(source?: EnvSource) {
-  return loadEnv([CoreEnv, PostgresEnv, RedisEnv, KafkaEnv, WorkerEnv, HealthEnv, TestHooksEnv], source);
+  return loadEnv(
+    [
+      CoreEnv,
+      PostgresEnv,
+      RedisEnv,
+      KafkaEnv,
+      WorkerEnv,
+      WorkerRevalidateEnv,
+      LlmEnv,
+      HealthEnv,
+      TestHooksEnv,
+    ],
+    source,
+  );
 }
 
 export type WorkerConfig = ReturnType<typeof loadWorkerEnv>;

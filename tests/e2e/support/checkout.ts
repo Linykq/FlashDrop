@@ -75,3 +75,37 @@ export async function fillShipping(page: Page): Promise<void> {
 
 /** The order page's heading, which names the outcome ("You got it.", "Payment declined"). */
 export const orderHeading = (page: Page): Locator => page.getByRole('heading', { level: 1 });
+
+/** Checkout's hold card, "Reserved for you", with the countdown and, in the last minute, the extension. */
+export const holdCard = (page: Page): Locator => page.getByRole('region', { name: 'Reserved for you' });
+
+/**
+ * The hold card's own polite region (design §8.3): it speaks only as the countdown crosses 2:00, 1:00, 0:30
+ * and 0:10, and keeps its last words in between.
+ */
+export const holdAnnouncement = (page: Page): Locator => holdCard(page).getByRole('status');
+
+/** The seconds the hold card's countdown shows ("1:58" is 118), digits hidden from assistive technology. */
+export async function countdownSeconds(page: Page): Promise<number> {
+  const shown = (await holdCard(page).locator('p[aria-hidden="true"]').textContent())?.trim() ?? '';
+  const match = /^(\d+):(\d{2})$/.exec(shown);
+  if (match === null) throw new Error(`the hold card shows no countdown: "${shown}"`);
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+/**
+ * Jumps the page's clock until the hold card's countdown shows `seconds`, or one less when a second boundary
+ * passes meanwhile, firing the countdown's tick once, as a laptop lid opened later would. The page must have
+ * loaded under `page.clock.install()`.
+ *
+ * The jump is measured on the countdown, not on the time since the hold began: checkout counts on the
+ * server's clock, and an order read whose round trip is shorter than the best one so far measures the
+ * page's offset to it again (`apps/web/lib/clock.ts`), which takes back the jumps made before it. That is
+ * the app being right about a device clock that leapt; the jumps here only ever count from what it shows.
+ * Wait for the first order read (`firstOrderRead`) before the first jump, or it takes the jump back at once.
+ */
+export async function fastForwardHold(page: Page, seconds: number): Promise<void> {
+  const shown = await countdownSeconds(page);
+  if (shown <= seconds) throw new Error(`the countdown already shows ${shown} s, not more than ${seconds} s`);
+  await page.clock.fastForward((shown - seconds) * 1000);
+}

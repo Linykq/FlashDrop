@@ -22,7 +22,11 @@ function sessionKey(): Uint8Array {
  */
 export const getViewer = cache(async (): Promise<Viewer | null> => {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  if (!token) return null;
+  return token ? verifySession(token) : null;
+});
+
+/** A session token's viewer, or `null` for an expired, tampered or malformed one. `proxy.ts` uses it too. */
+export async function verifySession(token: string): Promise<Viewer | null> {
   try {
     const { payload } = await jwtVerify(token, sessionKey(), { algorithms: ['HS256'] });
     const claims = SessionClaims.safeParse(payload);
@@ -31,4 +35,4 @@ export const getViewer = cache(async (): Promise<Viewer | null> => {
     if (error instanceof errors.JOSEError) return null;
     throw error;
   }
-});
+}

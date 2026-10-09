@@ -18,3 +18,15 @@ export function userHasFocus(
 export function focusOnLoad(heading: HTMLElement | null): void {
   if (!userHasFocus(document.activeElement, document.body)) heading?.focus();
 }
+
+/**
+ * Focus for when the control that had it left the page (an action set re-rendered after the action, a
+ * dismissed banner): the first action of the page header, or its large title, never `<body>` (WCAG 2.4.3).
+ * Only the header's own buttons count; its confirmation dialogs sit beside them, closed.
+ */
+export function focusPageStart(): void {
+  const target =
+    document.querySelector<HTMLElement>('[data-page-actions] > button:not([aria-disabled="true"])') ??
+    document.querySelector<HTMLElement>('[data-large-title]');
+  target?.focus();
+}

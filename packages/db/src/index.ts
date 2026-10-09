@@ -27,6 +27,7 @@ export {
 } from 'drizzle-orm';
 export * from './checkout';
 export * from './client';
+export * from './dashboard';
 export * from './drops';
 export * from './errors';
 export * from './migrate';

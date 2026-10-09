@@ -15,7 +15,7 @@ type RadioCardProps = Omit<
 /**
  * A choice in a native radio group, drawn as a card (§9.5): the whole card is the label, so a click anywhere
  * picks it, and the group's arrow keys come with the native radios. The radio is named by the title alone and
- * described by the description, so a screen reader says "Card ending 4242, radio button, 1 of 4" before the
+ * described by the description, so a screen reader says "Test card that approves, radio button, 1 of 4" before the
  * detail. Checked, the 1 px border and an inset 1 px ring read as 2 px without moving the layout; the card
  * draws the focus ring for its radio. In forced colours the checked radio's border thickens into a ring.
  */

@@ -116,7 +116,7 @@ async function Gallery() {
 
   return (
     <>
-      <Section title="Colour" description="Semantic tokens only. Every one has a light and a dark value.">
+      <Section title="Color" description="Semantic tokens only. Every one has a light and a dark value.">
         <SwatchGroup title="Surfaces" swatches={surfaceSwatches} />
         <SwatchGroup title="Fills" swatches={fillSwatches} />
         <SwatchGroup title="Labels and lines" swatches={labelSwatches} />
@@ -518,13 +518,13 @@ async function Gallery() {
             <RadioCard
               name="demoPayment"
               defaultChecked
-              title="Card ending 4242"
-              description="Test card that always approves."
+              title="Test card that approves"
+              description="Always succeeds."
             />
             <RadioCard
               name="demoPayment"
-              title="Declining card"
-              description="Test card that is always declined, so you can see what happens."
+              title="Test card that declines"
+              description="Always declined, so you can see what happens."
             />
           </fieldset>
         </div>

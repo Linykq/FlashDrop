@@ -1,6 +1,7 @@
-import type { ImageKey, ProductAttributesInput } from '@flashdrop/contracts';
+import type { ImageKey, OrderEvent, ProductAttributesInput } from '@flashdrop/contracts';
 import type { DropStatus } from '@flashdrop/domain';
 import { checkoutFingerprint, requestFingerprint, uuidv5 } from '@flashdrop/domain/identity';
+import { orderEvent } from '../outbox';
 import type {
   dropInventory,
   drops,
@@ -132,8 +133,12 @@ const DROP_SPECS: readonly DropSpec[] = [
 /**
  * A completed purchase, written the way the real flow writes it: inserted RESERVED, moved to
  * PENDING_PAYMENT, then PAID, so it passes the `orders_guard` trigger. Its counters, quota, payment and PSP
- * charge keep INV-1 to INV-4 true for seeded history. It has no outbox events: they would make the payment
- * consumer charge it again.
+ * charge keep INV-1 to INV-4 true for seeded history.
+ *
+ * It also carries the three events the real flow would have written, at the times it happened, so the
+ * history reaches Kafka like any sale: the dashboard projection counts it (and `dash:rebuild` replays it)
+ * and INV-5 compares it. The consumers that act on events leave it alone: the payment consumer skips an
+ * order.placed whose order is already PAID, and settlement skips an order whose `redis_settled_at` is set.
  */
 export interface PlannedSale {
   readonly reserve: NewOrder;
@@ -141,6 +146,8 @@ export interface PlannedSale {
   readonly pay: Partial<NewOrder>;
   readonly payment: typeof payments.$inferInsert;
   readonly charge: typeof pspCharges.$inferInsert;
+  /** order.reserved, order.placed and order.paid, in that order. */
+  readonly events: readonly OrderEvent[];
 }
 
 export interface PlannedDrop {
@@ -268,6 +275,15 @@ function planSale(
   const paymentMethod = 'pm_ok';
   const chargeId = `ch_seed_${n}`;
   const amountCents = qty * drop.priceCents;
+  const holdExpiresAt = new Date(createdAt.getTime() + HOLD_SECONDS * 1000);
+  const paymentExpiresAt = new Date(placedAt.getTime() + PAYMENT_SECONDS * 1000);
+  const subject = (version: number) => ({
+    id,
+    version,
+    productId: drop.productId,
+    dropId: drop.id,
+    userId: buyer.id,
+  });
   return {
     reserve: {
       id,
@@ -281,7 +297,7 @@ function planSale(
       idempotencyKey: `seed-reserve-${n}`,
       // Same fingerprints as the live flow (§4.5).
       requestHash: requestFingerprint({ dropId: drop.id, qty }),
-      expiresAt: new Date(createdAt.getTime() + HOLD_SECONDS * 1000),
+      expiresAt: holdExpiresAt,
       createdAt,
       updatedAt: createdAt,
     },
@@ -291,7 +307,7 @@ function planSale(
       checkoutHash: checkoutFingerprint({ orderId: id, shipping, paymentMethod }),
       shipping,
       paymentMethod,
-      expiresAt: new Date(placedAt.getTime() + PAYMENT_SECONDS * 1000),
+      expiresAt: paymentExpiresAt,
       version: 2,
       updatedAt: placedAt,
     },
@@ -307,5 +323,31 @@ function planSale(
       status: 'succeeded',
       createdAt: paidAt,
     },
+    events: [
+      orderEvent(
+        'order.reserved',
+        subject(1),
+        { qty, unitPriceCents: drop.priceCents, expiresAt: holdExpiresAt.toISOString() },
+        { occurredAt: createdAt },
+      ),
+      orderEvent(
+        'order.placed',
+        subject(2),
+        {
+          qty,
+          totalCents: amountCents,
+          currency: drop.currency,
+          paymentMethod,
+          expiresAt: paymentExpiresAt.toISOString(),
+        },
+        { occurredAt: placedAt },
+      ),
+      orderEvent(
+        'order.paid',
+        subject(3),
+        { qty, totalCents: amountCents, pspChargeId: chargeId },
+        { occurredAt: paidAt },
+      ),
+    ],
   };
 }

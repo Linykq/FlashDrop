@@ -18,6 +18,7 @@ test-results/
 blob-report/
 tests/load/results/
 invariants-report.json
+eval-listings-report.json
 
 # Env and secrets
 .env

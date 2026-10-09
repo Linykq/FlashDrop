@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apiEnv } from './env';
-import { productExists } from './product-check';
+import { productExists, roomExists } from './product-check';
 
 // The fail-open cases log a warning by design; the test output doesn't need it.
 vi.stubEnv('LOG_LEVEL', 'silent');
@@ -50,5 +50,24 @@ describe('productExists', () => {
     expect(await productExists('linen-band-collar-shirt')).toBe(true);
     stubApi(503);
     expect(await productExists('amber-jar-soy-candle')).toBe(true);
+  });
+});
+
+describe('roomExists', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('asks api for the room, remembering it apart from products of the same slug', async () => {
+    const fetch = stubApi(200);
+    expect(await roomExists('studio')).toBe(true);
+    expect(await roomExists('studio')).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('/api/v1/rooms/studio', apiEnv().API_INTERNAL_URL),
+      expect.objectContaining({ method: 'HEAD' }),
+    );
+    stubApi(404);
+    expect(await productExists('studio')).toBe(false);
   });
 });

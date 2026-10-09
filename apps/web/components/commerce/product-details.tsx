@@ -1,35 +1,22 @@
-import type { PhotoCredit, Product, ProductCategory, ProductCondition } from '@flashdrop/contracts';
+import type { PhotoCredit, Product } from '@flashdrop/contracts';
 import { Check } from 'lucide-react';
 import { Fragment, type ReactNode } from 'react';
+import { productFacts } from '../../lib/product-facts';
 import { KeyValueList } from '../ui/key-value-list';
-
-const categoryLabel: Record<ProductCategory, string> = {
-  apparel: 'Apparel',
-  audio: 'Audio',
-  bags: 'Bags',
-  beauty: 'Beauty',
-  eyewear: 'Eyewear',
-  footwear: 'Footwear',
-  fragrance: 'Fragrance',
-  home: 'Home',
-  tech: 'Tech',
-  watches: 'Watches',
-};
-
-const conditionLabel: Record<ProductCondition, string> = {
-  new: 'New',
-  used: 'Used',
-  refurbished: 'Refurbished',
-};
 
 /**
  * Everything about the product below the purchase area (§10.2): highlights, the description, the facts and
- * the photo credit. It shares the `page-wide` 12-column grid of the gallery and panel above it, so the page
+ * the photo credit, each only when the product has it. It shares the `page-wide` 12-column grid of the gallery and panel above it, so the page
  * keeps one left edge: from 1069 px each heading takes columns 1–3 and its content columns 4–10, a readable
  * measure. The hairline above is the only separator; the space around it is the layout's (§1.4).
  */
 export function ProductDetails({ product }: { product: Product }) {
-  const { highlights, brand, color, material, size, condition, category, photoCredits } = product.attributes;
+  const { highlights, photoCredits } = product.attributes;
+  const facts = productFacts(product.attributes);
+  // Nothing to show (a test product): no hairline over an empty band either.
+  const empty =
+    highlights.length === 0 && product.description === '' && facts.length === 0 && photoCredits.length === 0;
+  if (empty) return null;
 
   return (
     <section
@@ -54,20 +41,11 @@ export function ProductDetails({ product }: { product: Product }) {
             <p className="max-w-text">{product.description}</p>
           </DetailGroup>
         )}
-        <DetailGroup title="Details">
-          <KeyValueList
-            size="body"
-            className="max-w-text"
-            rows={[
-              { key: 'Brand', value: brand },
-              { key: 'Color', value: color },
-              { key: 'Material', value: material },
-              { key: 'Size', value: size },
-              { key: 'Condition', value: condition && conditionLabel[condition] },
-              { key: 'Category', value: category && categoryLabel[category] },
-            ]}
-          />
-        </DetailGroup>
+        {facts.length > 0 && (
+          <DetailGroup title="Details">
+            <KeyValueList size="body" className="max-w-text" rows={facts} />
+          </DetailGroup>
+        )}
         {photoCredits.length > 0 && <Credits credits={photoCredits} />}
       </div>
     </section>

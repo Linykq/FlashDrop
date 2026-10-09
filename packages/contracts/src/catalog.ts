@@ -172,3 +172,31 @@ export type ProductSlugParams = z.infer<typeof ProductSlugParams>;
 
 export const DropIdParams = z.object({ dropId: Uuid });
 export type DropIdParams = z.infer<typeof DropIdParams>;
+
+/**
+ * Where a room's HLS playlist is: a same-origin path (the sample stream in `apps/web/public/hls`, §8.1) or
+ * an https URL. Never `//host` or another scheme: the player loads whatever this names.
+ */
+const PlaylistUrl = z.union([z.string().regex(/^\/(?![/\\])\S*$/, 'must be a same-origin path'), HttpsUrl]);
+
+/** A live room: what its page plays, and the id of its `room:<roomId>` topic (§7). */
+export const Room = RoomSummary.extend({
+  id: Uuid,
+  hlsUrl: PlaylistUrl,
+});
+export type Room = z.infer<typeof Room>;
+
+/**
+ * `GET /api/v1/rooms/:slug`, for the live room page (§8.1). `drop` is the drop the room is pinned to, chosen
+ * exactly as the gateway's `room:` topic chooses it (its LIVE or PAUSED drop, else its next SCHEDULED one, else
+ * the one that ended last), so the page and its socket agree; null when the room has none. Test drops are
+ * included, like their product pages, so specs can open their own room.
+ */
+export const RoomDetail = z.object({
+  room: Room,
+  drop: DropSummary.nullable(),
+});
+export type RoomDetail = z.infer<typeof RoomDetail>;
+
+export const RoomSlugParams = z.object({ slug: Slug });
+export type RoomSlugParams = z.infer<typeof RoomSlugParams>;

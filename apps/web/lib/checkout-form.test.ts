@@ -105,8 +105,8 @@ describe('copy', () => {
   });
 
   it('names payment methods, including those only api and the load tests use', () => {
-    expect(paymentMethodLabel('pm_ok')).toBe('Card ending 4242');
-    expect(paymentMethodLabel('pm_slow')).toBe('Slow card');
+    expect(paymentMethodLabel('pm_ok')).toBe('Test card that approves');
+    expect(paymentMethodLabel('pm_slow')).toBe('Slow test card');
   });
 
   it('offers the approving and the declining test card, approving first', () => {

@@ -1,11 +1,11 @@
 import type { OrderDetail } from '@flashdrop/contracts';
 import { paymentMethodLabel } from '../../lib/checkout-form';
-import { formatCount, formatMoney } from '../../lib/format';
-import { formatShipping, shortOrderId } from '../../lib/order-status';
+import { formatCount, formatMoney, shortId } from '../../lib/format';
+import { formatShipping } from '../../lib/order-status';
 import { LocalTime } from '../commerce/local-time';
+import { CopyId } from '../ui/copy-id';
 import { KeyValueList } from '../ui/key-value-list';
 import { TitleText } from '../ui/title-text';
-import { CopyOrderId } from './copy-order-id';
 
 /**
  * The order's facts (design-system §10.5) as a key-value list in a card: the short id with a copy button, the
@@ -24,8 +24,8 @@ export function OrderDetails({ order }: { order: OrderDetail }) {
             key: 'Order',
             value: (
               <span className="inline-flex items-center gap-2 tabular-nums">
-                {shortOrderId(order.id)}
-                <CopyOrderId orderId={order.id} />
+                {shortId(order.id)}
+                <CopyId id={order.id} noun="order" />
               </span>
             ),
           },

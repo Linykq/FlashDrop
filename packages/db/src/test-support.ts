@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db } from './client';
 import { PgUuid, parseRows } from './rows';
-import { dropInventory, drops, products } from './schema';
+import { dropInventory, drops, products, rooms } from './schema';
 import { transaction } from './transaction';
 
 /*
@@ -22,7 +22,18 @@ export interface TestDropSettings {
   readonly startsAt?: Date;
   readonly durationSeconds: number;
   readonly priceCents: number;
+  /** A room of the drop's own, pinned to it (`TEST_ROOM_SLUG_PREFIX`). */
+  readonly room?: boolean;
 }
+
+/**
+ * Test rooms' slugs start with this, which is how room listings leave them out: the `rooms` table has no
+ * source column, and a room is only ever created by an operator or by this helper.
+ */
+export const TEST_ROOM_SLUG_PREFIX = 'test-room-';
+
+/** The local sample stream (design §8.1), which every test room plays. */
+const SAMPLE_STREAM = '/hls/live.m3u8';
 
 export interface TestDropRecord {
   readonly dropId: string;
@@ -30,6 +41,7 @@ export interface TestDropRecord {
   readonly productSlug: string;
   readonly startsAt: Date;
   readonly endsAt: Date;
+  readonly room: { readonly id: string; readonly slug: string } | null;
 }
 
 /**
@@ -42,7 +54,13 @@ export async function createTestDrop(db: Db, settings: TestDropSettings): Promis
   const dropId = randomUUID();
   const tag = productId.slice(0, 8);
   const slug = `test-drop-${productId.replaceAll('-', '').slice(0, 16)}`;
+  const room = settings.room
+    ? { id: randomUUID(), slug: `${TEST_ROOM_SLUG_PREFIX}${productId.replaceAll('-', '').slice(0, 16)}` }
+    : null;
   return transaction(db, async (tx) => {
+    if (room !== null) {
+      await tx.insert(rooms).values({ ...room, title: `Test room ${tag}`, hlsUrl: SAMPLE_STREAM });
+    }
     await tx.insert(products).values({
       id: productId,
       slug,
@@ -62,6 +80,7 @@ export async function createTestDrop(db: Db, settings: TestDropSettings): Promis
       .values({
         id: dropId,
         productId,
+        roomId: room?.id ?? null,
         startsAt,
         endsAt: sql`${startsAt} + make_interval(secs => ${settings.durationSeconds})`,
         priceCents: settings.priceCents,
@@ -73,7 +92,7 @@ export async function createTestDrop(db: Db, settings: TestDropSettings): Promis
       .returning({ startsAt: drops.startsAt, endsAt: drops.endsAt });
     if (drop === undefined) throw new BugError('createTestDrop: the drop insert returned nothing');
     await tx.insert(dropInventory).values({ dropId, total: settings.stock });
-    return { dropId, productId, productSlug: slug, startsAt: drop.startsAt, endsAt: drop.endsAt };
+    return { dropId, productId, productSlug: slug, startsAt: drop.startsAt, endsAt: drop.endsAt, room };
   });
 }
 

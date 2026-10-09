@@ -64,6 +64,7 @@ describe('loadEnv', () => {
     expect(env.WS_ALLOWED_ORIGINS).toEqual(['http://127.0.0.1:8080']);
     expect(env.RATE_LIMIT_USER_PER_SEC).toBe(1000);
     expect(env.RATE_LIMIT_IP_PER_SEC).toBe(100);
+    expect(env.WS_MAX_SOCKETS_PER_IP).toBe(2_000);
     expect(env.WORKER_ROLES).toEqual(['payment', 'settlement', 'dashboard']);
     expect(env.PSP_LATENCY_MS).toEqual({ minMs: 50, maxMs: 50 });
     expect(env.PSP_ERROR_RATE).toBe(0);

@@ -2,6 +2,7 @@ import {
   ApiEnv,
   CoreEnv,
   type EnvSource,
+  KafkaEnv,
   LlmEnv,
   loadEnv,
   PostgresEnv,
@@ -27,10 +28,14 @@ export const ListenEnv = z.object({
 
 /**
  * Everything the api reads from the environment. `LlmEnv` brings `UPLOAD_DIR`, shared with the worker;
- * `TestingEnv` mounts the test routes (§5.1) only with `ENABLE_TEST_ROUTES=true` and a secret.
+ * `TestingEnv` mounts the test routes (§5.1) only with `ENABLE_TEST_ROUTES=true` and a secret; `KafkaEnv`
+ * is for the admin health tiles' consumer lag and dead letters (§12).
  */
 export function loadApiEnv(source?: EnvSource) {
-  return loadEnv([CoreEnv, PostgresEnv, RedisEnv, SessionEnv, ApiEnv, LlmEnv, TestingEnv, ListenEnv], source);
+  return loadEnv(
+    [CoreEnv, PostgresEnv, RedisEnv, KafkaEnv, SessionEnv, ApiEnv, LlmEnv, TestingEnv, ListenEnv],
+    source,
+  );
 }
 
 export type ApiConfig = ReturnType<typeof loadApiEnv>;

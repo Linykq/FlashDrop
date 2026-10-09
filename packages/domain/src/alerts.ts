@@ -26,6 +26,12 @@ export type AlertName =
   | 'outbox_lag'
   /** Kafka refuses an outbox record itself (unknown topic, too large): the relay is blocked until fixed. */
   | 'relay_rejected'
+  /** The listing model declined a product photo; never retried, since a photo should not trip it (§10). */
+  | 'listing_refused'
+  /** A listing job failed for a reason other than a refusal (a bad key, a bug, a missing photo) (§10). */
+  | 'listing_failed'
+  /** A listing job has waited more than 10 minutes on a model that stays unavailable (429s, overload) (§10). */
+  | 'listing_unavailable'
   // api
   /** Postgres refused (SOLD_OUT or LIMIT) what Redis admitted: Redis was optimistic (§4.7, §12). */
   | 'postgres_refusal'

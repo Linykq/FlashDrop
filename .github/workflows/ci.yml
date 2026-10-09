@@ -118,7 +118,9 @@ jobs:
     timeout-minutes: 30
     env:
       # Every docker compose command in this job, the log collection included, applies the CI overrides. They
-      # mount the test routes, through which every spec creates its own drop and buyer (tests/e2e/support).
+      # mount the test routes, through which every spec creates its own drop, room and buyer (tests/e2e/support),
+      # and run the listing service on its fixtures whatever the runner's environment holds (listing.spec, no
+      # API key).
       COMPOSE_FILE: compose.yaml:compose.ci.yaml
       # Required by compose.ci.yaml; the Playwright fixtures send the same value.
       TEST_ROUTES_SECRET: ci-only-test-routes-secret
@@ -161,6 +163,14 @@ jobs:
       - name: Start the stack
         run: docker compose --profile app up --detach --wait --wait-timeout 300
       - run: pnpm e2e:install --with-deps
+      # The live room's specs (live-room.spec, live-room-a11y.spec) run in Google Chrome, which plays the
+      # H.264/AAC sample stream (playwright.config.ts); the runner image ships it, and Playwright installs it
+      # where it is missing.
+      - name: Google Chrome for the live room
+        run: google-chrome --version || pnpm exec playwright install --with-deps chrome
+      # Every spec (design §13): storefront and SSR, reserve and checkout, the keyboard, expiry and axe suites
+      # (M6), live stock across /ws/1 and /ws/2, reconnect and the live room (M5), the dashboard (M7) and the
+      # listing generator (M8). ws-failover.spec kills api-1, so it skips itself here and runs in the system job.
       - run: pnpm test:e2e
       # The specs' stock assertions would also pass on the settle safety net, which repairs Redis 10 to 15 s
       # after a settlement handler gave up on an event. On this fresh broker every dead letter belongs to this
@@ -240,7 +250,17 @@ jobs:
       - name: Expiry soak (k6)
         if: ${{ !cancelled() }}
         run: docker compose --profile load run --rm k6 run /scripts/expiry-soak.ts
-      # Waits for quiescence (outbox drained, payment and settlement at lag 0), then checks INV-1 to INV-9
+      # Design §7, §13: 200 sockets on a fresh drop, alternately through /ws/1 (api-1) and /ws/2 (api-2), while
+      # a reserve storm churns it (winners cancel within 2 s). Strict: every frame well formed, conserved and
+      # newer than the last on its socket, at most 23 frames per socket in any 2 s and 10.5 a second over the
+      # storm (one per 100 ms tick, judged on k6's receipt times) while the level changes far faster, each URL
+      # pinned to one instance, every final level equal to Redis, the stock back. Loose:
+      # propagation p95 (Redis mutation to frame received) under 600 ms. Its cancels flow through the outbox
+      # and the settlement consumer, which the invariants below then check.
+      - name: WebSocket fan-out (k6, ci profile)
+        if: ${{ !cancelled() }}
+        run: docker compose --profile load run --rm k6 run /scripts/ws-fanout.ts -e PROFILE=ci
+      # Waits for quiescence (outbox drained, every consumer group at lag 0), then checks INV-1 to INV-9
       # (v2: with the money, INV-4 against the PSP ledger, and the event pipeline, INV-5) on every tracked drop.
       # No dead letters: on this fresh broker any would be this run's, events a consumer gave up on, which
       # stock_returned alone would miss because the settle safety net returns the stock anyway.
@@ -268,11 +288,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # The M3/M4 demos as tests (design §13, §16), against the same stack: events on orders.v1 keyed and
+  # The M3/M4/M5 demos as tests (design §13, §16), against the same stack: events on orders.v1 keyed and
   # partitioned by productId; SIGKILL of the worker with a relay batch in flight loses nothing; with the
   # consumers stopped the safety net still returns stock; checkout-decoupled (Kafka and payment-mock stopped,
   # submit still 202); timeout-after-success charges once; a late payment is refunded; a dead-lettered
-  # payment event is replayed inside the network. They stop and start services, so they get a stack of their
+  # payment event is replayed inside the network; SIGKILL of api-1 under two browsers pinned to it, which
+  # reconnect through Caddy to api-2 and resync. They stop and start services, so they get a stack of their
   # own instead of sharing e2e's or load-smoke's.
   system:
     name: System tests (Compose stack, failure injection)
@@ -304,6 +325,15 @@ jobs:
       - name: Start the stack
         run: docker compose --profile app up --detach --wait --wait-timeout 300
       - run: pnpm test:system
+      # The gateway failover (M5): real browsers on the client's own reconnect path (only the first socket is
+      # pinned), Caddy's /ws failover and the gateway's snapshot on resubscribe. FD_SYSTEM_TESTS=1 (above)
+      # lets it kill api-1, and it starts it again.
+      - name: Install Chromium
+        if: ${{ !cancelled() }}
+        run: pnpm e2e:install --with-deps
+      - name: Gateway failover (Playwright)
+        if: ${{ !cancelled() }}
+        run: pnpm test:e2e tests/e2e/ws-failover.spec.ts
       # Whatever the tests did to the stack, the tracked drops must still satisfy every invariant. One dead
       # letter is expected: dlq-replay.sys.test.ts writes it on purpose (and replays it); any other is an event
       # a consumer gave up on during the failure injection.
@@ -318,7 +348,7 @@ jobs:
       - name: Collect Compose logs
         if: failure()
         run: docker compose --profile app logs --no-color --timestamps > compose-logs.txt
-      - name: Upload invariants report and logs
+      - name: Upload invariants report, traces and logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
@@ -326,4 +356,7 @@ jobs:
           path: |
             invariants-report.json
             compose-logs.txt
+            test-results/
+            playwright-report/
+          if-no-files-found: warn
           retention-days: 7

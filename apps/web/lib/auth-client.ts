@@ -1,4 +1,5 @@
 import type { DevLoginBody } from '@flashdrop/contracts';
+import { announceSessionChange } from './session-signal';
 
 /*
  * Session changes, called from the browser same-origin (`/api/*` reaches api through Caddy, or through web's
@@ -22,13 +23,20 @@ async function post(path: string, body: unknown): Promise<boolean> {
   }
 }
 
-/** Signs in as a seeded account (`POST /api/v1/auth/dev-login`); `true` once the cookie is set. */
-export function signIn(userId: string): Promise<boolean> {
+/**
+ * Signs in as a seeded account (`POST /api/v1/auth/dev-login`); `true` once the cookie is set. The tab's
+ * real-time socket, and every other tab's, is then replaced, so it carries the new session (`session-signal`).
+ */
+export async function signIn(userId: string): Promise<boolean> {
   const body: DevLoginBody = { userId };
-  return post('/api/v1/auth/dev-login', body);
+  const ok = await post('/api/v1/auth/dev-login', body);
+  if (ok) announceSessionChange();
+  return ok;
 }
 
-/** Ends the session (`POST /api/v1/auth/logout`); `true` once the cookie is cleared. */
-export function signOut(): Promise<boolean> {
-  return post('/api/v1/auth/logout', {});
+/** Ends the session (`POST /api/v1/auth/logout`); `true` once the cookie is cleared, as for `signIn`. */
+export async function signOut(): Promise<boolean> {
+  const ok = await post('/api/v1/auth/logout', {});
+  if (ok) announceSessionChange();
+  return ok;
 }

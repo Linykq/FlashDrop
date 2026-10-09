@@ -1,0 +1,84 @@
+{
+  "description": "Every answer keeps a banned claim (\"authentic\", \"100% original\", \"guaranteed\"): NEEDS_REVIEW after 3 calls, with the issues at their fields and the last answer as the draft.",
+  "image": "skincare.jpg",
+  "responses": [
+    {
+      "id": "msg_fixture_0011",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Authentic Daily Ritual Skincare Set\",\"description\":\"A five-piece skincare set in soft-touch white: a gel cleanser, a foaming face wash, a lightweight serum with a pump and a rich day cream, plus a small travel jar for weekends away. Arranged on folded white towels.\",\"highlights\":[\"Five pieces for a complete routine\",\"Precision pump on the serum bottle\",\"Guaranteed gentle on every skin type\"],\"category\":\"beauty\",\"attributes\":{\"brand\":null,\"color\":\"White\",\"material\":\"Matte plastic\",\"size\":\"5 pieces\"},\"condition\":\"new\",\"tags\":[\"skincare\",\"gift set\",\"minimal\",\"travel\"],\"uncertainties\":[]}"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1203,
+        "output_tokens": 377,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    },
+    {
+      "id": "msg_fixture_0012",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Daily Ritual Skincare Set, 100% Original\",\"description\":\"A five-piece skincare set in soft-touch white: a gel cleanser, a foaming face wash, a lightweight serum with a pump and a rich day cream, plus a small travel jar for weekends away. Arranged on folded white towels.\",\"highlights\":[\"Five pieces for a complete routine\",\"Precision pump on the serum bottle\",\"Guaranteed gentle on every skin type\"],\"category\":\"beauty\",\"attributes\":{\"brand\":null,\"color\":\"White\",\"material\":\"Matte plastic\",\"size\":\"5 pieces\"},\"condition\":\"new\",\"tags\":[\"skincare\",\"gift set\",\"minimal\",\"travel\"],\"uncertainties\":[]}"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 1702,
+        "output_tokens": 371,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    },
+    {
+      "id": "msg_fixture_0013",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "signature": "fixture-signature"
+        },
+        {
+          "type": "text",
+          "text": "{\"title\":\"Daily Ritual Skincare Set\",\"description\":\"A five-piece skincare set in soft-touch white: a gel cleanser, a foaming face wash, a lightweight serum with a pump and a rich day cream, plus a small travel jar for weekends away. Arranged on folded white towels.\",\"highlights\":[\"Five pieces for a complete routine\",\"Precision pump on the serum bottle\",\"Guaranteed gentle on every skin type\"],\"category\":\"beauty\",\"attributes\":{\"brand\":null,\"color\":\"White\",\"material\":\"Matte plastic\",\"size\":\"5 pieces\"},\"condition\":\"new\",\"tags\":[\"skincare\",\"gift set\",\"minimal\",\"travel\"],\"uncertainties\":[]}"
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 2189,
+        "output_tokens": 368,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0
+      }
+    }
+  ]
+}

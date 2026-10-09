@@ -1,8 +1,8 @@
 import type { KafkaJS } from '@confluentinc/kafka-javascript';
 import { CONSUMER_GROUPS, TOPICS } from '@flashdrop/config';
 import { type Executor, outboxBacklog } from '@flashdrop/db';
+import type { EventsSample } from '@flashdrop/inventory';
 import { fetchGroupLag } from '@flashdrop/messaging';
-import type { EventsSample } from './invariants';
 
 /*
  * Sampling the event pipeline for INV-5 (design §1.1, §13): the outbox backlog in Postgres and, from the
@@ -10,10 +10,11 @@ import type { EventsSample } from './invariants';
  * watermarks and committed offsets and never joins a group, so a running consumer is never disturbed.
  */
 
-/** The groups INV-5 waits for (§6.3). `sales-dashboard` joins with its consumer in M7. */
+/** The groups INV-5 waits for (§6.3). */
 export const CHECKED_GROUPS: readonly { readonly name: string; readonly groupId: string }[] = [
   { name: 'payment', groupId: CONSUMER_GROUPS.payment },
   { name: 'settlement', groupId: CONSUMER_GROUPS.settlement },
+  { name: 'dashboard', groupId: CONSUMER_GROUPS.dashboard },
 ];
 
 /** How long one sample may take before the broker counts as unreachable. */

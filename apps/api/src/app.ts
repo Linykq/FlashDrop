@@ -12,6 +12,11 @@ import { createSessionCodec } from './http/session';
 import { traceIdOf } from './http/trace';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from './http/zod';
 import { adminRoutes } from './routes/admin';
+import { adminCatalogRoutes } from './routes/admin/catalog';
+import { adminDashboardRoutes } from './routes/admin/dashboard';
+import { adminHealthRoutes } from './routes/admin/health';
+import { listingRoutes } from './routes/admin/listings';
+import type { ListingService } from './routes/admin/listings-store';
 import { authRoutes } from './routes/auth';
 import { catalogRoutes } from './routes/catalog';
 import { healthRoutes, PROBE_ROUTES } from './routes/health';
@@ -19,7 +24,10 @@ import { orderRoutes } from './routes/orders';
 import { reservationRoutes } from './routes/reservations';
 import { testRoutes } from './routes/testing';
 import { uploadRoutes } from './routes/uploads';
+import type { AdminCatalogService } from './services/admin-catalog';
+import type { AdminDashboardService } from './services/admin-dashboard';
 import type { AdminDropService } from './services/admin-drops';
+import type { AdminHealthService } from './services/admin-health';
 import type { CatalogStore } from './services/catalog';
 import type { DependencyCheck } from './services/health';
 import type { OrderService } from './services/orders';
@@ -27,6 +35,7 @@ import type { ReservationService } from './services/reserve';
 import type { StockReader } from './services/stock';
 import type { TestRouteService } from './services/testing';
 import type { UserStore } from './services/users';
+import { type RealtimeOptions, websocketGateway } from './ws/plugin';
 
 export interface AppServices {
   readonly catalog: CatalogStore;
@@ -35,6 +44,14 @@ export interface AppServices {
   readonly reservations: ReservationService;
   readonly orders: OrderService;
   readonly adminDrops: AdminDropService;
+  /** The admin drop pages' reads: drops in any status, products and rooms (§5.1). */
+  readonly adminCatalog: AdminCatalogService;
+  /** The live sales dashboard's first state (§9). */
+  readonly adminDashboard: AdminDashboardService;
+  /** The live invariant checks and health tiles (§12). */
+  readonly adminHealth: AdminHealthService;
+  /** Listing generator jobs (§10). */
+  readonly listings: ListingService;
   /** The fixed-window counter behind the rate limits: the `fd_rl_hit` Function (§11). */
   readonly rateLimitCounter: RateLimitCounter;
   /** Dependencies the readiness probe checks, by name. */
@@ -60,6 +77,11 @@ export interface AppOptions {
   readonly rateLimits: { readonly userPerSecond: number; readonly ipPerSecond: number };
   /** Mounts `/api/v1/test/*` (§5.1, §13). Absent in production. */
   readonly testRoutes?: TestRoutesOptions;
+  /**
+   * What the WebSocket gateway reads (§7). With the `ws` role it mounts `/ws`; `main.ts` always passes it,
+   * and only unit tests over fake services, which have no Redis to subscribe to, leave it out.
+   */
+  readonly realtime?: RealtimeOptions;
   readonly now?: () => Date;
 }
 
@@ -127,13 +149,23 @@ export async function buildApp(options: AppOptions): Promise<Api> {
         reservationRoutes(api, { reservations: services.reservations, limits });
         orderRoutes(api, { orders: services.orders });
         adminRoutes(api, { adminDrops: services.adminDrops });
+        adminCatalogRoutes(api, { catalog: services.adminCatalog });
+        adminDashboardRoutes(api, { dashboard: services.adminDashboard });
+        adminHealthRoutes(api, { health: services.adminHealth });
+        listingRoutes(api, { listings: services.listings, uploadDir: options.uploadDir });
         if (options.testRoutes !== undefined) testRoutes(api, { ...options.testRoutes, sessions });
       }
     },
     { prefix: '/api/v1' },
   );
   if (roles.has('http')) uploadRoutes(app, options.uploadDir);
-  // TODO(M5): mount the WebSocket gateway at /ws when roles has 'ws'.
+  if (roles.has('ws') && options.realtime !== undefined) {
+    await app.register(websocketGateway, {
+      ...options.realtime,
+      allowedOrigins: options.allowedOrigins,
+      upgradesPerSecond: options.rateLimits.ipPerSecond,
+    });
+  }
 
   return app;
 }
