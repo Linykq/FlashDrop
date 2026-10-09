@@ -1,7 +1,7 @@
 import type { RebuildSnapshot } from '@flashdrop/db';
 import type { FlashdropRedis } from './client';
 import { BULK_DEADLINE_MS, REDIS_DEADLINE_MS, withDeadline } from './deadline';
-import type { ReserveInput } from './functions';
+import type { ReserveInput, RsvIdentity } from './functions';
 import { withLibrary } from './library';
 import type {
   RateLimitHit,
@@ -35,9 +35,17 @@ export function fdConfirm(redis: FlashdropRedis, dropId: string, rid: string): P
   return fcall(redis, 'fd_confirm', REDIS_DEADLINE_MS, () => redis.flashdrop.fd_confirm(dropId, rid));
 }
 
-/** HELD → RELEASED, stock and quota back, after Postgres committed an unpaid terminal status. */
-export function fdRelease(redis: FlashdropRedis, dropId: string, rid: string): Promise<SettleResult> {
-  return fcall(redis, 'fd_release', REDIS_DEADLINE_MS, () => redis.flashdrop.fd_release(dropId, rid));
+/**
+ * HELD → RELEASED, stock and quota back, after Postgres committed an unpaid terminal status. Given the order's
+ * identity (`record`), a rid without an entry (`MISSING`) is recorded RELEASED, with no stock moved.
+ */
+export function fdRelease(
+  redis: FlashdropRedis,
+  dropId: string,
+  rid: string,
+  record?: RsvIdentity,
+): Promise<SettleResult> {
+  return fcall(redis, 'fd_release', REDIS_DEADLINE_MS, () => redis.flashdrop.fd_release(dropId, rid, record));
 }
 
 /**

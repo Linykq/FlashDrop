@@ -200,8 +200,9 @@ async function settleOrDefer(deps: WorkerDeps, order: OrderRecord, log: Log): Pr
   await recordSettle(deps, 'orphan-scan', order.id, outcome, log);
   if (outcome.kind !== 'SETTLED') return 'STAYS';
   if (outcome.via === 'OK' || outcome.via === 'PAST_RETENTION') return 'GONE';
-  // NOOP or MISSING: the entry is already terminal or gone, so no Function will remove the member. A
-  // concurrent settlement may have just done so; a member still there disagrees with `rsv` for good.
+  // NOOP or MISSING: the entry is already terminal (a missing one is now recorded RELEASED), so no Function
+  // will remove the member. A concurrent settlement may have just done so; a member still there disagrees
+  // with `rsv` for good.
   const score = await withDeadline('exp member read', REDIS_DEADLINE_MS, () =>
     deps.redis.zScore(dropKeys(order.dropId).exp, order.id),
   );

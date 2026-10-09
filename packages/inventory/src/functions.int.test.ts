@@ -3,7 +3,7 @@ import { requestFingerprint } from '@flashdrop/domain/identity';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { fdConfirm, fdRateLimitHit, fdRebuild, fdRelease, fdReserve, fdSetStatus } from './calls';
 import { createSubscriber, type FlashdropRedis } from './client';
-import { rateLimitKey, stockChannel } from './keys';
+import { dropKeys, rateLimitKey, stockChannel } from './keys';
 import { readDropState, readStock, redisDropViolations } from './state';
 import { parseStockMessage, type StockLevelMessage } from './stock-message';
 import { armTestDrop, connectTestRedis, deleteDropKeys, emptySnapshot, reserveInput } from './test/redis';
@@ -34,6 +34,12 @@ async function arm(options: Parameters<typeof armTestDrop>[1] = {}) {
 
 async function expectConsistent(dropId: string) {
   expect(redisDropViolations(await readDropState(redis, dropId))).toEqual([]);
+}
+
+/** The same level one write later: every write bumps seq, whether or not a stock counter moved. */
+function nextSeq<T extends { seq: number }>(level: T | null): T {
+  if (level === null) throw new Error('the drop has no inv hash');
+  return { ...level, seq: level.seq + 1 };
 }
 
 describe('fd_reserve under concurrency', () => {
@@ -169,6 +175,42 @@ describe('fd_confirm and fd_release', () => {
     // A released entry stays as the idempotency record of its rid.
     expect(await fdReserve(redis, unpaid)).toEqual({ kind: 'EXISTING', state: 'RELEASED', gen: 1 });
     await expectConsistent(dropId);
+  });
+
+  it("records a missing entry RELEASED from the order's identity, moving no stock (§4.7)", async () => {
+    const { dropId } = await arm({ total: 5 });
+    await fdReserve(redis, reserveInput(dropId, randomUUID(), 2));
+    const before = await readDropState(redis, dropId);
+    // An order Postgres refused after a rebuild's snapshot: that rebuild dropped its hold with the rsv hash.
+    const refused = reserveInput(dropId, randomUUID(), 3);
+
+    expect(await fdRelease(redis, dropId, refused.rid, refused)).toEqual({ kind: 'MISSING' });
+    const after = await readDropState(redis, dropId);
+    // No stock counter moves; seq does, as on every write, so a sample across this write is not stable.
+    expect(after.inv).toEqual(nextSeq(before.inv));
+    expect(after.quotas).toEqual(before.quotas);
+    expect(after.entries.get(refused.rid)).toEqual({
+      u: refused.userId,
+      q: 3,
+      s: 'RELEASED',
+      fp: Buffer.from(refused.fingerprint).toString('hex'),
+      k: refused.idempotencyKey,
+    });
+    // A retry of the refused request replays instead of taking stock again; a repeat settle is a NOOP.
+    expect(await fdReserve(redis, refused)).toEqual({ kind: 'EXISTING', state: 'RELEASED', gen: 1 });
+    expect(await fdRelease(redis, dropId, refused.rid, refused)).toEqual({ kind: 'NOOP' });
+    expect((await readDropState(redis, dropId)).inv).toEqual(nextSeq(before.inv));
+    await expectConsistent(dropId);
+  });
+
+  it('records a missing entry under the drop retention, in a drop that has no rsv hash yet', async () => {
+    const { dropId } = await arm();
+    expect(await redis.exists(dropKeys(dropId).rsv)).toBe(0);
+    const refused = reserveInput(dropId, randomUUID());
+
+    expect(await fdRelease(redis, dropId, refused.rid, refused)).toEqual({ kind: 'MISSING' });
+    const retainAt = Number(await redis.hGet(dropKeys(dropId).inv, 'retainAt'));
+    expect(await redis.pExpireTime(dropKeys(dropId).rsv)).toBe(retainAt);
   });
 });
 

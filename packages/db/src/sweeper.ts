@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Db, Executor, Tx } from './client';
 import { isTransientDbError, pgErrorOf } from './errors';
 import { insertOutboxEvents, notifyOutbox, orderEvent } from './outbox';
-import { PgTimestamp, PgUuid, parseRows } from './rows';
+import { PgBytea, PgTimestamp, PgUuid, parseRows } from './rows';
 import { literalList } from './schema/columns';
 import { testHook } from './test-hooks';
 import { transaction } from './transaction';
@@ -274,16 +274,34 @@ export interface UnsettledOrder {
   readonly dropId: string;
   readonly status: (typeof TERMINAL_ORDER_STATUSES)[number];
   readonly updatedAt: Date;
+  /** With `qty`, `requestHash` and `idempotencyKey`: the `rsv` identity Redis records for it if missing. */
+  readonly userId: string;
+  readonly qty: number;
+  readonly requestHash: Buffer;
+  readonly idempotencyKey: string;
 }
 
 const UnsettledRow = z
-  .object({ id: PgUuid, drop_id: PgUuid, status: z.enum(TERMINAL_ORDER_STATUSES), updated_at: PgTimestamp })
+  .object({
+    id: PgUuid,
+    drop_id: PgUuid,
+    status: z.enum(TERMINAL_ORDER_STATUSES),
+    updated_at: PgTimestamp,
+    user_id: PgUuid,
+    qty: z.int(),
+    request_hash: PgBytea,
+    idempotency_key: z.string(),
+  })
   .transform(
     (row): UnsettledOrder => ({
       id: row.id,
       dropId: row.drop_id,
       status: row.status,
       updatedAt: row.updated_at,
+      userId: row.user_id,
+      qty: row.qty,
+      requestHash: row.request_hash,
+      idempotencyKey: row.idempotency_key,
     }),
   );
 
@@ -306,7 +324,7 @@ export async function listUnsettledTerminalOrders(
   } = {},
 ): Promise<UnsettledOrder[]> {
   const { rows } = await db.execute(sql`
-    SELECT id, drop_id, status, updated_at FROM orders
+    SELECT id, drop_id, status, updated_at, user_id, qty, request_hash, idempotency_key FROM orders
     WHERE redis_settled_at IS NULL AND status IN (${TERMINAL})
       AND updated_at < now() - make_interval(secs => ${options.olderThanSeconds ?? 10})
       AND drop_id <> ALL(${sql.param([...(options.excludeDropIds ?? [])])}::uuid[])

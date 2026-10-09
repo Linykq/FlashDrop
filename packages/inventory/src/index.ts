@@ -50,7 +50,7 @@ export {
   readStoredRedisIdentity,
   type StoredRedisIdentity,
 } from './epoch';
-export type { ReserveInput } from './functions';
+export type { ReserveInput, RsvIdentity } from './functions';
 export {
   deferHoldExpiry,
   HOLD_GRACE_MS,

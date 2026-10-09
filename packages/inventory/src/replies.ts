@@ -42,7 +42,10 @@ export type SettleReply =
   | 'OK'
   /** Already in the target state: a duplicate. */
   | 'NOOP'
-  /** No entry in this generation: the rebuild that dropped it already counted the outcome. */
+  /**
+   * No entry in this generation: Redis's counters hold none of the order's units, so there is nothing to
+   * apply. `fd_release` given the order's identity has recorded it RELEASED.
+   */
   | 'MISSING'
   /** The entry is in the opposite terminal state: an INV-8 breach. */
   | 'CONFLICT'

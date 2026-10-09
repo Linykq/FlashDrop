@@ -130,6 +130,11 @@ const calls: Record<string, (fixture: Fixture) => Promise<unknown>> = {
   'fd_reserve, same user again': ({ dropId, held }) => fdReserve(redis, reserveInput(dropId, held.userId, 1)),
   fd_confirm: ({ dropId, held }) => fdConfirm(redis, dropId, held.rid),
   fd_release: ({ dropId, held }) => fdRelease(redis, dropId, held.rid),
+  // Records a missing entry RELEASED (§4.7), so it reads the retention before that write.
+  'fd_release, missing entry': ({ dropId }) => {
+    const order = reserveInput(dropId, randomUUID());
+    return fdRelease(redis, dropId, order.rid, order);
+  },
   'fd_rebuild, valid': ({ dropId }) => fdRebuild(redis, dropId, emptySnapshot({ gen: 99 })),
   'fd_rebuild, malformed': ({ dropId }) =>
     fdRebuild(redis, dropId, { ...emptySnapshot({ gen: 99 }), total: -1 }),
@@ -143,15 +148,19 @@ const REFUSED_UP_FRONT: Readonly<Record<string, readonly string[]>> = {
   "the holder's uq value not an integer": ['fd_release', 'fd_reserve, same user again'],
   'exp of another type': ['fd_reserve, new rid', 'fd_confirm', 'fd_release'],
   'uq of another type': ['fd_reserve, new rid', 'fd_release'],
-  'rsv of another type': ['fd_reserve, new rid', 'fd_confirm', 'fd_release'],
-  'inv seq not an integer': ['fd_set_status ENDED'],
+  'rsv of another type': ['fd_reserve, new rid', 'fd_confirm', 'fd_release', 'fd_release, missing entry'],
+  'inv without retainAt': ['fd_release, missing entry'],
+  'inv seq not an integer': ['fd_set_status ENDED', 'fd_release, missing entry'],
   ...Object.fromEntries(
     LOOSE_INTEGERS.flatMap((value) => {
       const counters = ['fd_reserve, new rid', 'fd_reserve, same user again', 'fd_confirm', 'fd_release'];
       return [
         [`the holder's uq value ${JSON.stringify(value)}`, ['fd_release', 'fd_reserve, same user again']],
         [`inv held ${JSON.stringify(value)}`, counters],
-        [`inv seq ${JSON.stringify(value)}`, [...counters, 'fd_set_status ENDED']],
+        [
+          `inv seq ${JSON.stringify(value)}`,
+          [...counters, 'fd_set_status ENDED', 'fd_release, missing entry'],
+        ],
         [`inv gen ${JSON.stringify(value)}`, ['fd_reserve, new rid', 'fd_reserve, same user again']],
       ];
     }),

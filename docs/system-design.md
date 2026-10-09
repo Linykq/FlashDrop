@@ -64,7 +64,7 @@ The core rule: **Redis admits, Postgres decides, Kafka carries the news, timers 
 | INV-5 | **No lost events.** Once idle, the outbox is fully published and every consumer group has processed every event, so dashboard totals equal Postgres truth | Transactional outbox, status-polling relay, consumer dedupe |
 | INV-6 | **No leaked stock.** Once idle: no live order is past `expires_at`; every terminal order has `redis_settled_at`; Redis `avail = total − sold − reserved`, `held = reserved`, `sold = sold`; `uq` equals `claimed` | Postgres sweeper, settlement consumer, safety net, reconciler |
 | INV-7 | **Redis is never optimistic.** Redis `avail` ≤ Postgres available (`total − sold − reserved`), except while a drop is `RECONCILING` or in the detection window after a Redis restart (the 2 s tick plus the client's reconnect backoff: measured 4.7–5.9 s in the M9 chaos runs, **as built**; plus the rebuild) | Ordering rule (§4.3), reconciler |
-| INV-8 | **Redis agrees with Postgres.** An `rsv` entry is `COMMITTED` exactly when its order is PAID. `RELEASED` implies the order is terminal and unpaid, or `REJECTED` | Settlement reads Postgres status before acting |
+| INV-8 | **Redis agrees with Postgres.** An `rsv` entry is `COMMITTED` exactly when its order is PAID. `RELEASED` implies the order is terminal and unpaid, or `REJECTED`. Once idle, every order of the drop has an entry, its idempotency record (§4.5) | Settlement reads Postgres status before acting; the rebuild writes every order, and settlement records an order the rebuild never saw (§4.7) |
 | INV-9 | **Redis conservation.** `avail + held + sold = total` and `avail >= 0` | Lua Functions, model-based tests |
 
 ### Non-goals
@@ -419,11 +419,18 @@ local function fd_confirm(keys, args)
   publish(keys[1], args[1]); return 'OK'
 end
 
--- KEYS: inv rsv uq exp    ARGV: dropId rid      HELD → RELEASED, stock and quota back
+-- KEYS: inv rsv uq exp    ARGV: dropId rid [userId qty fp idemKey]      HELD → RELEASED, stock and quota back
 local function fd_release(keys, args)
   local g = gate(keys[1]); if g == 'NO_DROP' or g == 'RETRY' then return g end
   local raw = redis.call('HGET', keys[2], args[2])
-  if not raw then return 'MISSING' end
+  if not raw then                                        -- Redis holds none of its units (§4.7): record the
+    if args[3] then                                      -- order's idempotency record, move no stock
+      redis.call('HSET', keys[2], args[2], cjson.encode({u = args[3], q = tonumber(args[4]), s = 'RELEASED',
+                                                         fp = args[5], k = args[6]}))
+      redis.call('PEXPIREAT', keys[2], redis.call('HGET', keys[1], 'retainAt'))
+    end
+    return 'MISSING'
+  end
   local r = cjson.decode(raw)
   if r.s == 'RELEASED' then return 'NOOP' end
   if r.s == 'COMMITTED' then return 'CONFLICT' end
@@ -513,7 +520,7 @@ What `fd_reserve` guarantees atomically:
 - The idempotency record is created together with the effect, so a concurrent duplicate sees either nothing or the finished hold.
 - A versioned stock level is published in mutation order.
 
-`fd_confirm` and `fd_release` are idempotent and mutually exclusive, so stock goes back at most once per reservation. `fd_rebuild` is O(n) in the drop's orders because it writes them; the O(n) conservation checks (`Σuq = held + sold` and similar) run only in tests and the reconciler, **never inside a Function**.
+`fd_confirm` and `fd_release` are idempotent and mutually exclusive, so stock goes back at most once per reservation. Given the order's identity, `fd_release` records a rid that has no entry as `RELEASED` and moves no stock, though it bumps `seq` like every write (§4.7). `fd_rebuild` is O(n) in the drop's orders because it writes them; the O(n) conservation checks (`Σuq = held + sold` and similar) run only in tests and the reconciler, **never inside a Function**.
 
 ### 4.3 The arbiter rule
 
@@ -646,6 +653,7 @@ Settlement that runs during a rebuild can't double-apply:
 
 - If Postgres settled an order *before* the snapshot, the entry is rebuilt as terminal and the later Function call returns `NOOP`.
 - If Postgres settled it *after* the snapshot, the entry is rebuilt as HELD and the later call applies the change.
+- If Postgres **created** the order after the snapshot, the rebuild dropped its entry: a `REJECTED` tombstone for a hold Lua took under the old generation, written by the API after Postgres refused the hold (§5.2) or by orphan-scan (§4.6). Unlike `takeStock`, a tombstone has no generation fence, so it can commit after the snapshot. Redis's counters hold none of its units, so the settlement has nothing to give back, but it must still leave the rid's idempotency record: `settleRedis` passes the order's identity, and `fd_release` answers `MISSING` and writes the entry as `RELEASED` without moving stock. It still bumps `seq` and publishes, like every write in the library: a stable sample (below) is one in which `seq` did not move, so a sample taken across this write is discarded instead of reporting the rid as missing. Without that record, a same-key retry would find no entry, and Lua would take stock and quota again for a request Postgres had already refused. Postgres would still answer 409 from the order, but the hold would keep a unit from buyers until orphan-scan released it, about the hold time plus 35 s later. The race-matrix tests force both tombstones between a rebuild's snapshot and its settlement (§13).
 
 **Admin status changes** (`pause`, `resume`, `end`) take the drop lock, update `drops.status`, then call `fd_set_status`. If Redis answers `RETRY` (a dead rebuild left the drop RECONCILING) or `NO_DROP`, they run the full sync instead, which writes the new status from the snapshot.
 
@@ -1016,6 +1024,7 @@ async function settleRedis(orderId: string, opts: { force?: boolean } = {}) {
   if (!TERMINAL.has(o.status)) return;
   if (o.redisSettledAt && !opts.force) return;   // orphan-scan forces: its candidate is a HELD entry by construction
   const r = o.status === 'PAID' ? await redis.fd_confirm(o) : await redis.fd_release(o);  // REJECTED → release too
+  // fd_release gets the order's identity {userId, qty, fp, key}: a rid with no entry is recorded RELEASED (§4.7)
   if (r === 'RETRY') throw new TransientError('drop reconciling');
   if (r === 'NO_DROP') {
     if (await db.pastRetention(o.dropId)) return db.markRedisSettled(o.id);   // ENDED and now >= retainAt: Redis no longer tracks it
@@ -1023,7 +1032,7 @@ async function settleRedis(orderId: string, opts: { force?: boolean } = {}) {
     throw new TransientError('drop not in Redis yet');                        // rebuilt within seconds, then retried
   }
   if (r === 'CONFLICT') throw new InvariantViolation('INV-8');                // DLQ + alert
-  await db.markRedisSettled(o.id);              // OK, NOOP or MISSING; SET redis_settled_at = now() WHERE redis_settled_at IS NULL
+  await db.markRedisSettled(o.id);              // OK, NOOP or MISSING (now recorded); SET redis_settled_at = now() WHERE redis_settled_at IS NULL
 }
 ```
 
@@ -1380,6 +1389,7 @@ The `thinking` parameter is not sent. Sonnet 5.5 and Opus 5.5 run adaptive think
 - same-key requests where one rolls back SOLD_OUT and the other commits (zero `order.rejected` events for the winner's rid);
 - duplicate `order.placed` in one batch (one charge, PAID, no refund);
 - rebuild vs. an in-flight reserve (the generation fence);
+- **rebuild vs. a tombstone written after its snapshot** (an API refusal held at its tombstone, and orphan-scan held at `orphan.unrecorded`): the settlement records the rid `RELEASED` without moving stock, a same-key retry replays the 409 without taking a hold, and every invariant holds (§4.7, `apps/worker/src/race-matrix.int.test.ts`);
 - **rebuild vs. rebuild:** a stalled sync's late `fd_rebuild` returns `STALE`, and the drop keeps the newer generation (the stall is injected after the snapshot, and the lock holder's session is killed to simulate a zombie);
 - **status change during a rebuild:** admin End, admin Pause and the scheduler's SCHEDULED→LIVE wait for the drop lock; `fd_set_status` against RECONCILING returns `RETRY`; the final Redis status equals Postgres;
 - **arm seconds before `starts_at`:** the drop opens on time.

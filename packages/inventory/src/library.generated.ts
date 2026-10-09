@@ -2,7 +2,7 @@
 
 /** The source of the `flashdrop` Redis Functions library (design §4.2). */
 export const LIBRARY_SOURCE = `#!lua name=flashdrop
--- version 2. Bump it with every change: a loader never replaces a newer version, nor this version with
+-- version 3. Bump it with every change: a loader never replaces a newer version, nor this version with
 -- other code (src/library.ts), so processes of two releases can share one Redis during a rolling deploy. A
 -- new version must keep answering what the previous one's callers parse.
 --[[
@@ -158,13 +158,36 @@ local function fd_confirm(keys, args)
   return 'OK'
 end
 
--- KEYS: inv rsv uq exp    ARGV: dropId rid      HELD -> RELEASED: stock and quota come back, exactly once
+-- The RELEASED idempotency record of a terminal order that has no entry. No stock counter moves: the
+-- counters only ever count units of an entry (fd_reserve takes them with it, fd_rebuild writes one for every
+-- order it counts), so they hold none of this order's. seq still moves, like every write here: a stable
+-- sample (§4.7) is one where seq did not change, and a sample taken across this write must not count as one.
+-- ARGV: userId qty fp idemKey, as Postgres recorded the order
+local function record_released(inv, rsv, rid, dropId, args)
+  local qty = parse_int(args[4])
+  if not (str(args[3]) and qty and qty >= 1 and qty <= 10 and str(args[5]) and str(args[6])) then
+    fail('fd_release: malformed order identity')
+  end
+  local m = ints(inv, 'retainAt', 'seq')
+  redis.call('HSET', rsv, rid, cjson.encode({ u = args[3], q = qty, s = 'RELEASED', fp = args[5], k = args[6] }))
+  redis.call('PEXPIREAT', rsv, m[1])
+  redis.call('HINCRBY', inv, 'seq', 1)
+  publish(inv, dropId)
+end
+
+-- KEYS: inv rsv uq exp    ARGV: dropId rid [userId qty fp idemKey]
+-- HELD -> RELEASED: stock and quota come back, exactly once. With the order's identity, a missing entry is
+-- recorded RELEASED, so the rid keeps its idempotency record (a tombstone Postgres wrote after a rebuild's
+-- snapshot, whose hold that rebuild dropped).
 local function fd_release(keys, args)
   local inv, rsv, uq, exp, rid = keys[1], keys[2], keys[3], keys[4], args[2]
   local g = gate(inv)
   if g == 'NO_DROP' or g == 'RETRY' then return g end
   local raw = redis.call('HGET', rsv, rid)
-  if not raw then return 'MISSING' end
+  if not raw then
+    if args[3] then record_released(inv, rsv, rid, args[1], args) end
+    return 'MISSING'
+  end
   local r = entry(raw)
   if r.s == 'RELEASED' then return 'NOOP' end
   if r.s == 'COMMITTED' then return 'CONFLICT' end

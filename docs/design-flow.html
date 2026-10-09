@@ -1232,7 +1232,7 @@ RETURNING *;</code></pre>
     <dl class="fn-list">
       <div><dt>fd_reserve</dt><dd>Validates <code>qty</code>, then checks the drop window, the per-user limit and the stock and takes a hold: <code>avail −q</code>, <code>held +q</code>, <code>uq +q</code>, an <code>rsv</code> entry HELD, an <code>exp</code> entry, then publish. Replays answer <code>EXISTING</code> or <code>FP_MISMATCH</code>.</dd></div>
       <div><dt>fd_confirm</dt><dd>HELD → COMMITTED after Postgres says PAID: <code>held −q</code>, <code>sold +q</code>. <code>NOOP</code> if already committed, <code>CONFLICT</code> if released.</dd></div>
-      <div><dt>fd_release</dt><dd>HELD → RELEASED after a terminal unpaid or REJECTED order: stock and quota come back, and the entry stays as an idempotency tombstone.</dd></div>
+      <div><dt>fd_release</dt><dd>HELD → RELEASED after a terminal unpaid or REJECTED order: stock and quota come back, and the entry stays as an idempotency tombstone. Given the order, a rid with no entry (a tombstone Postgres wrote after a rebuild snapshot) is recorded RELEASED and no stock moves.</dd></div>
       <div><dt>fd_rebuild</dt><dd>Atomically replaces a drop's keys from a Postgres snapshot. Validates the whole snapshot before its first write, returns <code>STALE</code> unless its <code>gen</code> is newer, and is the only way out of RECONCILING.</dd></div>
       <div><dt>fd_set_status</dt><dd>Writes the drop status. RECONCILING creates a complete fail-closed hash if the keys are gone; any other status is refused with <code>RETRY</code> while the drop is RECONCILING.</dd></div>
       <div><dt>fd_rl_hit</dt><dd>A fixed-window counter (INCR, plus PEXPIRE on the first hit) behind the custom node-redis store for <code>@fastify/rate-limit</code>.</dd></div>
@@ -1567,8 +1567,8 @@ RETURNING *;</code></pre>
       <li class="inv">
         <p class="inv-id">INV-8</p>
         <p class="inv-name">Redis agrees with Postgres.</p>
-        <p class="inv-rule">An <code>rsv</code> entry is <code>COMMITTED</code> exactly when its order is PAID. <code>RELEASED</code> implies the order is terminal and unpaid, or <code>REJECTED</code>.</p>
-        <p class="inv-where">Settlement reads Postgres status before acting</p>
+        <p class="inv-rule">An <code>rsv</code> entry is <code>COMMITTED</code> exactly when its order is PAID. <code>RELEASED</code> implies the order is terminal and unpaid, or <code>REJECTED</code>. Once idle, every order of the drop has an entry, its idempotency record.</p>
+        <p class="inv-where">Settlement reads Postgres status before acting; the rebuild writes every order, and settlement records an order the rebuild never saw</p>
       </li>
       <li class="inv">
         <p class="inv-id">INV-9</p>

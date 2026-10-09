@@ -34,6 +34,9 @@ export interface ReserveInput {
   readonly idempotencyKey: string;
 }
 
+/** An order's `rsv` identity `{u, q, fp, k}`, as Postgres recorded it: what `fd_reserve` stored for its rid. */
+export type RsvIdentity = Pick<ReserveInput, 'userId' | 'qty' | 'fingerprint' | 'idempotencyKey'>;
+
 const flashdrop = {
   fd_reserve: {
     NUMBER_OF_KEYS: 4,
@@ -62,10 +65,18 @@ const flashdrop = {
   },
   fd_release: {
     NUMBER_OF_KEYS: 4,
-    parseCommand(parser: CommandParser, dropId: string, rid: string) {
+    parseCommand(parser: CommandParser, dropId: string, rid: string, record?: RsvIdentity) {
       const k = dropKeys(dropId);
       parser.pushKeys([k.inv, k.rsv, k.uq, k.exp]);
       parser.push(k.dropId, canonicalUuid('rid', rid));
+      if (record !== undefined) {
+        parser.push(
+          canonicalUuid('userId', record.userId),
+          String(record.qty),
+          fingerprintHex(record.fingerprint),
+          record.idempotencyKey,
+        );
+      }
     },
     transformReply: parseReleaseReply,
   },

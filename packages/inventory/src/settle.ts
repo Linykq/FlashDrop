@@ -20,8 +20,8 @@ export interface SettleDeps {
 
 /**
  * How Redis came to reflect the outcome: `OK` applied now, `NOOP` already applied, `MISSING` not in this
- * generation (the rebuild counted the outcome), `PAST_RETENTION` the drop's keys are gone for good (ENDED
- * more than 24 h ago).
+ * generation (Redis held none of its units; an unpaid order is now recorded RELEASED), `PAST_RETENTION` the
+ * drop's keys are gone for good (ENDED more than 24 h ago).
  */
 export type SettledVia = 'OK' | 'NOOP' | 'MISSING' | 'PAST_RETENTION';
 
@@ -53,6 +53,11 @@ export interface TerminalOrderRef {
   readonly id: string;
   readonly dropId: string;
   readonly status: OrderStatus;
+  /** With `qty`, `requestHash` and `idempotencyKey`: the `{u, q, fp, k}` of the order's `rsv` entry. */
+  readonly userId: string;
+  readonly qty: number;
+  readonly requestHash: Uint8Array;
+  readonly idempotencyKey: string;
 }
 
 export type ApplyOutcome =
@@ -66,11 +71,19 @@ export type ApplyOutcome =
  * whole batch at once (the safety net's `markRedisSettledMany`).
  */
 export async function applySettlement(deps: SettleDeps, order: TerminalOrderRef): Promise<ApplyOutcome> {
-  // REJECTED releases too: Postgres never granted its stock, but Redis may still hold it.
+  // REJECTED releases too: Postgres never granted its stock, but Redis may still hold it. With the order's
+  // identity, fd_release also records a missing entry RELEASED: the order of a tombstone Postgres wrote after
+  // a rebuild's snapshot, whose hold that rebuild dropped (§4.7). Without the record, a same-key retry would
+  // find no entry and take stock and quota again for a request Postgres has already refused.
   const result =
     order.status === 'PAID'
       ? await fdConfirm(deps.redis, order.dropId, order.id)
-      : await fdRelease(deps.redis, order.dropId, order.id);
+      : await fdRelease(deps.redis, order.dropId, order.id, {
+          userId: order.userId,
+          qty: order.qty,
+          fingerprint: order.requestHash,
+          idempotencyKey: order.idempotencyKey,
+        });
   switch (result.kind) {
     case 'RETRY':
       return { kind: 'RETRY', reason: 'RECONCILING' };
