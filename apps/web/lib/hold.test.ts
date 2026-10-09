@@ -83,6 +83,7 @@ describe('holdAnnouncement', () => {
 /** An order of the buyer's, as `GET /me/orders` lists it, read at `serverNow`. */
 function order(overrides: Partial<OrderView> & Pick<OrderView, 'id'>): OrderView {
   return {
+    idempotencyKey: `reserve-${overrides.id}`,
     status: 'RESERVED',
     closeReason: null,
     dropId: 'drop-a',
@@ -138,7 +139,25 @@ describe('viewerClaim', () => {
       order({ id: 'declined', status: 'PAYMENT_FAILED', qty: 2 }),
       order({ id: 'left', status: 'CANCELLED', qty: 2 }),
     ];
-    expect(viewerClaim(orders, 'drop-a')).toEqual({ held: null, placedQty: 2, lastPlacedId: 'paid-new' });
+    expect(viewerClaim(orders, 'drop-a')).toMatchObject({
+      held: null,
+      placedQty: 2,
+      lastPlacedId: 'paid-new',
+    });
+  });
+
+  it('names the reserve key of every order on the drop, whatever became of it', () => {
+    const orders = [
+      order({ id: 'held' }),
+      order({ id: 'other-drop', dropId: 'drop-b' }),
+      order({ id: 'paid', status: 'PAID' }),
+      order({ id: 'gone', status: 'EXPIRED' }),
+    ];
+    expect(viewerClaim(orders, 'drop-a').reserveKeys).toEqual([
+      'reserve-held',
+      'reserve-paid',
+      'reserve-gone',
+    ]);
   });
 
   it('keeps the live hold apart from what was placed, since only the hold can end on screen', () => {

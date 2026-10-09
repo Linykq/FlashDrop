@@ -180,21 +180,28 @@ export type ViewerClaim = {
   placedQty: number;
   /** The newest of those orders, for "View your order"; `null` when there is none. */
   lastPlacedId: string | null;
+  /**
+   * The reserve Idempotency-Keys of the viewer's orders on the drop, whatever became of them. A tab whose
+   * unfinished reserve request is among them only lost its answer (`reserve-key.ts`).
+   */
+  reserveKeys: readonly string[];
 };
 
-export const NO_CLAIM: ViewerClaim = { held: null, placedQty: 0, lastPlacedId: null };
+export const NO_CLAIM: ViewerClaim = { held: null, placedQty: 0, lastPlacedId: null, reserveKeys: [] };
 
 /** The viewer's claim on `dropId` among their latest orders, newest first as api lists them. */
 export function viewerClaim(orders: readonly OrderView[], dropId: string): ViewerClaim {
   let placedQty = 0;
   let lastPlacedId: string | null = null;
+  const reserveKeys: string[] = [];
   for (const order of orders) {
     if (order.dropId !== dropId) continue;
+    reserveKeys.push(order.idempotencyKey);
     if (order.status !== 'PENDING_PAYMENT' && order.status !== 'PAID') continue;
     placedQty += order.qty;
     lastPlacedId ??= order.id;
   }
-  return { held: liveHold(orders, dropId), placedQty, lastPlacedId };
+  return { held: liveHold(orders, dropId), placedQty, lastPlacedId, reserveKeys };
 }
 
 /**

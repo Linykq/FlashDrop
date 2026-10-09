@@ -152,6 +152,7 @@ ports 5433, 6379, 6380, 9092 and 8080 must be free; everything binds to `127.0.0
 ```sh
 pnpm install
 pnpm stack:up        # builds the node and web images, then starts the whole stack and waits until it is healthy
+pnpm demo:reset      # any time later: wipes Postgres, Redis, Kafka and uploads, then stack:up re-seeds drops around now
 ```
 
 Open **http://127.0.0.1:8080**. Use `127.0.0.1`, not `localhost`: the API's Origin allowlist and the session
@@ -159,7 +160,7 @@ cookie are scoped to that host.
 
 - **Sign in** at `/login` by picking a seeded user. Buyers: Ada Lindqvist, Ben Okafor, Chloé Martin, Dev Patel
   and Emi Tanaka. Admin: **Mira Chen**.
-- **The seed** has one drop live now (the headphones, 250 units, limit 2), two scheduled, one already sold out,
+- **The seed** has one drop live now (the eau de parfum, 250 units, limit 2), two scheduled, one already sold out,
   and the live room at `/live/studio`.
 - **Admin** (as Mira): `/admin/drops` to create, arm, pause, end, cancel and re-run drops; `/admin/listings/new` for the
   listing generator; `/admin/dashboard/<dropId>` for the live dashboard; `/admin/health` for the invariant

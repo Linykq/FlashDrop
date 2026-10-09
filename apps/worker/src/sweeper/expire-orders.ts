@@ -5,6 +5,11 @@ import { reportQuarantine } from './settle';
 /** A tick stops draining after this long; the loop runs every second. */
 const TICK_BUDGET_MS = 800;
 
+export interface ExpireOrdersOptions {
+  /** The clock the budget is read from, in ms (`performance.now`): tests choose when the budget runs out. */
+  readonly now?: () => number;
+}
+
 /**
  * `expire-orders` (design §4.6, every second): live orders past `expires_at`, by Postgres time, become
  * EXPIRED with their quota, inventory and `order.expired` event in one transaction per batch of 200
@@ -20,8 +25,10 @@ const TICK_BUDGET_MS = 800;
 export async function expireOrders(
   deps: Pick<WorkerDeps, 'db' | 'logger'>,
   signal: AbortSignal = new AbortController().signal,
+  options: ExpireOrdersOptions = {},
 ): Promise<void> {
-  const started = Date.now();
+  const now = options.now ?? (() => performance.now());
+  const started = now();
   for (;;) {
     const tick = await expireDueOrders(deps.db);
     if (tick.kind === 'busy') return;
@@ -39,7 +46,6 @@ export async function expireOrders(
       }
       return;
     }
-    if (tick.expired.length < EXPIRE_BATCH || signal.aborted || Date.now() - started >= TICK_BUDGET_MS)
-      return;
+    if (tick.expired.length < EXPIRE_BATCH || signal.aborted || now() - started >= TICK_BUDGET_MS) return;
   }
 }

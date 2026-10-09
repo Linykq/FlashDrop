@@ -75,6 +75,7 @@ describe('POST /api/v1/drops/:dropId/reservations: new holds', () => {
     expect(response.headers['cache-control']).toBe('no-store');
     expect(OrderResponse.parse(response.json()).order).toEqual({
       id: RID,
+      idempotencyKey: KEY,
       status: 'RESERVED',
       closeReason: null,
       dropId: LIVE_DROP.id,

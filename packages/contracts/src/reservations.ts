@@ -46,6 +46,11 @@ export type ReserveBody = z.infer<typeof ReserveBody>;
  */
 export const OrderView = z.object({
   id: Uuid,
+  /**
+   * The Idempotency-Key of the reserve request that made the order. The buyer's own, shown only to them: a
+   * tab that lost the reserve answer finds its request's order by it, so its next press is a new intent.
+   */
+  idempotencyKey: IdempotencyKey,
   status: OrderStatus,
   /** Why an order ended unpaid; null while it is live or once it is PAID. */
   closeReason: CloseReason.nullable(),

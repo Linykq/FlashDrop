@@ -188,6 +188,7 @@ export function toOrderDetail(detail: OrderDetailRecord, serverNow: Date): Order
 export function toOrderView(order: OrderRecord, product: ProductSummary, serverNow: Date): OrderView {
   return {
     id: order.id,
+    idempotencyKey: order.idempotencyKey,
     status: order.status,
     closeReason: order.closeReason,
     dropId: order.dropId,

@@ -11,7 +11,9 @@ import { expectFocusOnPage } from './support/keyboard';
 /*
  * Reserving from the product page (design §4.5, §5.2, §8.2; design-system §9.13, §10.4): Buy holds a unit
  * and opens checkout with the hold's countdown. The Idempotency-Key makes every retry of one press safe: a
- * double click, and a press after a reload that lost the first answer, both end on the one order. A buyer
+ * double click ends on one order, and a press after a reload sends a request that never got through again
+ * under its key. One that did make its order is finished: the reloaded page shows that hold, and "Buy 1
+ * more" beside it reserves another unit rather than replaying the first. A buyer
  * back from checkout (the browser's Back, not "Leave checkout", which cancels: cancel.spec) finds Buy usable
  * and the hold offered back; a press refused on stale stock says what the stock is now, and a press in the
  * phone's buy bar keeps the buyer's focus.
@@ -239,8 +241,12 @@ test.describe('on a phone', () => {
     await page.clock.install();
     await holdStockStill(page, request, drop.id);
     await page.goto(`/p/${drop.productSlug}`);
-    // The row out of view: the sticky buy bar takes over (design-system §10.2).
+    // The row out of view: the sticky buy bar takes over (design-system §10.2). That is the bar's condition,
+    // so it is checked first: at the page's end the row is above the top edge (the short screen sees to it),
+    // and a page too short for that fails here rather than as a missing bar, which then waits on hydration
+    // alone. The row's Buy comes before the bar's in the document.
     await page.getByRole('contentinfo').scrollIntoViewIfNeeded();
+    await expect(buyButton(page).first()).not.toBeInViewport();
     const bar = page.locator('[data-bottom-bar]');
     await expect(bar).toBeVisible();
     await claim(browser, request, baseURL, drop.id, 1);
@@ -280,7 +286,13 @@ test('a double click reserves once', async ({ page, drop, buyer: _ }) => {
   expect(new Set(keys).size).toBe(1);
 });
 
-test('after a reload loses the answer, Buy replays the same reservation', async ({
+/** Answers the next reserve request the page sends, for a press after a reload. */
+const reserveAnswer = (page: Page) =>
+  page.waitForResponse(
+    (response) => response.request().method() === 'POST' && RESERVATIONS.test(response.url()),
+  );
+
+test('after a reload loses the answer, the hold it made is shown and "Buy 1 more" reserves another', async ({
   page,
   drop,
   buyer: _,
@@ -310,22 +322,62 @@ test('after a reload loses the answer, Buy replays the same reservation', async 
 
   await page.reload();
   await page.unrouteAll({ behavior: 'ignoreErrors' });
-  // The reloaded page reads the buyer's holds from api, so it shows the reservation the lost answer was
-  // for, with the gray "Buy 1 more" beside "Go to checkout".
+  // The reloaded page reads the buyer's orders from api, so it shows the reservation the lost answer was
+  // for, with the gray "Buy 1 more" beside "Go to checkout". That order carries the stored key, so the key's
+  // request is finished: the press is a new intent under a new key, and reserves a second unit.
   const main = page.getByRole('main');
   await expect(main.getByText('You have 1 reserved', { exact: true })).toBeVisible();
-  // The key outlives the reload (sessionStorage), so this press continues the same intent.
-  const answer = page.waitForResponse(
-    (response) => response.request().method() === 'POST' && RESERVATIONS.test(response.url()),
-  );
+  const answer = reserveAnswer(page);
   await main.getByRole('button', { name: 'Buy 1 more', exact: true }).click();
-  const replay = await answer;
+  const second = await answer;
 
-  expect(replay.request().headers()[IDEMPOTENCY_KEY_HEADER]).toBe(first.key);
-  expect(replay.status()).toBe(200);
-  expect(replay.headers()[IDEMPOTENCY_REPLAYED_HEADER]).toBe('true');
-  expect(OrderResponse.parse(await replay.json()).order.id).toBe(first.orderId);
-  await expect(page).toHaveURL(`/checkout/${first.orderId}`);
-  expect((await ordersOn(page.request, drop.id)).map((order) => order.id)).toEqual([first.orderId]);
-  expect(await stockOf(page.request, drop.id)).toMatchObject({ held: 1 });
+  expect(second.request().headers()[IDEMPOTENCY_KEY_HEADER]).not.toBe(first.key);
+  expect(second.status()).toBe(201);
+  expect(second.headers()[IDEMPOTENCY_REPLAYED_HEADER]).toBeUndefined();
+  const secondId = OrderResponse.parse(await second.json()).order.id;
+  expect(secondId).not.toBe(first.orderId);
+  await expect(page).toHaveURL(`/checkout/${secondId}`);
+  const orders = await ordersOn(page.request, drop.id);
+  expect(orders.map((order) => order.id).sort()).toEqual([first.orderId, secondId].sort());
+  expect(orders.every((order) => order.status === 'RESERVED' && order.qty === 1)).toBe(true);
+  expect(await stockOf(page.request, drop.id)).toMatchObject({ avail: drop.settings.stock - 2, held: 2 });
+});
+
+test('after a reload, a request that never reached api is sent again under its key', async ({
+  page,
+  drop,
+  buyer: _,
+}) => {
+  // Every attempt fails in the network before api sees it, so the press has no answer and no order.
+  const lost: string[] = [];
+  await page.route(RESERVATIONS, async (route) => {
+    lost.push(route.request().headers()[IDEMPOTENCY_KEY_HEADER] ?? '');
+    await route.abort('connectionreset');
+  });
+
+  await page.goto(`/p/${drop.productSlug}`);
+  const main = page.getByRole('main');
+  await main.getByRole('button', { name: 'Increase quantity' }).click();
+  await main.getByRole('button', { name: 'Buy 2', exact: true }).click();
+  await expect(main.getByRole('button', { name: /^(Reserving|Still trying)…$/ })).toBeVisible();
+  await expect.poll(() => lost.length).toBeGreaterThan(0);
+
+  await page.reload();
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  // No order came from the key, so it is still unfinished: the page offers the same request again, at its
+  // quantity, and the press sends it under the same key. api never saw it, so this is its first answer.
+  await expect(main.getByText(/^You have \d+ reserved$/)).toHaveCount(0);
+  const answer = reserveAnswer(page);
+  await main.getByRole('button', { name: 'Buy 2', exact: true }).click();
+  const sent = await answer;
+
+  expect(new Set(lost).size).toBe(1);
+  expect(sent.request().headers()[IDEMPOTENCY_KEY_HEADER]).toBe(lost[0]);
+  expect(sent.status()).toBe(201);
+  const { order } = OrderResponse.parse(await sent.json());
+  await expect(page).toHaveURL(`/checkout/${order.id}`);
+  expect((await ordersOn(page.request, drop.id)).map(({ id, qty }) => ({ id, qty }))).toEqual([
+    { id: order.id, qty: 2 },
+  ]);
+  expect(await stockOf(page.request, drop.id)).toMatchObject({ held: 2 });
 });

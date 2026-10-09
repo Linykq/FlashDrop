@@ -9,6 +9,8 @@ import { quarantine, recordConflict } from './settle';
 export interface SafetyNetOptions {
   /** How long an order must sit unsettled first, so the settlement consumer gets the first go (10 s). */
   readonly olderThanSeconds?: number;
+  /** The clock the budget is read from, in ms (`performance.now`): tests choose when the budget runs out. */
+  readonly now?: () => number;
 }
 
 /** Function calls in flight at once; node-redis pipelines them on the one command connection. */
@@ -39,9 +41,10 @@ export async function settleSafetyNet(
   options: SafetyNetOptions = {},
 ): Promise<void> {
   await withLoopLock(deps.db, 'settle-safety-net', async () => {
-    const started = Date.now();
+    const now = options.now ?? (() => performance.now());
+    const started = now();
     const retrying = new Set<string>();
-    while (!signal.aborted && Date.now() - started < TICK_BUDGET_MS) {
+    while (!signal.aborted && now() - started < TICK_BUDGET_MS) {
       const page = await listUnsettledTerminalOrders(deps.db, {
         olderThanSeconds: options.olderThanSeconds,
         excludeDropIds: [...retrying],

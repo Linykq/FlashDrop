@@ -186,6 +186,24 @@ describe('close-unpaid', () => {
   });
 
   it('starts no close once its time budget is spent, and leaves the rest to the next tick', async () => {
+    const owed = await expiredAfterCheckout(CLOSE_UNPAID_CONCURRENCY + 4);
+    const before = psp.totalCloses();
+    // The budget runs out while the first round is in flight, however fast the machine: the clock reads
+    // past any deadline once the PSP has received a close.
+    const now = () => (psp.totalCloses() > before ? Number.POSITIVE_INFINITY : 0);
+
+    await closeUnpaid(deps, noAbort, { olderThanSeconds: 0, now });
+
+    // One close per lane, each run to its end and recorded; no lane started another.
+    expect(psp.totalCloses() - before).toBe(CLOSE_UNPAID_CONCURRENCY);
+    for (const orderId of owed) {
+      expect((await closureOf(orderId)) !== undefined).toBe(psp.closes(orderId) > 0);
+    }
+    await tick();
+    for (const orderId of owed) expect(await closureOf(orderId)).toBeDefined();
+  });
+
+  it('starts no close at all when the budget is spent before the first', async () => {
     const [orderId = ''] = await expiredAfterCheckout(1);
     const before = psp.totalCloses();
 

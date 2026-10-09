@@ -51,7 +51,11 @@ export type PurchaseRow =
   | { kind: 'have-limit'; lastPlacedId: string | null }
   | { kind: 'buy'; room: number };
 
-export function purchaseRow(claim: ViewerClaim, perUserLimit: number, refusedAtLimit: boolean): PurchaseRow {
+export function purchaseRow(
+  claim: Pick<ViewerClaim, 'held' | 'placedQty' | 'lastPlacedId'>,
+  perUserLimit: number,
+  refusedAtLimit: boolean,
+): PurchaseRow {
   const { held, placedQty, lastPlacedId } = claim;
   if (held) return { kind: 'checkout', held, room: Math.max(0, perUserLimit - placedQty - held.qty) };
   if (refusedAtLimit || placedQty >= perUserLimit) return { kind: 'have-limit', lastPlacedId };

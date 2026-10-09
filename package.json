@@ -40,6 +40,7 @@
     "load:idempotency": "docker compose --profile load run --rm k6 run /scripts/idempotency-storm.ts",
     "load:expiry-soak": "docker compose --profile load run --rm k6 run /scripts/expiry-soak.ts",
     "load:ws-fanout": "docker compose --profile load run --rm k6 run /scripts/ws-fanout.ts",
+    "demo:reset": "pnpm stack:down && docker compose rm --stop --force --volumes postgres redis kafka kafka-init && docker volume rm --force flashdrop_postgres-data flashdrop_redis-data flashdrop_kafka-data flashdrop_uploads && pnpm stack:up",
     "demo:burst": "docker compose --profile load run --rm k6 run /scripts/burst.ts -e PROFILE=demo -e OPEN_DELAY_S=20 && pnpm verify:invariants",
     "chaos:all": "tsx tests/chaos/run.ts all",
     "chaos:redis-restart": "tsx tests/chaos/run.ts redis-restart",

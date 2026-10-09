@@ -81,6 +81,7 @@ describe('OrderDetail', () => {
   it('describes an order before checkout with null checkout details', () => {
     const detail = {
       id: ORDER_ID,
+      idempotencyKey: '0198a3c4-1f2e-7a10-8b2c-3d4e5f607182',
       status: 'EXPIRED',
       closeReason: 'TIMEOUT',
       dropId: '5eed0004-0000-4000-8000-000000000001',

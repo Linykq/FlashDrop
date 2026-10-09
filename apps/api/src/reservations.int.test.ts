@@ -163,7 +163,13 @@ describe('reserve', () => {
     const created = await reserve(buyer, dropId, key, 2);
     expect(created.statusCode, created.body).toBe(201);
     const { order } = OrderResponse.parse(created.json());
-    expect(order).toMatchObject({ status: 'RESERVED', dropId, qty: 2, closeReason: null });
+    expect(order).toMatchObject({
+      status: 'RESERVED',
+      dropId,
+      qty: 2,
+      closeReason: null,
+      idempotencyKey: key,
+    });
 
     // Redis took the stock first, Postgres recorded the same rid with its quota and event.
     expect(await readStock(stack.redis, dropId)).toMatchObject({ avail: 8, held: 2, sold: 0, gen: 1 });
@@ -210,7 +216,8 @@ describe('reserve', () => {
     const dropId = await newDrop();
     const [owner, other] = await newBuyers(2);
     if (owner === undefined || other === undefined) throw new Error('no buyers');
-    const { order } = OrderResponse.parse((await reserve(owner, dropId, newKey())).json());
+    const key = newKey();
+    const { order } = OrderResponse.parse((await reserve(owner, dropId, key)).json());
 
     const read = (buyer: Buyer, url: string) =>
       app.inject({ url, cookies: { [SESSION_COOKIE]: buyer.token } });
@@ -220,6 +227,8 @@ describe('reserve', () => {
     expect((await read(other, `/api/v1/orders/${order.id}`)).statusCode).toBe(404);
     const mine = OrderListResponse.parse((await read(owner, '/api/v1/me/orders')).json());
     expect(mine.orders.map((o) => o.id)).toEqual([order.id]);
+    // The owner's own reserve key, so a tab that lost the reserve answer can find the order it made.
+    expect(mine.orders.map((o) => o.idempotencyKey)).toEqual([key]);
     expect(OrderListResponse.parse((await read(other, '/api/v1/me/orders')).json()).orders).toEqual([]);
   });
 

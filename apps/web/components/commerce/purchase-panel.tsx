@@ -115,11 +115,13 @@ export function PurchasePanel({
   const rowInView = useWhollyInView(rowElement);
   const narrow = useMediaQuery(layout === 'page' ? '(width < 735px)' : '(width < 1069px)');
 
-  // After a reload, offer the unfinished request again: the same quantity reuses its key and replays it.
+  // After a reload, offer the unfinished request again: the same quantity reuses its key and replays it. A
+  // request whose order the claim already holds is finished, though, and only lost its answer: its key goes,
+  // so "Buy 1 more" beside that hold reserves more. A refreshed claim (back from checkout) checks again.
   useEffect(() => {
-    const pending = pendingQuantity(dropId);
+    const pending = pendingQuantity(dropId, claim.reserveKeys);
     if (pending !== null) setQuantity(pending);
-  }, [dropId]);
+  }, [dropId, claim.reserveKeys]);
 
   // The hold the buyer comes back from (Back, "Leave checkout", "Try again") is server data.
   useRefreshOnReturn();

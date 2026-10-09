@@ -169,14 +169,17 @@ describe('expire-orders and settle-safety-net', () => {
     const busyOrders = await inBatches(users.slice(230), (user) => reserve(env, busy, user));
     for (const rid of stuckOrders) await lapse(env, rid);
     for (const rid of busyOrders) await lapse(env, rid);
+    // Ticks whose budget never runs out: what one tick drains is then down to the loops, not to how fast
+    // this machine gets through three batches in 800 ms or three pages in 4 s.
+    const timeless = () => 0;
 
-    await expireOrders(env.deps);
+    await expireOrders(env.deps, running, { now: timeless });
 
     expect(await statusCount(stuck, 'EXPIRED')).toBe(230);
     expect(await statusCount(busy, 'EXPIRED')).toBe(230);
 
     await fdSetStatus(env.redis, stuck, 'RECONCILING');
-    await settleSafetyNet(env.deps, running, { olderThanSeconds: 0 });
+    await settleSafetyNet(env.deps, running, { olderThanSeconds: 0, now: timeless });
 
     expect(await readStock(env.redis, busy)).toMatchObject({ avail: 250, held: 0 });
     expect(await unsettledCount(busy)).toBe(0);
@@ -185,7 +188,7 @@ describe('expire-orders and settle-safety-net', () => {
 
     // Once the stuck drop is rebuilt, its orders settle too (as NOOPs: the rebuild counted them).
     await armDrop(env, stuck);
-    await settleSafetyNet(env.deps, running, { olderThanSeconds: 0 });
+    await settleSafetyNet(env.deps, running, { olderThanSeconds: 0, now: timeless });
     expect(await unsettledCount(stuck)).toBe(0);
     await expectRedisMatchesPostgres(stuck);
   });
@@ -453,9 +456,7 @@ describe('drop-scheduler', () => {
           [user, dropId],
         );
       }
-      const started = Date.now();
       await dropScheduler(env.deps, running);
-      expect(Date.now() - started).toBeLessThan(1_000);
       await reserving.query('ROLLBACK');
     } finally {
       reserving.release();
@@ -464,6 +465,14 @@ describe('drop-scheduler', () => {
     expect(await statuses(hot)).toEqual({ postgres: 'ENDED', redis: 'ENDED' });
     expect(await statuses(idle)).toEqual({ postgres: 'LIVE', redis: 'LIVE' });
     expect(env.logs.filter((line) => line.msg === 'drop scheduling failed')).toEqual([]);
+    // Neither drop queued behind the reserve's FOR KEY SHARE: a wait there ends at lock_timeout in this
+    // warning (the M2 regression), whereas a wall-clock bound would also trip on a slow machine.
+    expect(
+      env.logs.filter(
+        (line) =>
+          line.msg === 'drop row busy; scheduling it next tick' && [hot, idle].includes(String(line.dropId)),
+      ),
+    ).toEqual([]);
   });
 
   it('never re-creates a drop Redis has lost; that is the reconciler’s job', async () => {

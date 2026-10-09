@@ -32,10 +32,17 @@ function isQuantity(value: unknown): value is number {
 
 /**
  * The quantity of this tab's unfinished reserve request for the drop, or `null`. The panel starts from it,
- * so pressing Buy again after a reload sends the very same request and replays its answer.
+ * so pressing Buy again after a reload sends the very same request and replays its answer. `orderKeys` are
+ * the reserve keys of the viewer's orders on the drop (`ViewerClaim`): a request among them made its order,
+ * which the page already shows, and only its answer was lost. Its key is forgotten here, so the next press,
+ * "Buy 1 more" beside that hold, is a new intent that reserves more instead of replaying the first.
  */
-export function pendingQuantity(dropId: string): number | null {
-  return readPending(dropId)?.qty ?? null;
+export function pendingQuantity(dropId: string, orderKeys: readonly string[]): number | null {
+  const pending = readPending(dropId);
+  if (pending === null) return null;
+  if (!orderKeys.includes(pending.key)) return pending.qty;
+  forgetReserveKey(dropId);
+  return null;
 }
 
 /**

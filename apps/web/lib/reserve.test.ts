@@ -172,7 +172,18 @@ describe('reserve keys', () => {
     const key = reserveKey(DROP, 2);
     expect(reserveKey(DROP, 2)).toBe(key);
     expect(JSON.parse(items.get(`fd:reserve:${DROP}`) ?? '')).toEqual({ key, qty: 2 });
-    expect(pendingQuantity(DROP)).toBe(2);
+    // No order of the viewer's came from it: the reloaded page offers the same request again.
+    expect(pendingQuantity(DROP, ['another-order-key'])).toBe(2);
+    expect(reserveKey(DROP, 2)).toBe(key);
+  });
+
+  it('forgets the key of a request whose order the page already shows, so the next press reserves more', () => {
+    const items = fakeSessionStorage();
+    const key = reserveKey(DROP, 1);
+    // The reload lost the answer, but the viewer's orders on the drop include the one this key made.
+    expect(pendingQuantity(DROP, ['another-order-key', key])).toBeNull();
+    expect(items.has(`fd:reserve:${DROP}`)).toBe(false);
+    expect(reserveKey(DROP, 1)).not.toBe(key);
   });
 
   it('starts a new intent for another quantity, and after a final answer', () => {
@@ -181,16 +192,16 @@ describe('reserve keys', () => {
     const second = reserveKey(DROP, 2);
     expect(second).not.toBe(first);
     forgetReserveKey(DROP);
-    expect(pendingQuantity(DROP)).toBeNull();
+    expect(pendingQuantity(DROP, [])).toBeNull();
     expect(reserveKey(DROP, 2)).not.toBe(second);
   });
 
   it('ignores a damaged entry', () => {
     const items = fakeSessionStorage();
     items.set(`fd:reserve:${DROP}`, '{"key":"short","qty":2}');
-    expect(pendingQuantity(DROP)).toBeNull();
+    expect(pendingQuantity(DROP, [])).toBeNull();
     items.set(`fd:reserve:${DROP}`, 'not json');
-    expect(pendingQuantity(DROP)).toBeNull();
+    expect(pendingQuantity(DROP, [])).toBeNull();
   });
 
   it('keeps the key in memory where storage is blocked', () => {
@@ -207,7 +218,7 @@ describe('reserve keys', () => {
     });
     const key = reserveKey(DROP, 1);
     expect(reserveKey(DROP, 1)).toBe(key);
-    forgetReserveKey(DROP);
-    expect(pendingQuantity(DROP)).toBeNull();
+    expect(pendingQuantity(DROP, [key])).toBeNull();
+    expect(reserveKey(DROP, 1)).not.toBe(key);
   });
 });

@@ -38,6 +38,8 @@ export interface CloseUnpaidOptions {
   readonly olderThanSeconds?: number;
   /** After this long, counted from the tick's start, no new close starts (`CLOSE_UNPAID_BUDGET_MS`). */
   readonly budgetMs?: number;
+  /** The clock the budget is read from, in ms (`performance.now`): tests choose when the budget runs out. */
+  readonly now?: () => number;
 }
 
 /** Closes in flight at once: the PSP serializes per reference, not across references. */
@@ -53,11 +55,15 @@ export async function closeUnpaid(
   signal: AbortSignal,
   options: CloseUnpaidOptions = {},
 ): Promise<void> {
-  // Shutdown, or the budget spent: either way, start no new close.
-  const stop = AbortSignal.any([signal, AbortSignal.timeout(options.budgetMs ?? CLOSE_UNPAID_BUDGET_MS)]);
+  // Shutdown, or the budget spent: either way, start no new close. The clock is read before each start
+  // rather than a timer aborting: a timer's abort lands only once the event loop gets to it, so a spent
+  // budget could still let a close start.
+  const now = options.now ?? (() => performance.now());
+  const deadline = now() + (options.budgetMs ?? CLOSE_UNPAID_BUDGET_MS);
+  const stopped = () => signal.aborted || now() >= deadline;
   await withLoopLock(deps.db, 'close-unpaid', async () => {
     const owed = await listUnclosedOrders(deps.db, { olderThanSeconds: options.olderThanSeconds });
-    if (owed.length === 0 || stop.aborted) return;
+    if (owed.length === 0 || stopped()) return;
     deps.logger.warn(
       { count: owed.length, orderIds: owed.map((order) => order.id) },
       'closing PSP references the payment consumer did not close',
@@ -66,7 +72,7 @@ export async function closeUnpaid(
     // away, and calling it for every remaining order would only stretch the tick.
     let outage: unknown;
     const outcomes = await settleWithLimit(owed, CLOSE_UNPAID_CONCURRENCY, async (order) => {
-      if (outage !== undefined || stop.aborted) return 'skipped';
+      if (outage !== undefined || stopped()) return 'skipped';
       try {
         await closeAndRecord(deps, order.id, deps.logger.child({ orderId: order.id }));
         return 'closed';

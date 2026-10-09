@@ -18,6 +18,7 @@ describe('reservation DTOs', () => {
   it('describe an order with its product and the server clock', () => {
     const view = {
       id: '1b4e28ba-2fa1-5ed2-883f-0e8a9b3c4d5e',
+      idempotencyKey: '0198a3c4-1f2e-7a10-8b2c-3d4e5f607182',
       status: 'RESERVED',
       closeReason: null,
       dropId: '5eed0004-0000-4000-8000-000000000001',
@@ -39,6 +40,10 @@ describe('reservation DTOs', () => {
 
     expect(OrderView.parse(view)).toEqual(view);
     expect(OrderView.safeParse({ ...view, status: 'HELD' }).success).toBe(false);
+    // The reserve key is echoed as it was accepted, so a stored key outside the format is a broken contract.
+    expect(OrderView.safeParse({ ...view, idempotencyKey: 'short' }).success).toBe(false);
+    const { idempotencyKey: _, ...withoutKey } = view;
+    expect(OrderView.safeParse(withoutKey).success).toBe(false);
   });
 
   it('page my orders 50 at a time by default, 100 at most', () => {

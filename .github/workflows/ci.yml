@@ -66,7 +66,22 @@ jobs:
       # Includes the race matrix (design §13): apps/worker's `race-matrix.int.test.ts` forces each interleaving
       # through FD_TEST_HOOKS, which only that test process sets; apps/api's holds the reserve service's
       # Postgres step at a gate through its ports.
-      - run: pnpm test:int
+      - name: Run pnpm test:int
+        shell: bash
+        run: pnpm test:int 2>&1 | tee test-int.log; exit "${PIPESTATUS[0]}"
+      # Job logs need a signed-in account even on a public repo; annotations don't. Vitest annotates failed
+      # tests itself, but not errors outside a test (unhandled rejections, setup or teardown), so the tail of the
+      # run, where Vitest prints its error summary, goes into one annotation.
+      - name: Annotate integration failures
+        if: failure()
+        shell: bash
+        run: |
+          [ -f test-int.log ] || exit 0
+          summary=$(sed 's/\x1b\[[0-9;]*m//g' test-int.log | grep -v '^\s*$' | tail -n 80)
+          summary=${summary//'%'/'%25'}
+          summary=${summary//$'\r'/'%0D'}
+          summary=${summary//$'\n'/'%0A'}
+          echo "::error title=pnpm test:int output (last 80 lines)::${summary}"
       - name: Collect Compose logs
         if: failure()
         run: docker compose logs --no-color --timestamps > compose-logs.txt

@@ -1139,6 +1139,7 @@ Keying by `orderId` would spread load more evenly but would give up point 2. Ord
   - `avail = 0 and held = 0`: "Sold out".
 - **Buy flow:**
   - On press, the Buy button creates a uuidv7 `Idempotency-Key` and stores it in `sessionStorage` per drop, so a refresh or retry reuses it.
+  - The owner-only order views echo each order's reserve `idempotencyKey`. When one of the viewer's orders on the drop came from the stored key, its request has a final answer: the key is forgotten, so "Buy 1 more" after a reload that lost the answer reserves a new unit instead of replaying the first.
   - On 201 or 200 it navigates to `/checkout/[orderId]`.
   - On 503 it retries with backoff and the same key.
   - On 409 it shows the reason.
@@ -1825,8 +1826,6 @@ At M10 this document was checked against the code. Mid-build changes were alread
 
 - Submit → PAID under a one-product sale is bounded by one Kafka partition (32 charges in flight, paused by every PSP retry). Meeting < 2 s would need more in-partition concurrency, a key that spreads a drop over partitions, or retries that don't pause the partition (perf §3.3, ADR 0009).
 - Restart detection could probe `run_id` on the Redis client's reconnect event instead of waiting for the next tick (§4.7).
-- `tests/load` has a `tsconfig.json` for editors, but it needs `@types/k6`, which is not a dependency yet, so no script type-checks the k6 scripts (`pnpm typecheck` covers `tests/chaos` through `typecheck:root`).
 - The sampling scripts behind `docs/perf.md` and the screenshot capture scripts are not in the repo yet.
 - `nightly.yml` was dry-run on the dev machine; its first run on a GitHub runner is pending.
 - In Compose, `TRUST_PROXY` stays at `loopback`, so the api counts every browser behind Caddy as one client (the edge). On the loopback-only demo that is this machine either way; a deployment names the edge's address (§11).
-- After a reload that lost a reserve answer, the product page shows the hold and a gray "Buy 1 more", which still carries the unfinished request's key and so replays that reservation rather than adding a unit (`reserve.spec.ts`). Safe, but the label promises more than it does.
