@@ -1,7 +1,8 @@
 /**
- * `tsx tools/load-smoke-summary.ts [--results <dir>] [--invariants <file>]` (design §13): the step summary
- * of the CI `load-smoke` job. It reads the k6 summaries that tests/load writes (`burst-ci.json`,
- * `idempotency-storm.json`, `ws-fanout-ci.json`, and `expiry-soak.json` when it ran) and the
+ * `tsx tools/load-smoke-summary.ts [--profile ci|nightly|laptop] [--results <dir>] [--invariants <file>]`
+ * (design §13): the step summary of the CI `load-smoke` job (`ci`, the default) and of the nightly workflow
+ * (`nightly`). It reads the k6 summaries that tests/load writes (`burst-<profile>.json`,
+ * `ws-fanout-<profile>.json`, `idempotency-storm.json`, and `expiry-soak.json` when it ran) and the
  * `verify:invariants` report, and prints Markdown tables for `$GITHUB_STEP_SUMMARY`: reserve latency and
  * outcomes, checkout and payment (submit to PAID), WebSocket fan-out (propagation and frames per socket),
  * and the invariants with the event pipeline. A missing or unreadable file becomes a row that says so
@@ -14,10 +15,22 @@ import { z } from 'zod';
 
 const { values } = parseArgs({
   options: {
+    profile: { type: 'string', default: 'ci' },
     results: { type: 'string', default: 'tests/load/results' },
     invariants: { type: 'string', default: 'invariants-report.json' },
   },
 });
+
+/** The profile burst.ts and ws-fanout.ts ran with (§1 scale targets); it names their summary files. */
+const parsedProfile = z
+  .enum(['ci', 'nightly', 'laptop'], { error: '--profile must be ci, nightly or laptop' })
+  .safeParse(values.profile);
+if (!parsedProfile.success) {
+  console.error(z.prettifyError(parsedProfile.error));
+  process.exit(2);
+}
+const profile = parsedProfile.data;
+const burstFile = `burst-${profile}.json`;
 
 /** The parts of a `summaryOutputs` file (tests/load/lib/summary.ts) the tables show. */
 const K6Summary = z.object({
@@ -93,8 +106,8 @@ interface Run {
 
 const RUNS: readonly Run[] = [
   {
-    name: 'Burst (`ci` profile)',
-    file: 'burst-ci.json',
+    name: `Burst (\`${profile}\` profile)`,
+    file: burstFile,
     trend: 'reserve_duration',
     orders: 'reserve_orders',
     replayed: 'reserve_replayed',
@@ -104,6 +117,8 @@ const RUNS: readonly Run[] = [
   {
     name: 'Idempotency storm',
     file: 'idempotency-storm.json',
+    // Profile-free, so load-smoke runs it on every push and the nightly leaves it out.
+    optional: profile !== 'ci',
     trend: 'storm_duration',
     orders: 'storm_created',
     replayed: 'storm_replayed',
@@ -212,7 +227,7 @@ function fanoutLines(fanout: K6Summary | string): string[] {
 }
 
 const lines = [
-  '## Load smoke',
+  profile === 'ci' ? '## Load smoke' : `## Load (${profile} profile)`,
   '',
   '| Run | Result | Requests | Orders | Replayed | Refused | p50 | p95 | max | Stock back after expiry |',
   '|---|---|--:|--:|--:|--:|--:|--:|--:|--:|',
@@ -233,10 +248,10 @@ for (const run of RUNS) {
 if (failedThresholds.length > 0) lines.push('', '**Failed thresholds**', '', ...failedThresholds);
 lines.push(
   ...checkoutLines(
-    summaries.get('burst-ci.json') ?? 'burst-ci.json is missing',
+    summaries.get(burstFile) ?? `${burstFile} is missing`,
     summaries.get('idempotency-storm.json') ?? 'idempotency-storm.json is missing',
   ),
-  ...fanoutLines(await read(join(values.results, 'ws-fanout-ci.json'), K6Summary)),
+  ...fanoutLines(await read(join(values.results, `ws-fanout-${profile}.json`), K6Summary)),
 );
 
 const report = await read(values.invariants, InvariantsReport);

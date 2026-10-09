@@ -1,7 +1,7 @@
 # FlashDrop edge (design §2, §7, §8.1, §15): one origin, http://127.0.0.1:8080, for browsers, Playwright
 # and k6, so the fd_session cookie and same-origin /ws work without CORS.
 #
-#   /_internal/*               404: web's revalidation route is reachable only on the Compose network
+#   /_internal/*, /metrics     404: web's revalidation route and the scrape endpoints stay on the Compose network
 #   /ws/1, /ws/2               api-1, api-2 (pinned, so cross-instance tests are deterministic, §7)
 #   /api/*, /uploads/*, /ws    api-1 and api-2, round robin, no sticky sessions
 #   everything else            web
@@ -25,13 +25,22 @@
 		Referrer-Policy strict-origin-when-cross-origin
 		Cross-Origin-Opener-Policy same-origin
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		# A second line of defence for any future injection sink (listing text, the JSON-LD and theme scripts).
+		# Everything the pages load is this origin's: scripts, styles, next/font, /uploads and /_next/image,
+		# the sample stream under /hls, /api and the same-origin /ws (CSP 3's 'self' covers ws: here). blob:
+		# is hls.js (its MediaSource and its transmuxing worker) and the listing form's photo previews; data:
+		# is image placeholders. 'unsafe-inline' is Next's inline bootstrap and the theme script until a
+		# per-request nonce replaces it; a room playing an https playlist (contracts PlaylistUrl) needs that
+		# host in media-src, connect-src and img-src. `?` leaves a policy web sets itself in place.
+		?Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 		# No Strict-Transport-Security: the edge serves plain HTTP.
 		-Server
 		-X-Powered-By
 	}
 
 	# The path matcher compares the decoded, case-insensitive path, so /%5Finternal/... is caught as well.
-	@internal path /_internal /_internal/*
+	# /metrics is Prometheus's, on each service's own port inside the Compose network (§12): never the edge's.
+	@internal path /_internal /_internal/* /metrics /metrics/*
 	handle @internal {
 		respond 404
 	}

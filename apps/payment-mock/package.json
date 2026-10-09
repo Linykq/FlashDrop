@@ -12,6 +12,7 @@
     "@flashdrop/contracts": "workspace:*",
     "@flashdrop/db": "workspace:*",
     "@flashdrop/domain": "workspace:*",
+    "@prometheus-io/client": "catalog:",
     "fastify": "catalog:",
     "pg": "catalog:",
     "zod": "catalog:"

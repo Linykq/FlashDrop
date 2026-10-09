@@ -1,7 +1,7 @@
 /**
  * @packageDocumentation
  * Redis admission (design §4): the `flashdrop` Functions library and its typed calls, key builders, the
- * per-drop lock, `syncDropFromPostgres` (arm and rebuild under the generation fence, §4.7), `settleRedis`
+ * reservation orchestration (Lua admits, Postgres decides, §5.2), the per-drop lock, `syncDropFromPostgres` (arm and rebuild under the generation fence, §4.7), `settleRedis`
  * (§6.5), the helpers the sweeper and the reconciler build on, and the invariant checks of §1.1 across
  * Postgres, the PSP ledger and Redis that `verify:invariants` and the admin health page share (§12).
  */
@@ -17,6 +17,20 @@ export {
   type SubscriberOptions,
 } from './client';
 export { BULK_DEADLINE_MS, REDIS_DEADLINE_MS, RedisDeadlineError, withDeadline } from './deadline';
+export {
+  type DriftFindings,
+  type DriftObservation,
+  type DriftSample,
+  type DriftSource,
+  type DriftStreak,
+  type DriftVerdict,
+  driftSource,
+  observeDrift,
+  type PgDriftSide,
+  type RedisDriftRead,
+  type RedisDriftSide,
+  sampleDrift,
+} from './drift';
 export {
   assertDropLockHeld,
   DROP_LOCK_POOL_PROFILE,
@@ -105,6 +119,17 @@ export {
   type SettleReply,
   type SettleResult,
 } from './replies';
+export {
+  createReservationService,
+  createReservePorts,
+  type ReservationService,
+  type ReserveBreaker,
+  type Reserved,
+  type ReservedOrder,
+  type ReservePortDeps,
+  type ReservePorts,
+  type ReserveRequest,
+} from './reserve';
 export {
   type ApplyOutcome,
   applySettlement,

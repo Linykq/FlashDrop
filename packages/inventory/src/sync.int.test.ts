@@ -1,12 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import {
-  claimQuota,
-  type Db,
-  fenceRedisGeneration,
-  insertOrderOnConflictDoNothing,
-  takeStock,
-  transaction,
-} from '@flashdrop/db';
+import { type Db, fenceRedisGeneration, transaction } from '@flashdrop/db';
+import { claimQuota, insertOrderOnConflictDoNothing, takeStock } from '@flashdrop/db/testing';
 import { DomainError, RetryError } from '@flashdrop/domain';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { fdRelease, fdReserve, fdSetStatus } from './calls';

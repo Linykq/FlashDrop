@@ -1,6 +1,5 @@
 'use client';
 
-import type Hls from 'hls.js';
 import {
   Captions,
   CaptionsOff,
@@ -16,6 +15,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useEffectEvent,
@@ -26,9 +26,19 @@ import {
 import { preload } from 'react-dom';
 import { serverClockNow } from '../../lib/clock';
 import { cx } from '../../lib/cx';
-import { isBehindLive, livePosition, type StreamAssets, type StreamState } from '../../lib/stream';
+import { livePosition, type StreamAssets, type StreamState } from '../../lib/stream';
+import { useMediaQuery } from '../../lib/use-media-query';
 import { Button } from '../ui/button';
 import { IconButton } from '../ui/icon-button';
+import {
+  type ActiveCue,
+  useBehindLive,
+  useCueChange,
+  useFullscreen,
+  useHlsAttachment,
+  useIdleControls,
+  usePlayback,
+} from './player-hooks';
 
 export type PlayerProps = {
   stream: StreamAssets;
@@ -39,35 +49,23 @@ export type PlayerProps = {
   badges: ReactNode;
   /** The drop card, docked over the video while the player is fullscreen (design-system §9.12). */
   docked: ReactNode;
+  /** Captions on, the room's state (`useCaptionsPreference`), and its toggle. */
+  captions: boolean;
+  onToggleCaptions: () => void;
+  /** Each new cue as it starts: the product on screen and what is said (SD §8.1). */
+  onCue?: (cue: ActiveCue) => void;
   className?: string;
 };
 
-/** The controls fade after this long without the pointer moving, while playing (§10.3). */
-const IDLE_MS = 3_000;
-/** How often the player checks whether it fell behind the live point. */
-const BEHIND_CHECK_MS = 1_000;
-const CAPTIONS_KEY = 'fd-captions';
 /** Captions clear the capsules while they show: 16 px inset + 52 px capsule + 16 px gap (§10.3). */
 const CAPTIONS_ABOVE_CONTROLS_PX = 84;
 /** With the capsules hidden, captions keep their 16 px inset from the bottom edge. */
 const CAPTIONS_INSET_PX = 16;
-
-function storedCaptions(): boolean {
-  // Storage can throw (private mode, blocked site data): captions then start off, the default.
-  try {
-    return localStorage.getItem(CAPTIONS_KEY) === 'on';
-  } catch {
-    return false;
-  }
-}
-
-function storeCaptions(on: boolean): void {
-  try {
-    localStorage.setItem(CAPTIONS_KEY, on ? 'on' : 'off');
-  } catch {
-    // The choice holds for this page only.
-  }
-}
+/**
+ * Chrome's cue line as a share of the video's height: its captions are 5% of the height, at a line height of
+ * about 1.2. Chrome has no `lineAlign`, so `line` places a cue box's top, and the box's height is estimated.
+ */
+const CUE_LINE_SHARE = 0.06;
 
 type Shortcut = 'play' | 'mute' | 'captions' | 'fullscreen';
 
@@ -87,12 +85,6 @@ function shortcut(key: string): Shortcut | null {
       return null;
   }
 }
-
-/**
- * Chrome's cue line as a share of the video's height: its captions are 5% of the height, at a line height of
- * about 1.2. Chrome has no `lineAlign`, so `line` places a cue box's top, and the box's height is estimated.
- */
-const CUE_LINE_SHARE = 0.06;
 
 /**
  * Places every cue with its bottom edge `bottomPx` above the video's (the browser otherwise draws cues on the
@@ -121,31 +113,81 @@ function placeCues(track: TextTrack, height: number, bottomPx: number | null): v
   }
 }
 
-type WebkitVideo = HTMLVideoElement & { webkitEnterFullscreen(): void };
-
-/** iPhone Safari has no element fullscreen, only the video's own (§10.3). */
-function hasVideoFullscreen(video: HTMLVideoElement): video is WebkitVideo {
-  return typeof Reflect.get(video, 'webkitEnterFullscreen') === 'function';
+/**
+ * Captions sit above the capsules while they show, at the capsules' inset otherwise, and where the browser puts
+ * them in iPhone's own fullscreen. Cues load after the player mounts (the track's `load`), and the share of
+ * the height changes with the player's size, so both place them again.
+ */
+function useCuePlacement(
+  video: RefObject<HTMLVideoElement | null>,
+  track: RefObject<HTMLTrackElement | null>,
+  { controlsShown, captions }: { controlsShown: boolean; captions: boolean },
+): void {
+  // iPhone's own video fullscreen: its controls, not the page's, so captions go back to the browser's place.
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const placed = useRef('');
+  const place = useEffectEvent(() => {
+    const element = video.current;
+    const cues = element?.textTracks[0];
+    if (!element || !cues?.cues) return;
+    const bottom = nativeFullscreen ? null : controlsShown ? CAPTIONS_ABOVE_CONTROLS_PX : CAPTIONS_INSET_PX;
+    // Only when the place changed: adding a cue again redraws it.
+    const key = `${bottom}:${element.clientHeight}:${cues.cues.length}`;
+    if (placed.current === key) return;
+    placed.current = key;
+    placeCues(cues, element.clientHeight, bottom);
+  });
+  useEffect(() => {
+    place();
+  }, [controlsShown, nativeFullscreen, captions]);
+  useEffect(() => {
+    const element = video.current;
+    const trackElement = track.current;
+    if (!element || !trackElement) return;
+    const onPlace = () => place();
+    const begin = () => setNativeFullscreen(true);
+    const end = () => setNativeFullscreen(false);
+    trackElement.addEventListener('load', onPlace);
+    element.addEventListener('webkitbeginfullscreen', begin);
+    element.addEventListener('webkitendfullscreen', end);
+    const observer = new ResizeObserver(onPlace);
+    observer.observe(element);
+    return () => {
+      trackElement.removeEventListener('load', onPlace);
+      element.removeEventListener('webkitbeginfullscreen', begin);
+      element.removeEventListener('webkitendfullscreen', end);
+      observer.disconnect();
+    };
+  }, [video, track]);
 }
 
 /**
  * The live room's player (design-system §10.3, SD §8.1): hls.js, or the browser's own HLS where it has one
  * (Safari), playing the room's stream muted and inline, with the WebVTT captions track. The server renders it
- * whole, poster first (the page's largest paint, so it is preloaded); hls.js is imported only once the player
- * mounts, so it stays out of every first load (design-system §8.7, §14). The sample stream is a VOD loop, so
- * the player seeks to the point every viewer shares (`livePosition`) and offers "Live" when the viewer fell
- * behind it.
+ * whole, poster first (the page's largest paint, so it is preloaded). The sample stream is a VOD loop, so the
+ * player seeks to the point every viewer shares (`livePosition`) and offers "Live" when the viewer fell behind
+ * it. Under reduced motion it doesn't start by itself: the poster says "Press play to watch live" (§6.5).
  *
  * Two capsules of overlay buttons sit at the bottom corners and fade after 3 s without pointer movement
  * while playing, never while focus is inside the player; captions move up to clear them while they show.
  * Single-key shortcuts work only while the player itself has focus (WCAG 2.1.4): Space or K play and pause,
  * M mutes, C toggles captions, F fullscreen. They are exposed as `aria-keyshortcuts` and described, and the
  * player is a tab stop only while there is something to play. Controls that remove themselves when pressed
- * (the unmute pill, Live, Retry) hand focus to the player first, so it never falls to the page.
+ * (the unmute pill, Live, Retry, Play) hand focus to the player first, so it never falls to the page.
  * Before and after the drop the poster says the stream starts soon or has ended; a stream that can't play
  * says so with a Retry, and the drop card beside it keeps selling either way.
  */
-export function Player({ stream, state, serverNow, badges, docked, className }: PlayerProps) {
+export function Player({
+  stream,
+  state,
+  serverNow,
+  badges,
+  docked,
+  captions,
+  onToggleCaptions,
+  onCue,
+  className,
+}: PlayerProps) {
   preload(stream.poster, { as: 'image', fetchPriority: 'high' });
   const container = useRef<HTMLElement>(null);
   const video = useRef<HTMLVideoElement>(null);
@@ -155,151 +197,51 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
   const [fallbackOffset] = useState(() => serverNow - Date.now());
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
-  const [playing, setPlaying] = useState(false);
-  const [muted, setMuted] = useState(true);
   const [unmutedOnce, setUnmutedOnce] = useState(false);
-  const [captions, setCaptions] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
-  // iPhone's own video fullscreen: its controls, not the page's, so captions go back to the browser's place.
-  const [nativeFullscreen, setNativeFullscreen] = useState(false);
-  const [behind, setBehind] = useState(false);
-  // Shown when the player appears, so the controls are discovered, then idle like any other moment.
-  const [pointerActive, setPointerActive] = useState(true);
+  const [startedOnce, setStartedOnce] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
-  const idleTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const calm = useMediaQuery('(prefers-reduced-motion: reduce)');
   const live = state === 'live' && !failed;
+  const { playing, muted } = usePlayback(video);
+  const idle = useIdleControls();
+  const { fullscreen, toggle: toggleFullscreen } = useFullscreen(container, video);
+  const behind = useBehindLive(video, live, fallbackOffset);
+  useCueChange(video, (cue) => onCue?.(cue));
 
-  const goLive = useCallback(() => {
+  const seekToLive = useCallback(() => {
     const element = video.current;
-    if (!element || !Number.isFinite(element.duration)) return;
+    if (!element || !Number.isFinite(element.duration)) return null;
     element.currentTime = livePosition(serverClockNow(fallbackOffset), element.duration);
-    void element.play().catch(() => undefined);
+    return element;
   }, [fallbackOffset]);
+  const goLive = useCallback(() => {
+    void seekToLive()
+      ?.play()
+      .catch(() => undefined);
+  }, [seekToLive]);
 
-  // The source: attached while the drop is on air, detached otherwise, and again on Retry. Playback starts
-  // at the live point, which every viewer shares.
-  const onFatal = useEffectEvent(() => setFailed(true));
-  const onLoaded = useEffectEvent(() => goLive());
-  const livePoint = useEffectEvent((duration: number) =>
-    livePosition(serverClockNow(fallbackOffset), duration),
-  );
+  useHlsAttachment({
+    video,
+    src: stream.src,
+    enabled: state === 'live',
+    attempt,
+    onFatal: () => setFailed(true),
+    // Every viewer shares the live point. Muted autoplay starts there, unless reduced motion is asked for.
+    onLoaded: () => {
+      if (calm) seekToLive();
+      else goLive();
+    },
+    livePoint: (duration) => livePosition(serverClockNow(fallbackOffset), duration),
+  });
+
   useEffect(() => {
-    const element = video.current;
-    if (!element || state !== 'live') return;
-    const detach = () => {
-      element.removeAttribute('src');
-      element.load();
-    };
-
-    if (element.canPlayType('application/vnd.apple.mpegurl') !== '') {
-      // The browser's own HLS (Safari). One automatic retry, then the error state (§10.3).
-      const loaded = () => onLoaded();
-      element.addEventListener('loadedmetadata', loaded, { once: true });
-      let retried = false;
-      const onError = () => {
-        if (retried) {
-          onFatal();
-          return;
-        }
-        retried = true;
-        element.src = stream.src;
-        element.load();
-      };
-      element.addEventListener('error', onError);
-      element.src = stream.src;
-      return () => {
-        element.removeEventListener('loadedmetadata', loaded);
-        element.removeEventListener('error', onError);
-        detach();
-      };
-    }
-
-    let hls: Hls | undefined;
-    let cancelled = false;
-    import('hls.js').then(
-      ({ default: HlsPlayer }) => {
-        if (cancelled) return;
-        if (!HlsPlayer.isSupported()) {
-          onFatal();
-          return;
-        }
-        // hls.js retries network and media errors itself; a fatal one is what is left after its retries.
-        const player = new HlsPlayer({ capLevelToPlayerSize: true, autoStartLoad: false });
-        hls = player;
-        player.on(HlsPlayer.Events.ERROR, (_event, data) => {
-          if (data.fatal) onFatal();
-        });
-        // Loading starts once the playlist says how long the loop is, right at the live point: hls.js
-        // would otherwise start a VOD at 0 and overrule an earlier seek.
-        player.once(HlsPlayer.Events.LEVEL_LOADED, (_event, data) => {
-          player.startLoad(livePoint(data.details.totalduration));
-        });
-        player.loadSource(stream.src);
-        player.attachMedia(element);
-      },
-      // The chunk could not load (offline, or a deploy replaced it): Retry loads it again.
-      () => {
-        if (!cancelled) onFatal();
-      },
-    );
-    return () => {
-      cancelled = true;
-      hls?.destroy();
-      detach();
-    };
-  }, [stream.src, state, attempt]);
-
-  // The stored choice, read after hydration: the server can't know it, and the markup must match.
-  useEffect(() => {
-    setCaptions(storedCaptions());
-  }, []);
-
-  // Playback state from the element itself, whatever changed it (controls, keys, the OS, autoplay policy).
-  useEffect(() => {
-    const element = video.current;
-    if (!element) return;
-    const sync = () => {
-      setPlaying(!element.paused);
-      setMuted(element.muted);
-    };
-    const events = ['play', 'pause', 'volumechange', 'emptied'] as const;
-    for (const event of events) element.addEventListener(event, sync);
-    sync();
-    return () => {
-      for (const event of events) element.removeEventListener(event, sync);
-    };
-  }, []);
-
-  // Behind the live point: after a pause, or a stall. Checked once a second, while the stream is on air.
-  useEffect(() => {
-    if (!live) {
-      setBehind(false);
-      return;
-    }
-    const timer = setInterval(() => {
-      const element = video.current;
-      if (!element || !Number.isFinite(element.duration) || element.readyState === 0) return;
-      const point = livePosition(serverClockNow(fallbackOffset), element.duration);
-      setBehind(isBehindLive(element.currentTime, point, element.duration));
-    }, BEHIND_CHECK_MS);
-    return () => clearInterval(timer);
-  }, [live, fallbackOffset]);
+    if (playing) setStartedOnce(true);
+  }, [playing]);
 
   useEffect(() => {
     const track = video.current?.textTracks[0];
     if (track) track.mode = captions ? 'showing' : 'hidden';
   }, [captions]);
-
-  useEffect(() => {
-    const onChange = () => setFullscreen(document.fullscreenElement === container.current);
-    document.addEventListener('fullscreenchange', onChange);
-    return () => document.removeEventListener('fullscreenchange', onChange);
-  }, []);
-
-  useEffect(() => {
-    idleTimer.current = setTimeout(() => setPointerActive(false), IDLE_MS);
-    return () => clearTimeout(idleTimer.current);
-  }, []);
 
   const togglePlay = () => {
     const element = video.current;
@@ -313,38 +255,14 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
     element.muted = !element.muted;
     if (!element.muted) setUnmutedOnce(true);
   };
-  const toggleCaptions = () => {
-    setCaptions((on) => {
-      storeCaptions(!on);
-      return !on;
-    });
-  };
-  const toggleFullscreen = () => {
-    const element = container.current;
-    const media = video.current;
-    if (!element || !media) return;
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => undefined);
-    } else if (typeof element.requestFullscreen === 'function' && document.fullscreenEnabled) {
-      void element.requestFullscreen().catch(() => undefined);
-    } else if (hasVideoFullscreen(media)) {
-      media.webkitEnterFullscreen();
-    }
-  };
   const retry = () => {
     setFailed(false);
     setAttempt((count) => count + 1);
   };
-  // The unmute pill, Live and Retry leave once pressed: focus moves to the player first, if they had it, or
-  // it would fall to <body> (WCAG 2.4.3), and the capsules, still counting focus as inside, would never fade.
+  // The unmute pill, Live, Play and Retry leave once pressed: focus moves to the player first, if they had it,
+  // or it would fall to <body> (WCAG 2.4.3), and the capsules, still counting focus as inside, would never fade.
   const keepFocus = (event: MouseEvent<HTMLElement>) => {
     if (document.activeElement === event.currentTarget) container.current?.focus({ preventScroll: true });
-  };
-
-  const onPointerActivity = () => {
-    setPointerActive(true);
-    clearTimeout(idleTimer.current);
-    idleTimer.current = setTimeout(() => setPointerActive(false), IDLE_MS);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
@@ -354,49 +272,15 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
     const action = shortcut(event.key);
     if (action === null) return;
     event.preventDefault();
-    ({ play: togglePlay, mute: toggleMute, captions: toggleCaptions, fullscreen: toggleFullscreen })[
+    ({ play: togglePlay, mute: toggleMute, captions: onToggleCaptions, fullscreen: toggleFullscreen })[
       action
     ]();
   };
 
-  const controlsShown = live && (!playing || pointerActive || focusWithin);
+  const controlsShown = live && (!playing || idle.active || focusWithin);
+  useCuePlacement(video, captionTrack, { controlsShown, captions });
 
-  // Captions sit above the capsules while they show, at the capsules' inset otherwise. Cues load after the
-  // player mounts (the track's `load`), and the share of the height changes with the player's size.
-  const placed = useRef('');
-  const placeCaptions = useEffectEvent(() => {
-    const element = video.current;
-    const track = element?.textTracks[0];
-    if (!element || !track?.cues) return;
-    const bottom = nativeFullscreen ? null : controlsShown ? CAPTIONS_ABOVE_CONTROLS_PX : CAPTIONS_INSET_PX;
-    // Only when the place changed: adding a cue again redraws it.
-    const key = `${bottom}:${element.clientHeight}:${track.cues.length}`;
-    if (placed.current === key) return;
-    placed.current = key;
-    placeCues(track, element.clientHeight, bottom);
-  });
-  useEffect(() => {
-    placeCaptions();
-  }, [controlsShown, nativeFullscreen, captions]);
-  useEffect(() => {
-    const element = video.current;
-    const track = captionTrack.current;
-    if (!element || !track) return;
-    const place = () => placeCaptions();
-    const begin = () => setNativeFullscreen(true);
-    const end = () => setNativeFullscreen(false);
-    track.addEventListener('load', place);
-    element.addEventListener('webkitbeginfullscreen', begin);
-    element.addEventListener('webkitendfullscreen', end);
-    const observer = new ResizeObserver(place);
-    observer.observe(element);
-    return () => {
-      track.removeEventListener('load', place);
-      element.removeEventListener('webkitbeginfullscreen', begin);
-      element.removeEventListener('webkitendfullscreen', end);
-      observer.disconnect();
-    };
-  }, []);
+  const awaitingPlay = live && calm && !startedOnce;
   const message =
     state === 'upcoming'
       ? 'The stream starts soon.'
@@ -404,7 +288,9 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
         ? 'The stream has ended.'
         : failed
           ? "The stream can't play right now."
-          : null;
+          : awaitingPlay
+            ? 'Press play to watch live.'
+            : null;
 
   return (
     // The player takes focus for its single-key shortcuts, which work only while it has focus (WCAG 2.1.4),
@@ -419,8 +305,8 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
       // that leaves can hand focus to it, and a player that fails while focused keeps focus.
       tabIndex={live ? 0 : -1}
       onKeyDown={onKeyDown}
-      onPointerMove={onPointerActivity}
-      onPointerDown={onPointerActivity}
+      onPointerMove={idle.poke}
+      onPointerDown={idle.poke}
       onFocus={() => setFocusWithin(true)}
       onBlur={(event) => {
         const next = event.relatedTarget;
@@ -432,12 +318,12 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
         className,
       )}
     >
+      {/* Started from script once the stream is loaded (`onLoaded`), so reduced motion can keep it still. */}
       <video
         ref={video}
         poster={stream.poster}
         className="absolute inset-0 size-full object-cover in-[:fullscreen]:object-contain"
         muted
-        autoPlay
         playsInline
         loop
         preload="auto"
@@ -465,7 +351,9 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
           )}
         >
           <VolumeX size={16} className="max-sm:size-3.5" />
-          Tap to unmute
+          {/* "Tap" only where the pointer is a finger; CSS decides, so the server render needs no guess. */}
+          <span className="pointer-fine:hidden">Tap to unmute</span>
+          <span className="hidden pointer-fine:inline">Unmute</span>
         </button>
       )}
 
@@ -473,7 +361,7 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
         <div className="absolute inset-0 grid place-items-center p-4">
           <div className="material-overlay flex max-w-80 animate-fade-in flex-col items-center gap-3 rounded-lg px-5 py-4 text-center">
             <p className="inline-flex items-center gap-2 text-callout">
-              <VideoOff size={20} className="shrink-0" />
+              {!awaitingPlay && <VideoOff size={20} className="shrink-0" />}
               {message}
             </p>
             {failed && state === 'live' && (
@@ -485,6 +373,18 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
                 }}
               >
                 Retry
+              </Button>
+            )}
+            {awaitingPlay && (
+              <Button
+                size="md"
+                icon={Play}
+                onClick={(event) => {
+                  keepFocus(event);
+                  goLive();
+                }}
+              >
+                Play
               </Button>
             )}
           </div>
@@ -518,7 +418,7 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
             />
           </div>
           <div className="material-overlay flex items-center rounded-full p-1">
-            {behind && (
+            {behind && !awaitingPlay && (
               <button
                 type="button"
                 // The nav's "Live" link and the LIVE badge read the same; the name says what this one does,
@@ -541,7 +441,7 @@ export function Player({ stream, state, serverNow, badges, docked, className }: 
               pressed={captions}
               icon={captions ? Captions : CaptionsOff}
               largeIcon
-              onClick={toggleCaptions}
+              onClick={onToggleCaptions}
             />
             <IconButton
               variant="overlay"

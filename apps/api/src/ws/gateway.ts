@@ -29,6 +29,7 @@ import {
 } from '@flashdrop/inventory';
 import type { FastifyBaseLogger } from 'fastify';
 import { type RawData, WebSocket } from 'ws';
+import { countWsFrame, wsSocketClosed, wsSocketOpened } from '../metrics';
 import type { RoomReader } from '../services/rooms';
 import { canSubscribe, type Principal, principalLabel, viewerKey } from './access';
 import { createChannelRegistry, type PubSub } from './channels';
@@ -265,6 +266,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     if (conn.closed || conn.socket.readyState !== WebSocket.OPEN) return true;
     if (skippable && conn.socket.bufferedAmount > limits.skipAboveBytes) return false;
     conn.socket.send(json);
+    countWsFrame();
     conn.lastSentAt = now();
     return true;
   }
@@ -564,6 +566,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     if (conn.closed) return;
     conn.closed = true;
     conns.delete(conn);
+    wsSocketClosed();
     const open = (addresses.get(conn.client.address) ?? 1) - 1;
     if (open > 0) addresses.set(conn.client.address, open);
     else addresses.delete(conn.client.address);
@@ -595,6 +598,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       lastSentAt: t,
     };
     conns.add(conn);
+    // Paired with `detach`, which runs once per socket (`conn.closed`), so the gauge cannot drift.
+    wsSocketOpened();
     addresses.set(client.address, (addresses.get(client.address) ?? 0) + 1);
     socket.on('message', (data, isBinary) => onClientMessage(conn, data, isBinary));
     socket.on('pong', () => {

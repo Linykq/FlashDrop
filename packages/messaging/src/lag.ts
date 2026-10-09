@@ -1,5 +1,5 @@
 import type { KafkaJS } from '@confluentinc/kafka-javascript';
-import { TOPICS } from '@flashdrop/config';
+import { TOPICS, withTimeout } from '@flashdrop/config';
 import { compareOffsets } from './offsets';
 
 /*
@@ -49,6 +49,12 @@ function partitionLags(
       };
     })
     .sort((a, b) => a.partition - b.partition);
+}
+
+/** Records `topic` holds now, across its partitions: the sum of high minus low watermarks. */
+export async function countTopicRecords(admin: KafkaJS.Admin, topic: string): Promise<number> {
+  const watermarks = await admin.fetchTopicOffsets(topic);
+  return watermarks.reduce((sum, w) => sum + Number(BigInt(w.high) - BigInt(w.low)), 0);
 }
 
 /** One-shot tools and tests only (see the header). */
@@ -139,7 +145,8 @@ export function createGroupLagReader(
   }
 
   return {
-    read: (groupId) => withTimeout(read(groupId), timeoutMs, `Kafka did not answer within ${timeoutMs} ms`),
+    read: (groupId) =>
+      withTimeout(read(groupId), timeoutMs, () => new Error(`Kafka did not answer within ${timeoutMs} ms`)),
     async close() {
       const opened = [admin, ...consumers.values()].filter((lazy) => lazy.ready !== undefined);
       const disconnected = Promise.allSettled(
@@ -149,19 +156,9 @@ export function createGroupLagReader(
         }),
       );
       // A connect still waiting for an unreachable broker must not hold up the process's shutdown.
-      await withTimeout(disconnected, CLOSE_TIMEOUT_MS, 'lag reader close timed out').catch(() => undefined);
+      await withTimeout(disconnected, CLOSE_TIMEOUT_MS, () => new Error('lag reader close timed out')).catch(
+        () => undefined,
+      );
     },
   };
-}
-
-async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
 }

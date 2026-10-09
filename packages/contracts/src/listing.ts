@@ -343,6 +343,21 @@ export const ListingCall = z.object({
 });
 export type ListingCall = z.infer<typeof ListingCall>;
 
+/*
+ * The jsonb columns of `listing_jobs` that the worker writes and the api reads (design §3, §10). jsonb is a
+ * boundary: `packages/db` parses both with these schemas.
+ */
+
+/** `listing_jobs.issues`: what the review must fix, and why a job failed. */
+export const StoredListingIssues = z.object({
+  fields: z.array(ListingIssue),
+  failure: ListingFailure.nullable(),
+});
+export type StoredListingIssues = z.infer<typeof StoredListingIssues>;
+
+/** `listing_jobs.usage`: one entry per billed model call, in order. */
+export const StoredListingCalls = z.array(ListingCall);
+
 /** `GET /api/v1/admin/listings/:jobId`: everything the review page shows. */
 export const ListingJob = z.object({
   id: Uuid,

@@ -77,8 +77,8 @@ export const Product = ProductSummary.extend({
 export type Product = z.infer<typeof Product>;
 
 /**
- * The live status of a drop's stock. RECONCILING is transient (a Redis rebuild, §4.7; never produced
- * while stock is served from Postgres, before M2): clients keep showing their last state.
+ * The live status of a drop's stock. RECONCILING is transient (a Redis rebuild, §4.7): clients keep showing
+ * their last state.
  */
 export const StockStatus = z.enum([...PUBLIC_DROP_STATUSES, 'RECONCILING']);
 export type StockStatus = z.infer<typeof StockStatus>;

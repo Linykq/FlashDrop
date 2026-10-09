@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { enableRoleLogin, PSP_DB_ROLE } from './db-roles';
 import { pgErrorOf } from './errors';
-import { enablePspLogin, PSP_DB_ROLE } from './psp-role';
 import { createTestDatabase, type TestDatabase } from './test-database';
 
 /*
@@ -80,7 +80,7 @@ describe('the payment-mock role', () => {
   it('lets the migrate job enable LOGIN, with the password escaped', async () => {
     await client.query('BEGIN');
     try {
-      await enablePspLogin(client, `a-long-dev-password-with-a-quote'`);
+      await enableRoleLogin(client, PSP_DB_ROLE, `a-long-dev-password-with-a-quote'`);
       const { rows } = await client.query<{ login: boolean; password: boolean }>(
         `SELECT rolcanlogin AS login, rolpassword IS NOT NULL AS password FROM pg_authid WHERE rolname = $1`,
         [PSP_DB_ROLE],

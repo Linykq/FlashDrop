@@ -27,6 +27,7 @@ import { useUserEvents } from '../../lib/realtime/hooks';
 import { loginHref, ORDERS_HREF, orderPageHref } from '../../lib/routes';
 import { orderRequests, usePrefetchOrderRequests } from '../../lib/use-order-requests';
 import { useRefreshOnReturn } from '../../lib/use-refresh-on-return';
+import { OrderSummary } from '../checkout/order-summary';
 import { announce } from '../ui/announcer';
 import { ButtonLink } from '../ui/button';
 import { type StepState, Steps } from '../ui/steps';
@@ -163,17 +164,30 @@ export function OrderStatusView({ order, productHref }: OrderStatusViewProps) {
         <p className="mt-3 max-w-text text-body text-label-secondary">{copy.text}</p>
       </div>
       {copy.steps && (
-        <div className="mt-8 flex justify-center sm:block">
+        // Once paid, every step is done: on a phone the vertical list would only push the next step below the
+        // fold, so it shows from 735 px, where it is one row.
+        <div className={cx('mt-8 flex justify-center sm:block', copy.steps === 'paid' && 'max-sm:hidden')}>
           <Steps label="Order progress" steps={progress(copy.steps)} />
         </div>
       )}
-      <div className="mt-8">
+      <div className="mt-8 flex flex-col gap-4 sm:gap-6">
+        <OrderSummary order={order} productHref={productHref} />
         <OrderDetails order={order} />
       </div>
       {copy.action && (
-        <div className="mt-8 flex justify-center">
-          {copy.action.kind === 'drops' || copy.action.kind === 'orders' ? (
-            <ButtonLink href={copy.action.kind === 'drops' ? '/' : ORDERS_HREF} variant="plain">
+        <div className="mt-8 flex flex-wrap justify-center gap-3">
+          {copy.action.kind === 'drops' ? (
+            // Paid: the next step is more shopping, filled; the order list is the quiet way back to this one.
+            <>
+              <ButtonLink href="/" size="lg">
+                {copy.action.label}
+              </ButtonLink>
+              <ButtonLink href={ORDERS_HREF} variant="plain" size="lg">
+                Your orders
+              </ButtonLink>
+            </>
+          ) : copy.action.kind === 'orders' ? (
+            <ButtonLink href={ORDERS_HREF} variant="plain">
               {copy.action.label}
             </ButtonLink>
           ) : (

@@ -21,6 +21,8 @@ type ProductTileProps = {
   stock: StockState;
   startsAt: string;
   serverNow: number;
+  /** The photo's `sizes`, for a grid other than the standard three columns. */
+  sizes?: string;
 };
 
 /**
@@ -37,6 +39,7 @@ export function ProductTile({
   stock,
   startsAt,
   serverNow,
+  sizes = TILE_SIZES,
 }: ProductTileProps) {
   const view = describeStock(stock);
   // Tiles say "Ended" where the purchase panel says "Drop ended": the tile is the drop.
@@ -54,7 +57,7 @@ export function ProductTile({
           'group-has-[a:focus-visible]:outline-3 group-has-[a:focus-visible]:outline-focus group-has-[a:focus-visible]:outline-offset-2',
         )}
       >
-        {image && <Image src={image} alt="" fill sizes={TILE_SIZES} className="object-cover" />}
+        {image && <Image src={image} alt="" fill sizes={sizes} className="object-cover" />}
         {stock.status === 'LIVE' && (
           <div className="absolute top-3 left-3">
             <LiveBadge size="sm" />

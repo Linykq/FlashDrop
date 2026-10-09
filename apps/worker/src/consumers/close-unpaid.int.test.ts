@@ -2,7 +2,7 @@ import { eq, getOrder, payments, pspClosures, sweeperQuarantine } from '@flashdr
 import { dispatchOrderEvent, type OrderEventHandlers } from '@flashdrop/messaging';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { expireOrders } from '../sweeper/expire-orders';
-import { type FakePsp, startFakePsp } from '../test/fake-psp';
+import { FAKE_PSP_API_KEY, type FakePsp, startFakePsp } from '../test/fake-psp';
 import {
   alertsNamed,
   armDrop,
@@ -33,7 +33,7 @@ let deps: CloseUnpaidDeps;
 beforeAll(async () => {
   env = await createWorkerTestEnv();
   psp = await startFakePsp();
-  const client = createPspClient({ baseUrl: psp.url, timeoutMs: 500 });
+  const client = createPspClient({ baseUrl: psp.url, apiKey: FAKE_PSP_API_KEY, timeoutMs: 500 });
   payment = paymentHandlers({ db: env.db, redis: env.redis, psp: client });
   deps = { db: env.db, psp: client, logger: env.deps.logger };
 });

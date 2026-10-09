@@ -10,7 +10,6 @@ import {
   migrateDatabase,
   POOL_PROFILES,
   products,
-  recordReservation,
   sql,
   submitCheckout,
   systemState,
@@ -20,11 +19,14 @@ import type { DropStatus } from '@flashdrop/domain';
 import { requestFingerprint, reservationId } from '@flashdrop/domain/identity';
 import {
   connectCommandClient,
+  createReservationService,
+  createReservePorts,
   createSyncNudger,
   DROP_LOCK_POOL_PROFILE,
   dropKeys,
   type FlashdropRedis,
   fdReserve,
+  type ReservationService,
   readLiveRedisIdentity,
   readStoredRedisIdentity,
   syncDropFromPostgres,
@@ -176,20 +178,28 @@ export async function armDrop(env: WorkerTestEnv, dropId: string): Promise<void>
   if (outcome.kind !== 'REBUILT') throw new Error(`arming ${dropId} answered ${outcome.kind}`);
 }
 
-/** A reservation as the API makes it (§5.2): `fd_reserve`, then the Postgres transaction under its gen. */
+/**
+ * The api's own reservation service (`@flashdrop/inventory`, §5.2) over this file's Postgres and the tests'
+ * Redis: Lua admits, Postgres decides, and a Postgres refusal is tombstoned, alerted and nudged exactly as
+ * the api does it. Its breaker never opens: these tests break Postgres on purpose only where they say so.
+ */
+export function apiReservations(env: WorkerTestEnv): ReservationService {
+  const breaker = { healthy: () => true, run: <T>(call: () => Promise<T>) => call() };
+  return createReservationService(
+    createReservePorts({ db: env.db, redis: env.redis, breaker, nudger: env.deps.nudger }),
+    () => new Date(),
+  );
+}
+
+/** A new reservation as the api makes it; throws its refusal. Returns the order id (the rid). */
 export async function reserve(env: WorkerTestEnv, dropId: string, userId: string, qty = 1): Promise<string> {
-  const hold = await admit(env, dropId, userId, qty);
-  const outcome = await recordReservation(env.db, {
-    id: hold.rid,
-    userId,
-    dropId,
-    qty,
-    idempotencyKey: hold.idempotencyKey,
-    requestHash: requestFingerprint({ dropId, qty }),
-    gen: hold.gen,
-  });
-  if (outcome.kind !== 'created') throw new Error(`recordReservation answered ${JSON.stringify(outcome)}`);
-  return hold.rid;
+  const idempotencyKey = `key_${randomUUID().replaceAll('-', '')}`;
+  const { replayed, order } = await apiReservations(env).reserve(
+    { userId, dropId, idempotencyKey, qty, traceId: randomUUID() },
+    env.deps.logger,
+  );
+  if (replayed) throw new Error(`a fresh key replayed order ${order.id}`);
+  return order.id;
 }
 
 /** Only the Redis half of a reservation: what an API that crashed after Lua leaves behind (an orphan). */

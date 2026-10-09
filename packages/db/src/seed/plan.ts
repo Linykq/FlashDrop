@@ -85,10 +85,16 @@ interface DropSpec {
 const floorTo = (time: number, unit: number) => Math.floor(time / unit) * unit;
 const ceilTo = (time: number, unit: number) => Math.ceil(time / unit) * unit;
 
+/*
+ * The studio room sells the LIVE drop and carries the next two, so it has a rundown ("up next") and pins the
+ * next one when the live drop ends. The LIVE product is the store's most-seen image (home hero, room card,
+ * product gallery), so it is one whose photos are full-product shots on a seamless ground (design system
+ * §11.2). The ended drop stays out of the room: its history would only push the rundown down.
+ */
 const DROP_SPECS: readonly DropSpec[] = [
   {
     n: 1,
-    slug: 'sage-wireless-headphones',
+    slug: 'faceted-eau-de-parfum',
     status: 'LIVE',
     total: 250,
     perUserLimit: 2,
@@ -97,11 +103,11 @@ const DROP_SPECS: readonly DropSpec[] = [
   },
   {
     n: 2,
-    slug: 'faceted-eau-de-parfum',
+    slug: 'sage-wireless-headphones',
     status: 'SCHEDULED',
     total: 300,
     perUserLimit: 2,
-    inRoom: false,
+    inRoom: true,
     // One to two hours out: the UI counts down (under 24 h).
     window: (now) => ({ startsAt: ceilTo(now, HOUR) + HOUR, endsAt: ceilTo(now, HOUR) + 2 * HOUR }),
   },
@@ -111,7 +117,7 @@ const DROP_SPECS: readonly DropSpec[] = [
     status: 'SCHEDULED',
     total: 150,
     perUserLimit: 3,
-    inRoom: false,
+    inRoom: true,
     // At least 24 hours out: the UI shows the date instead of a countdown.
     window: (now) => ({ startsAt: ceilTo(now, HOUR) + 24 * HOUR, endsAt: ceilTo(now, HOUR) + 25 * HOUR }),
   },

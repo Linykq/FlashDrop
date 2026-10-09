@@ -1,7 +1,7 @@
 import type { OrderStatus, PaymentMethod } from '@flashdrop/contracts';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { choosePhotos, dashboardOf, settledListingJob, signInAdmin, uploadListing } from './support/admin';
-import { expectNoBlockingViolations, MODES, modeTitle } from './support/axe';
+import { expectNoBlockingViolations, MODES, modeTitle, settle } from './support/axe';
 import {
   fastForwardHold,
   firstOrderRead,
@@ -30,8 +30,62 @@ import {
  * `reducedMotion: 'reduce'`, which turns the motion off rather than waiting it out. The live room's scans
  * need the stream to play, so they run in Google Chrome (live-room-a11y.spec.ts). The theme follows
  * `prefers-color-scheme` unless a stored override exists, and a fresh context has none. Pages that show
- * stock or a hold use the spec's own drop (support/fixtures.ts); home and sign-in show the seed.
+ * stock or a hold use the spec's own drop (support/fixtures.ts); home and sign-in show the seed. Then the
+ * phone layouts in both themes, the admin tables at a narrow desktop width, and forced colours.
  */
+
+/**
+ * A short phone (iPhone SE): a test product has no highlights or details, so on a taller screen its page is
+ * short enough that the buy row stays in view and the sticky buy bar rightly never shows.
+ */
+const PHONE = { width: 375, height: 667 } as const;
+
+/** A seeded product with three photos, so its gallery has thumbnails to tell apart (assets/catalog). */
+const GALLERY_PRODUCT = 'amber-jar-candle';
+
+/**
+ * Tables wider than the card that clips them, by caption: a table must fit its card or scroll sideways in a
+ * region of its own (design-system §9.22). Judged on the layout boxes, so a column cut off at the card's edge
+ * counts even though nothing overflows the page.
+ */
+function clippedTables(page: Page): Promise<string[]> {
+  return page.locator('table').evaluateAll((tables) =>
+    tables.flatMap((table) => {
+      const caption = table.querySelector('caption')?.textContent ?? 'a table without a caption';
+      for (let node = table.parentElement; node !== null; node = node.parentElement) {
+        const { overflowX } = getComputedStyle(node);
+        if (overflowX === 'auto' || overflowX === 'scroll') return [];
+        if (overflowX === 'hidden' || overflowX === 'clip') {
+          return table.scrollWidth > node.clientWidth + 1 ? [caption] : [];
+        }
+      }
+      return table.getBoundingClientRect().right > document.documentElement.clientWidth + 1 ? [caption] : [];
+    }),
+  );
+}
+
+/**
+ * What still marks an element in forced colours, which repaint every colour, background and shadow with the
+ * system's: borders and outlines by width and style, text decoration and weight, and the system colours used.
+ */
+function forcedLook(locator: Locator): Promise<string> {
+  return locator.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const sides = ['top', 'right', 'bottom', 'left'].map((side) =>
+      ['width', 'style', 'color'].map((part) => style.getPropertyValue(`border-${side}-${part}`)),
+    );
+    return JSON.stringify([
+      style.color,
+      style.backgroundColor,
+      sides,
+      style.outlineStyle,
+      style.outlineWidth,
+      style.outlineColor,
+      style.textDecorationLine,
+      style.fontWeight,
+    ]);
+  });
+}
 
 /** A placed order of the spec's buyer, waited on until the payment consumer decided it. */
 async function decidedOrder(
@@ -287,8 +341,83 @@ for (const mode of MODES) {
   });
 }
 
+for (const mode of MODES.filter(({ reducedMotion }) => reducedMotion === 'no-preference')) {
+  test.describe(`phone, ${modeTitle(mode)}`, () => {
+    test.use({ ...mode, viewport: PHONE });
+
+    test('product page with its sticky buy bar has no serious or critical axe violations', async ({
+      page,
+      drop,
+    }, testInfo) => {
+      await page.goto(`/p/${drop.productSlug}`);
+      // The row out of view: the bar takes over (design-system §10.2).
+      await page.getByRole('contentinfo').scrollIntoViewIfNeeded();
+      await expect(page.locator('[data-bottom-bar]')).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+    });
+
+    test('checkout holding has no serious or critical axe violations', async ({
+      page,
+      drop,
+      buyer: _,
+      baseURL,
+    }, testInfo) => {
+      const order = await reserveViaApi(page.request, baseURL, drop.id);
+      await page.goto(`/checkout/${order.id}`);
+      await expect(page.getByRole('region', { name: 'Reserved for you' })).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+    });
+
+    test('admin drops, its table scrolling sideways, has no serious or critical axe violations', async ({
+      page,
+      context,
+      baseURL,
+    }, testInfo) => {
+      await signInAdmin(context, baseURL);
+      await page.goto('/admin/drops');
+      await expect(page.locator('table').first()).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+    });
+  });
+}
+
+// From 735 px the tables stop scrolling in their own region (data-table.tsx), so a narrow desktop is where
+// a column would be cut off at the card's edge.
+test.describe('admin tables at 1024 px', () => {
+  test.use({ viewport: { width: 1024, height: 768 } });
+
+  test('fit their card or scroll in a region of their own', async ({ page, context, drop: _, baseURL }) => {
+    await signInAdmin(context, baseURL);
+    for (const path of ['/admin/drops', '/admin/health']) {
+      await page.goto(path);
+      await expect(page.locator('table').first()).toBeVisible();
+      await settle(page);
+      expect(await clippedTables(page), `tables cut off on ${path}`).toEqual([]);
+    }
+  });
+});
+
 test.describe('forced colours', () => {
   test.use({ forcedColors: 'active' });
+
+  // A ring (a box-shadow) or a brighter colour marks the current item otherwise, and forced colours remove
+  // both: the current thumbnail and the current page's link need a mark that survives (WCAG 1.4.1).
+  test("the gallery's current thumbnail stays told apart from the others", async ({ page }) => {
+    await page.goto(`/p/${GALLERY_PRODUCT}`);
+    const thumbnails = page.getByRole('button', { name: /^Show photo \d+ of \d+$/ });
+    await expect(thumbnails.first()).toHaveAttribute('aria-current', 'true');
+    expect(await forcedLook(thumbnails.first())).not.toBe(await forcedLook(thumbnails.nth(1)));
+  });
+
+  test("the bar's current page link stays told apart from the others", async ({ page, context, baseURL }) => {
+    // Signed in as the admin, the bar's Admin link sits beside the current Drops link, in the same style.
+    await signInAdmin(context, baseURL);
+    await page.goto('/');
+    const bar = page.getByRole('banner');
+    const current = bar.getByRole('link', { name: 'Drops', exact: true });
+    await expect(current).toHaveAttribute('aria-current', 'page');
+    expect(await forcedLook(current)).not.toBe(await forcedLook(bar.getByRole('link', { name: 'Admin' })));
+  });
 
   // Disabled controls use aria-disabled, which the browser doesn't map to GrayText, and forced colours
   // replace the tertiary label that otherwise marks them (design-system §13.1).

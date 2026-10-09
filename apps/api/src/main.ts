@@ -1,20 +1,18 @@
 import { hostname } from 'node:os';
-import { createLogger } from '@flashdrop/config';
+import { closeAll, createLogger, installGracefulShutdown, logUncaughtExceptions } from '@flashdrop/config';
 import { createPool, POOL_PROFILES } from '@flashdrop/db';
 import { connectCommandClient, DROP_LOCK_POOL_PROFILE } from '@flashdrop/inventory';
 import { createKafka } from '@flashdrop/messaging';
 import { buildApp } from './app';
 import { loadApiEnv } from './env';
+import { collectProcessMetrics } from './metrics';
 import { wireServices } from './wiring';
-
-/** Below Compose's 10 s stop grace period, so a stuck shutdown still exits with our own log line. */
-const SHUTDOWN_TIMEOUT_MS = 8_000;
 
 const env = loadApiEnv();
 const logger = createLogger({ name: 'api', level: env.LOG_LEVEL });
 
-// Logged synchronously before Node prints the crash, so it reaches the JSON logs with context.
-process.on('uncaughtExceptionMonitor', (err, origin) => logger.fatal({ err, origin }, 'uncaught exception'));
+logUncaughtExceptions(logger);
+collectProcessMetrics();
 
 const pool = createPool({
   connectionString: env.DATABASE_URL,
@@ -52,6 +50,9 @@ const app = await buildApp({
   roles: env.API_ROLES,
   allowedOrigins: env.WS_ALLOWED_ORIGINS,
   sessionSecret: env.SESSION_SECRET,
+  cookieSecure: env.COOKIE_SECURE,
+  devLogin: env.ENABLE_DEV_LOGIN,
+  trustProxy: env.TRUST_PROXY,
   uploadDir: env.UPLOAD_DIR,
   services,
   realtime: { ...realtime, maxSocketsPerAddress: env.WS_MAX_SOCKETS_PER_IP },
@@ -63,43 +64,33 @@ const app = await buildApp({
 });
 // After the server has stopped and in-flight requests have finished, so none loses its connection.
 app.addHook('onClose', async () => {
-  await Promise.allSettled([
-    pool.end(),
-    lockPool.end(),
-    adminPool.end(),
-    redis.close(),
-    services.adminHealth.close(),
-  ]);
+  const closed = await closeAll(logger, {
+    pool: () => pool.end(),
+    lockPool: () => lockPool.end(),
+    adminPool: () => adminPool.end(),
+    redis: () => redis.close(),
+    adminHealth: () => services.adminHealth.close(),
+  });
+  if (!closed) process.exitCode = 1;
 });
 
-let closing = false;
-async function shutdown(signal: NodeJS.Signals): Promise<void> {
-  if (closing) return;
-  closing = true;
-  logger.info({ signal }, 'shutting down');
-  const timer = setTimeout(() => {
-    logger.error({ timeoutMs: SHUTDOWN_TIMEOUT_MS }, 'shutdown timed out');
-    process.exit(1);
-  }, SHUTDOWN_TIMEOUT_MS);
-  timer.unref();
-  try {
-    // Stops accepting connections, answers 503 on kept-alive ones, waits for in-flight requests.
-    await app.close();
-  } catch (err) {
-    logger.error({ err }, 'shutdown failed');
-    process.exitCode = 1;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-process.once('SIGTERM', (signal) => void shutdown(signal));
-process.once('SIGINT', (signal) => void shutdown(signal));
+// Stops accepting connections, answers 503 on kept-alive ones, waits for in-flight requests, then onClose.
+const shutdown = installGracefulShutdown({ logger, close: () => app.close() });
 
 try {
   await app.listen({ host: env.HOST, port: env.PORT });
-  logger.info({ roles: env.API_ROLES, testRoutes: env.ENABLE_TEST_ROUTES }, 'api ready');
+  if (env.ENABLE_DEV_LOGIN) {
+    logger.warn(
+      { allowedOrigins: env.WS_ALLOWED_ORIGINS },
+      'dev login is on: anyone who reaches this api can sign in as any seeded account, the admin included',
+    );
+  }
+  logger.info(
+    { roles: env.API_ROLES, testRoutes: env.ENABLE_TEST_ROUTES, devLogin: env.ENABLE_DEV_LOGIN },
+    'api ready',
+  );
 } catch (err) {
   logger.fatal({ err }, 'api failed to start');
   process.exitCode = 1;
-  await app.close();
+  await shutdown('startup failed');
 }

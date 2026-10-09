@@ -13,11 +13,14 @@
  *                                            buyers firing together, then 300 reserves/s for 20 s
  *   pnpm load:burst -e PROFILE=laptop        1,000 units, 10,000 buyers, 2,000 reserves/s for 30 s
  *   pnpm load:burst -e PROFILE=nightly       300 units, 3,000 buyers; the opening spike, then 600/s for 30 s
- *   pnpm demo:burst                          PROFILE=demo: 2,000 reserves, 500 in flight at a time, from
- *                                            300 buyers on 100 units; then `verify:invariants`
+ *   pnpm demo:burst                          PROFILE=demo, opening 20 s after setup: 2,000 reserves, 500 in
+ *                                            flight at a time, from 300 buyers on 100 units; then
+ *                                            `verify:invariants`
  *   pnpm load:burst -e PROFILE=demo -e DECLINE_SHARE=0.3 && pnpm verify:invariants
  *                                            the M4 demo: 30% of checkouts declined, and their stock comes back
  *   ... -e MODE=reserve-only                 (M2) reserves only: every hold is abandoned
+ *   ... -e OPEN_DELAY_S=20                   the drop opens 20 s after setup (SCHEDULED until then), so its
+ *                                            dashboard, whose URL the run prints first, is open before the sale
  *
  * The opening spike is what makes the run contended: an arrival rate alone spaces requests a few ms apart,
  * and at a few ms per reserve that sells the stock almost one request at a time.
@@ -47,6 +50,7 @@ import {
   reserveCopies,
   type Stock,
 } from './lib/api.ts';
+import { intEnv, ORIGIN } from './lib/config.ts';
 import { uuidv7 } from './lib/ids.ts';
 import { count, ms, type SummaryData, stat, summaryOutputs } from './lib/summary.ts';
 import {
@@ -188,6 +192,11 @@ if (!(DECLINE_SHARE >= 0 && DECLINE_SHARE <= 1)) throw new Error('DECLINE_SHARE 
 const PAYMENT_DEADLINE_SECONDS = 60;
 /** The drop stays open long enough for a slow setup; it is a fresh, isolated drop either way. */
 const DROP_SECONDS = 600;
+/**
+ * Seconds from setup to the drop's opening (design §9's dashboard, watched live): the run prints where to
+ * watch, and nothing reserves before the drop opens.
+ */
+const OPEN_DELAY_SECONDS = intEnv('OPEN_DELAY_S', 0);
 /** Every opening VU waits for this moment after setup, so they fire together rather than as VUs start. */
 const BARRIER_MS = 1_000;
 /** A VU that fires within this long of the shared instant counts as on time. */
@@ -211,7 +220,12 @@ const MAX_LOGGED = 5;
 const MAX_ATTEMPTS = 5;
 
 const opening = profile.opening;
-const burstStartSeconds = opening === undefined ? 0 : OPENING_SECONDS;
+/**
+ * From the start of the scenarios, which follows setup, to the drop's opening, plus a second, so that no
+ * reserve reaches Lua before the drop's `startsAt` (Lua refuses a drop that has not opened yet).
+ */
+const leadSeconds = OPEN_DELAY_SECONDS > 0 ? OPEN_DELAY_SECONDS + 1 : 0;
+const burstStartSeconds = leadSeconds + (opening === undefined ? 0 : OPENING_SECONDS);
 /** From the first reserve to the last new one; retries may run `GRACEFUL_STOP_SECONDS` longer. */
 const loadSeconds = burstStartSeconds + profile.load.seconds;
 
@@ -301,7 +315,7 @@ export const options = {
             exec: 'openingBuyer',
             vus: opening.vus,
             iterations: opening.iterations,
-            maxDuration: `${OPENING_SECONDS + profile.load.seconds}s`,
+            maxDuration: `${leadSeconds + OPENING_SECONDS + profile.load.seconds}s`,
             gracefulStop,
           },
         }),
@@ -319,6 +333,7 @@ export const options = {
           }
         : {
             executor: 'shared-iterations',
+            startTime: `${burstStartSeconds}s`,
             vus: profile.vus,
             iterations: profile.load.requests,
             maxDuration: `${profile.load.seconds}s`,
@@ -339,20 +354,27 @@ interface BurstData {
 
 export function setup(): BurstData {
   const tokens = mintSessions(profile.buyers).map((session) => session.token);
+  const opensAt = Date.now() + OPEN_DELAY_SECONDS * 1_000;
   const drop = createTestDrop({
     stock: profile.units,
     perUserLimit: profile.perUserLimit,
     holdSeconds: profile.holdSeconds,
     durationSeconds: DROP_SECONDS,
+    ...(OPEN_DELAY_SECONDS > 0 ? { startsAt: new Date(opensAt).toISOString() } : {}),
   });
   const stock = readStock(drop.dropId);
   if (stock.avail !== profile.units || (stock.status !== 'LIVE' && stock.status !== 'SCHEDULED')) {
     throw new Error(`drop ${drop.dropId} is not open after arming: ${JSON.stringify(stock)}`);
   }
   console.log(
-    `burst: drop ${drop.dropId} (/p/${drop.productSlug}), ${profile.units} units, ${tokens.length} buyers`,
+    `burst: drop ${drop.dropId}, ${profile.units} units, ${tokens.length} buyers` +
+      (OPEN_DELAY_SECONDS > 0 ? `, opening in ${OPEN_DELAY_SECONDS} s` : ''),
   );
-  return { dropId: drop.dropId, tokens, fireAt: Date.now() + (opening === undefined ? 0 : BARRIER_MS) };
+  // Test drops are left out of the admin's drop list, so the run names its pages itself.
+  console.log(`burst: product page ${ORIGIN}/p/${drop.productSlug}`);
+  console.log(`burst: live dashboard ${ORIGIN}/admin/dashboard/${drop.dropId} (signed in as an admin)`);
+  const firstReserve = OPEN_DELAY_SECONDS > 0 ? opensAt : Date.now();
+  return { dropId: drop.dropId, tokens, fireAt: firstReserve + (opening === undefined ? 0 : BARRIER_MS) };
 }
 
 /** One buyer's intent: a session, a key and a body. Every send of it is the same request. */

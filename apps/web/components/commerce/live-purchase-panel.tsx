@@ -1,7 +1,8 @@
 'use client';
 
-import type { HeldOrder } from '../../lib/hold';
+import type { ViewerClaim } from '../../lib/hold';
 import { type LiveLevel, useLiveStock } from '../../lib/live-stock';
+import type { NextDrop } from '../../lib/purchase';
 import { useStockAnnouncements } from '../../lib/use-stock-announcements';
 import { PurchasePanel } from './purchase-panel';
 import { StockText } from './stock-text';
@@ -18,7 +19,8 @@ type LivePurchasePanelProps = {
   currency: string;
   signedIn: boolean;
   returnTo: string;
-  heldOrder: HeldOrder | null;
+  claim: ViewerClaim;
+  next: NextDrop | null;
 };
 
 /**
@@ -26,7 +28,7 @@ type LivePurchasePanelProps = {
  * meter and the Buy button follow Redis while the page is open, and the Buy button re-enables by itself when
  * held units come back. The visible block is not a live region; threshold crossings are announced instead.
  */
-export function LivePurchasePanel({ dropId, seed, ...panel }: LivePurchasePanelProps) {
+export function LivePurchasePanel({ dropId, seed, startsAt, ...rest }: LivePurchasePanelProps) {
   const { level, paused, quiet } = useLiveStock(dropId, seed);
   useStockAnnouncements(level, paused, quiet);
   return (
@@ -34,11 +36,11 @@ export function LivePurchasePanel({ dropId, seed, ...panel }: LivePurchasePanelP
       <StockText
         className="mt-6"
         stock={level}
-        startsAt={panel.startsAt}
-        serverNow={panel.serverNow}
+        startsAt={startsAt}
+        serverNow={rest.serverNow}
         paused={paused}
       />
-      <PurchasePanel dropId={dropId} stock={level} {...panel} />
+      <PurchasePanel dropId={dropId} stock={level} {...rest} />
     </>
   );
 }

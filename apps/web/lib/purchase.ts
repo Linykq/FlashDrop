@@ -1,3 +1,4 @@
+import type { HeldOrder, ViewerClaim } from './hold';
 import type { StockState } from './stock';
 
 /**
@@ -37,3 +38,27 @@ export function buyAction(stock: StockState, signedIn: boolean): BuyAction {
 export function maxQuantity(stock: StockState, perUserLimit: number): number {
   return Math.max(1, Math.min(perUserLimit, stock.avail));
 }
+
+/**
+ * What the purchase row leads with for this viewer (design-system §9.13), from what they already have of the
+ * drop. Any live hold leads to its checkout: paying for it is the next step while its clock runs, so "Go to
+ * checkout" is the filled action and reserving more is secondary, with `room` units left under the limit.
+ * A buyer whose placed orders take the whole limit, or whom api just refused at the limit, is told they have
+ * their units: a Buy there could only be refused.
+ */
+export type PurchaseRow =
+  | { kind: 'checkout'; held: HeldOrder; room: number }
+  | { kind: 'have-limit'; lastPlacedId: string | null }
+  | { kind: 'buy'; room: number };
+
+export function purchaseRow(claim: ViewerClaim, perUserLimit: number, refusedAtLimit: boolean): PurchaseRow {
+  const { held, placedQty, lastPlacedId } = claim;
+  if (held) return { kind: 'checkout', held, room: Math.max(0, perUserLimit - placedQty - held.qty) };
+  if (refusedAtLimit || placedQty >= perUserLimit) return { kind: 'have-limit', lastPlacedId };
+  return { kind: 'buy', room: perUserLimit - placedQty };
+}
+
+/** Where a sold-out drop sends the buyer next: another drop's page, or the list of upcoming ones (§9.13). */
+export type NextDrop = { title: string; href: string };
+
+export const UPCOMING_HREF = '/#upcoming';

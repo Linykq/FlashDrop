@@ -33,14 +33,17 @@ export function minutePace(count: number, previous: number, elapsedMs: number): 
 
 /**
  * Units sold per minute, with the minutes that sold nothing filled in as 0, from the first minute with an event
- * to `until` (now, while the drop runs; the last event otherwise). The series only holds minutes with events.
- * While the drop runs, the minute `until` falls in is still counting: it is marked `partial` and carries its
- * `pace` (`minutePace`), which the chart plots in its place.
+ * to `until` (now, while the drop runs, but never past its end; the last event otherwise). The series only
+ * holds minutes with events. While the drop runs, the minute `until` falls in is still counting: it is marked
+ * `partial` and carries its `pace` (`minutePace`), which the chart plots in its place. The pace never exceeds
+ * what the drop had left when the minute began (`total`): 6 s into a burst on a 100-unit drop, a pace of 360
+ * would set the axis to 400 for a drop that can only ever sell 100.
  */
 export function unitsPerMinute(
   series: readonly SalesMinute[],
   until: number | null,
   label: (minute: string) => string,
+  total = Number.POSITIVE_INFINITY,
 ): UnitsSpec {
   const first = series[0];
   const last = series.at(-1);
@@ -52,11 +55,18 @@ export function unitsPerMinute(
   const end = Math.max(Date.parse(last.minute), current ?? 0);
   const start = Math.max(Date.parse(first.minute), end - (MAX_POINTS - 1) * MINUTE_MS);
   const points: UnitsSpec['points'][number][] = [];
+  const soldBefore = (at: number) =>
+    series.reduce((sum, minute) => (Date.parse(minute.minute) < at ? sum + minute.unitsSold : sum), 0);
   for (let at = start; at <= end; at += MINUTE_MS) {
     const minute = new Date(at).toISOString();
     const value = sold.get(at) ?? 0;
     const pace =
-      until !== null && at === current ? minutePace(value, sold.get(at - MINUTE_MS) ?? 0, until - at) : null;
+      until !== null && at === current
+        ? Math.max(
+            value,
+            Math.min(minutePace(value, sold.get(at - MINUTE_MS) ?? 0, until - at), total - soldBefore(at)),
+          )
+        : null;
     points.push({ minute, label: label(minute), value, partial: pace !== null, pace });
   }
   return {
@@ -131,6 +141,10 @@ export function unsoldTile(
   const start = Date.parse(drop.startsAt);
   const minutes = (ms: number) =>
     formatShortDuration(ms < MINUTE_MS ? ms / 1000 : Math.floor(ms / MINUTE_MS) * 60);
+  // Cancelled before its start: it never sold, so "Ran for" would be a lie and "Not open" a promise.
+  if (drop.status === 'ENDED' && at < start) {
+    return { label: 'Opened', value: 'Never', sub: `Ended before its start · ${left}` };
+  }
   if (drop.status === 'DRAFT' || drop.status === 'SCHEDULED' || at < start) {
     return { label: 'Time to sell-out', value: 'Not open', sub: left };
   }

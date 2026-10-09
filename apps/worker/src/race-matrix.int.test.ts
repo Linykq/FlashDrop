@@ -19,7 +19,7 @@ import { paymentHandlers } from './consumers/payment';
 import { createPspClient } from './consumers/psp-client';
 import { expireOrders } from './sweeper/expire-orders';
 import { createOrphanScan } from './sweeper/orphan-scan';
-import { type FakePsp, startFakePsp } from './test/fake-psp';
+import { FAKE_PSP_API_KEY, type FakePsp, startFakePsp } from './test/fake-psp';
 import {
   ageHold,
   armDrop,
@@ -59,7 +59,11 @@ let payment: OrderEventHandlers;
 beforeAll(async () => {
   env = await createWorkerTestEnv();
   psp = await startFakePsp();
-  payment = paymentHandlers({ db: env.db, redis: env.redis, psp: createPspClient({ baseUrl: psp.url }) });
+  payment = paymentHandlers({
+    db: env.db,
+    redis: env.redis,
+    psp: createPspClient({ baseUrl: psp.url, apiKey: FAKE_PSP_API_KEY }),
+  });
 });
 
 afterAll(async () => {
@@ -188,7 +192,7 @@ describe('duplicate order.placed in one batch', () => {
       psp.beforeCharge(() => sleep(300));
       runner = await startConsumer(
         'payment',
-        { ...env.deps, psp: createPspClient({ baseUrl: psp.url }) },
+        { ...env.deps, psp: createPspClient({ baseUrl: psp.url, apiKey: FAKE_PSP_API_KEY }) },
         { kafka, dlq: publisher, topic, dlqTopic, groupId },
       );
 

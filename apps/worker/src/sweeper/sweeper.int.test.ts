@@ -293,6 +293,12 @@ describe('orphan-scan', () => {
     expect(await env.redis.zScore(dropKeys(dropId).exp, rid)).toBeNull();
     expect((await readStock(env.redis, dropId))?.gen).toBe(2);
     await expectRedisMatchesPostgres(dropId);
+    // Counted and logged as the orphan scan's own trigger, apart from the drift checks' `leak` (§12).
+    expect(
+      env.logs
+        .filter((line) => line.msg === 'drop rebuilt' && line.dropId === dropId)
+        .map((line) => line.reason),
+    ).toEqual(['stuck_hold']);
   });
 
   // Regression (E4): a session that outlived its user took a hold whose tombstone the user foreign key

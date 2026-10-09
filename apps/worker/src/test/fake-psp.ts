@@ -22,6 +22,9 @@ import { REFERENCE_CLOSED_DECLINE_CODE } from '@flashdrop/domain';
  * The ledger is the evidence: tests count a reference's charges and what is still captured.
  */
 
+/** The fake's API key: like payment-mock, it answers 401 to any call without it. */
+export const FAKE_PSP_API_KEY = 'fake-psp-api-key-at-least-32-chars';
+
 export interface FakeCharge {
   readonly id: string;
   readonly idempotencyKey: string;
@@ -162,6 +165,8 @@ export async function startFakePsp(): Promise<FakePsp> {
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const body = await readBody(request);
+    if (request.headers.authorization !== `Bearer ${FAKE_PSP_API_KEY}`)
+      throw new HttpError(401, 'no API key');
     if (failures > 0) {
       failures--;
       throw new HttpError(503, 'simulated outage, nothing recorded');

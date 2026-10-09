@@ -2,9 +2,10 @@
 #
 #   pnpm infra:up    data stores, then the one-shot kafka-init (`up --wait` does not wait for one-shot jobs)
 #   pnpm infra:down  stops the stack; named volumes keep the data
-#   pnpm stack:up    builds the images (docker-bake.hcl), then the full stack on http://127.0.0.1:8080
+#   pnpm stack:up    the secrets into .env, the images (docker-bake.hcl), then the stack on http://127.0.0.1:8080
 #   pnpm stack:down  removes the application containers; the data stores keep running
-#   docker compose --profile tools up -d kafka-ui    Kafka UI on http://127.0.0.1:8081
+#   docker compose --profile tools up -d kafka-ui    Kafka UI on http://127.0.0.1:8081 (admin, KAFKA_UI_PASSWORD)
+#   docker compose --profile tools up -d prometheus grafana    Grafana on http://127.0.0.1:3001
 #
 # compose.ci.yaml holds CI's overrides; compose.isolated.yaml adds a second stack on other host ports, for
 # the system tests, which stop and pause services others on the machine use.
@@ -17,8 +18,24 @@
 # two built here. The application services run under the "app" profile and depend on `kafka-init` and
 # `migrate` with `condition: service_completed_successfully`, because `up --wait` treats a running one-shot
 # job as ready.
+#
+# Secrets have no defaults here: this repo is public, so a default would let anyone sign an admin session
+# for any stack started with it. `pnpm stack:up` and `pnpm infra:up` first run tools/ensure-env.ts, which
+# writes random ones to .env (git-ignored), and Compose interpolates them from there; a value set in the
+# shell wins. Without them every `docker compose` command stops with the message below.
 
 name: flashdrop
+
+# One required value per secret, referenced by every service that shares it.
+x-secrets:
+  session: &session-secret ${SESSION_SECRET:?pnpm stack:up and pnpm infra:up write it to .env (tools/ensure-env.ts)}
+  revalidate: &revalidate-secret ${REVALIDATE_SECRET:?pnpm stack:up and pnpm infra:up write it to .env (tools/ensure-env.ts)}
+  test-routes: &test-routes-secret ${TEST_ROUTES_SECRET:?pnpm stack:up and pnpm infra:up write it to .env (tools/ensure-env.ts)}
+  psp-db: &psp-db-password ${PSP_DB_PASSWORD:?pnpm stack:up and pnpm infra:up write it to .env (tools/ensure-env.ts)}
+  app-db: &app-db-password ${APP_DB_PASSWORD:?pnpm stack:up and pnpm infra:up write it to .env (tools/ensure-env.ts)}
+  psp-api-key: &psp-api-key ${PSP_API_KEY:?pnpm stack:up and pnpm infra:up write it to .env (tools/ensure-env.ts)}
+  kafka-ui: &kafka-ui-password ${KAFKA_UI_PASSWORD:?pnpm stack:up and pnpm infra:up write it to .env (tools/ensure-env.ts)}
+  grafana: &grafana-admin-password ${GRAFANA_ADMIN_PASSWORD:?pnpm stack:up and pnpm infra:up write it to .env (tools/ensure-env.ts)}
 
 # Shared by the application services built from this repo (profile: app).
 x-app-service: &app-service
@@ -38,10 +55,12 @@ x-app-service: &app-service
   restart: unless-stopped
 
 # Inside the Compose network: service names and the containers' ports, not the host's 127.0.0.1:5433.
+# api and the workers connect as the application role flashdrop_app (migration 0013), which reads and
+# writes FlashDrop's tables and nothing more; only the migrate job connects as the owner (see migrate).
 x-app-env: &app-env
   NODE_ENV: production
   LOG_LEVEL: ${LOG_LEVEL:-info}
-  DATABASE_URL: postgres://flashdrop:flashdrop@postgres:5432/flashdrop
+  DATABASE_URL: postgres://flashdrop_app:${APP_DB_PASSWORD:?pnpm stack:up writes it to .env}@postgres:5432/flashdrop
   REDIS_URL: redis://redis:6379
   KAFKA_BROKERS: kafka:19092
   UPLOAD_DIR: /data/uploads
@@ -176,11 +195,78 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: flashdrop
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+      # Read-only, behind a login (admin, KAFKA_UI_PASSWORD from .env). The UI checks no Host header, so open
+      # and writable, any local process or a DNS-rebinding page could produce to orders.v1, delete topics or
+      # reset a group's offsets. Browsing the events, the demo's use, needs neither.
+      KAFKA_CLUSTERS_0_READONLY: 'true'
+      AUTH_TYPE: LOGIN_FORM
+      SPRING_SECURITY_USER_NAME: admin
+      SPRING_SECURITY_USER_PASSWORD: *kafka-ui-password
     depends_on:
       kafka:
         condition: service_healthy
     healthcheck:
       test: [CMD, wget, --quiet, --spider, http://127.0.0.1:8080/actuator/health]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  # Prometheus scrapes every app service's /metrics over the default network (design §12; those ports are
+  # never published, and Caddy answers /metrics with 404), and Grafana opens on the provisioned FlashDrop
+  # dashboard (infra/grafana). Grafana sits on `monitoring` alone, with Prometheus: nothing it is talked into
+  # requesting can reach payment-mock, web's internal routes or the data stores. Start them beside a stack:
+  #   docker compose --profile tools up -d prometheus grafana
+  #   Prometheus http://127.0.0.1:9090, Grafana http://127.0.0.1:3001 (anonymous viewer)
+  prometheus:
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    profiles: [tools]
+    networks: [default, monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # A few demos' worth of history, so the volume stays small.
+      - --storage.tsdb.retention.time=2d
+    ports:
+      - 127.0.0.1:9090:9090
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: [CMD, wget, --quiet, --spider, http://127.0.0.1:9090/-/ready]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  grafana:
+    image: grafana/grafana:13.2.3-slim@sha256:7c2b05e94eb43e2b88aa814d7a1c9421affc7f3593a951148177f29feaff6017
+    profiles: [tools]
+    networks: [monitoring]
+    ports:
+      - 127.0.0.1:3001:3000
+    environment:
+      # Bound to 127.0.0.1 and read-only: the provisioned dashboard needs no login. Its state is the files
+      # under infra/grafana, so the container keeps none worth a volume.
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # And no login at all, so nobody gets past Viewer: an admin could add a datasource that sends requests
+      # with any headers it likes. The password only replaces the image's admin/admin.
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
+      GF_AUTH_BASIC_ENABLED: 'false'
+      GF_SECURITY_ADMIN_PASSWORD: *grafana-admin-password
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/flashdrop.json
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+      GF_NEWS_NEWS_FEED_ENABLED: 'false'
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, --quiet, --spider, http://127.0.0.1:3000/api/health]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -204,7 +290,10 @@ services:
       BASE_URL: http://caddy:8080
       # api's CSRF guard admits only WS_ALLOWED_ORIGINS on mutating requests (§11).
       ORIGIN: http://127.0.0.1:8080
-      TEST_SECRET: ${TEST_ROUTES_SECRET:-dev-only-test-routes-secret}
+      # The api's own value (shell, else .env), which the scripts send as x-test-secret.
+      TEST_SECRET: *test-routes-secret
+      # payment-mock's key, for the scripts that read the PSP's own charge book (idempotency-storm).
+      PSP_API_KEY: *psp-api-key
       RESULTS_DIR: /results
       K6_NO_USAGE_REPORT: 'true'
     volumes:
@@ -227,9 +316,13 @@ services:
         && exec node tools/dist/seed.js --catalog-dir /app/assets/catalog
     environment:
       <<: *app-env
+      # The owner, which applies the migrations and seeds; no other service gets it.
+      DATABASE_URL: postgres://flashdrop:flashdrop@postgres:5432/flashdrop
       # Lets payment-mock's role log in with this password (migration 0007 creates it without LOGIN); the
       # same value is in payment-mock's PSP_DATABASE_URL below.
-      PSP_DB_PASSWORD: ${PSP_DB_PASSWORD:-dev-only-psp-db-password}
+      PSP_DB_PASSWORD: *psp-db-password
+      # Likewise for the application role (migration 0013), which x-app-env's DATABASE_URL logs in as.
+      APP_DB_PASSWORD: *app-db-password
     volumes:
       - uploads:/data/uploads
     depends_on:
@@ -252,18 +345,25 @@ services:
       HOST: 0.0.0.0
       PORT: '4000'
       API_ROLES: http,ws
-      SESSION_SECRET: ${SESSION_SECRET:-dev-only-session-secret-not-for-production}
+      SESSION_SECRET: *session-secret
       WS_ALLOWED_ORIGINS: http://127.0.0.1:8080
-      # `ENABLE_TEST_ROUTES=true pnpm stack:up` mounts /api/v1/test/* for Playwright and k6 (§13).
+      # The passwordless dev login of the local demo (§11): /login and the E2E admin sessions use it. The api
+      # refuses it beside any allowed origin that is not loopback, and WS_ALLOWED_ORIGINS is the edge's alone.
+      # TRUST_PROXY stays at its default (loopback), so the api takes Caddy for the client: on this
+      # loopback-only stack every client is this machine anyway (§11).
+      ENABLE_DEV_LOGIN: ${ENABLE_DEV_LOGIN:-true}
+      # `ENABLE_TEST_ROUTES=true pnpm stack:up` mounts /api/v1/test/* for Playwright and k6 (§13); every
+      # call must carry this stack's own TEST_ROUTES_SECRET, which the Playwright fixtures and the system
+      # tests read from .env like Compose (tools/env-file.ts), and the k6 service gets below.
       ENABLE_TEST_ROUTES: ${ENABLE_TEST_ROUTES:-false}
-      TEST_ROUTES_SECRET: ${TEST_ROUTES_SECRET:-dev-only-test-routes-secret}
+      TEST_ROUTES_SECRET: *test-routes-secret
       # Reserve rate limits (§11). k6 sends everything from one IP through Caddy, so a load run raises both:
       # `RATE_LIMIT_IP_PER_SEC=100000 RATE_LIMIT_USER_PER_SEC=1000` (compose.ci.yaml does the same).
       RATE_LIMIT_IP_PER_SEC: ${RATE_LIMIT_IP_PER_SEC:-100}
       RATE_LIMIT_USER_PER_SEC: ${RATE_LIMIT_USER_PER_SEC:-10}
       # Approving a listing asks web to revalidate the product's cache tag (§8.1, §10).
       WEB_INTERNAL_URL: http://web:3000
-      REVALIDATE_SECRET: ${REVALIDATE_SECRET:-dev-only-revalidate-secret-not-for-production}
+      REVALIDATE_SECRET: *revalidate-secret
     networks:
       default:
         # `api` resolves to both instances, for web's server-side calls (API_INTERNAL_URL).
@@ -296,9 +396,12 @@ services:
     environment:
       <<: *app-env
       WORKER_ROLES: relay,sweeper,reconciler
+      # /health and /metrics (apps/worker/src/health.ts) on the Compose network, for Prometheus (§12). The
+      # port is never published, so they stay off the host and the edge.
+      HEALTH_HOST: 0.0.0.0
       # The drop scheduler asks web to revalidate its cached drop list on every status transition (§4.6, §8.1).
       WEB_INTERNAL_URL: http://web:3000
-      REVALIDATE_SECRET: ${REVALIDATE_SECRET:-dev-only-revalidate-secret-not-for-production}
+      REVALIDATE_SECRET: *revalidate-secret
     depends_on:
       # The seed has armed the drops the loops will look after.
       migrate:
@@ -330,6 +433,7 @@ services:
     environment:
       <<: *app-env
       WORKER_ROLES: listing
+      HEALTH_HOST: 0.0.0.0
       LLM_PROVIDER: ${LLM_PROVIDER:-fixture}
       LISTING_MODEL: ${LISTING_MODEL:-claude-sonnet-5-5}
       LISTING_EFFORT: ${LISTING_EFFORT:-low}
@@ -360,7 +464,11 @@ services:
     environment:
       <<: *app-env
       WORKER_ROLES: payment,settlement
+      HEALTH_HOST: 0.0.0.0
       PAYMENT_MOCK_URL: http://payment-mock:4100
+      # Only this service may charge and refund (§6.5): payment-mock refuses /v1/* without the key, and no
+      # other service is given it. `pnpm dlq:replay` runs as a one-off of this service, so it has it too.
+      PSP_API_KEY: *psp-api-key
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -388,6 +496,7 @@ services:
     environment:
       <<: *app-env
       WORKER_ROLES: dashboard
+      HEALTH_HOST: 0.0.0.0
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -414,7 +523,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       HOST: 0.0.0.0
       PORT: '4100'
-      PSP_DATABASE_URL: postgres://flashdrop_psp:${PSP_DB_PASSWORD:-dev-only-psp-db-password}@postgres:5432/flashdrop
+      PSP_DATABASE_URL: postgres://flashdrop_psp:${PSP_DB_PASSWORD:?pnpm stack:up writes it to .env}@postgres:5432/flashdrop
+      # Every /v1/* call must carry `Authorization: Bearer <key>`; the consumers service holds the same key.
+      PSP_API_KEY: *psp-api-key
       PSP_LATENCY_MS: ${PSP_LATENCY_MS:-100-800}
       PSP_ERROR_RATE: ${PSP_ERROR_RATE:-0.02}
       PSP_TIMEOUT_AFTER_SUCCESS_RATE: ${PSP_TIMEOUT_AFTER_SUCCESS_RATE:-0.01}
@@ -432,8 +543,8 @@ services:
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       API_INTERNAL_URL: http://api:4000
-      SESSION_SECRET: ${SESSION_SECRET:-dev-only-session-secret-not-for-production}
-      REVALIDATE_SECRET: ${REVALIDATE_SECRET:-dev-only-revalidate-secret-not-for-production}
+      SESSION_SECRET: *session-secret
+      REVALIDATE_SECRET: *revalidate-secret
     healthcheck:
       <<: *app-healthcheck
       # A route prerendered at build time, so it shows that the Next server routes requests without calling
@@ -447,8 +558,11 @@ services:
     restart: unless-stopped
     ports:
       - 127.0.0.1:8080:8080
+    # The directory, not the file: an editor that saves by replacing the file leaves a file mount on the old
+    # copy. Caddy reads it only at start or on `caddy reload`, which `pnpm stack:up` runs last, so an edit
+    # takes effect with the next stack:up even when Compose keeps this container.
     volumes:
-      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./infra/caddy:/etc/caddy:ro
     depends_on:
       web:
         condition: service_healthy
@@ -461,9 +575,14 @@ services:
       # The admin API answers once the config, and with it the :8080 listener, is loaded.
       test: [CMD, wget, --quiet, --output-document=/dev/null, http://127.0.0.1:2019/config/]
 
+networks:
+  # Grafana's only network, shared with Prometheus (see grafana).
+  monitoring:
+
 volumes:
   postgres-data:
   redis-data:
   kafka-data:
   # Listing photos: written by api, read by the listing service (§10).
   uploads:
+  prometheus-data:

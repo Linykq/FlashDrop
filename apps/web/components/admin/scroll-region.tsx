@@ -7,7 +7,8 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
  * and charts are exempt from reflow (WCAG 1.4.10), so they scroll instead. Only while it actually overflows
  * is it a named region in the tab order, so a keyboard user can scroll it with the arrow keys (axe
  * `scrollable-region-focusable`) and hears what it is when focus lands on it. When everything fits it is a
- * plain box: no pointless tab stop, and no second landmark repeating the heading the table sits under.
+ * plain box: no pointless tab stop, and no second landmark repeating the heading the table sits under. It also
+ * says so in `data-overflows`, for styles that only apply while it does (a table that must scroll).
  */
 export function ScrollRegion({
   labelledBy,
@@ -39,6 +40,7 @@ export function ScrollRegion({
       role={overflows ? 'region' : undefined}
       aria-labelledby={overflows ? labelledBy : undefined}
       tabIndex={overflows ? 0 : undefined}
+      data-overflows={overflows || undefined}
       className={className}
     >
       {children}

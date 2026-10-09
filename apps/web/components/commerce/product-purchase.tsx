@@ -5,10 +5,10 @@ import { unstable_rethrow } from 'next/navigation';
 import { productJsonLd, serializeJsonLd } from '../../lib/json-ld';
 import type { LiveLevel } from '../../lib/live-stock';
 import { liveRoomHref, productHref } from '../../lib/routes';
-import { getStock } from '../../lib/server/catalog';
+import { getNextDrop, getStock } from '../../lib/server/catalog';
 import { log } from '../../lib/server/log';
-import { readHeldOrder } from '../../lib/server/orders';
-import { requestOrigin } from '../../lib/server/request';
+import { readViewerClaim } from '../../lib/server/orders';
+import { publicOrigin } from '../../lib/server/origin';
 import { getViewer } from '../../lib/server/session';
 import { describeStock, type StockState, toLiveSeed } from '../../lib/stock';
 import { Skeleton, SkeletonText } from '../ui/skeleton';
@@ -17,10 +17,10 @@ import { LivePurchasePanel } from './live-purchase-panel';
 
 /*
  * The request-time parts of the product page (SD §8.1): they read the uncached stock snapshot, so the raw
- * HTML carries the current number, and the session, for the Buy button and the buyer's live hold on the drop.
- * Each sits in its own <Suspense>
- * hole inside the cached product shell; `getStock` is memoised per request, so they share one api read.
- * The snapshot seeds the drop's live stock store, which both islands then follow (SD §8.2).
+ * HTML carries the current number, and the session, for the Buy button and what the buyer already has of the
+ * drop. Each sits in its own <Suspense> hole inside the cached product shell; `getStock` is memoised per
+ * request, so they share one api read. The snapshot seeds the drop's live stock store, which both islands
+ * then follow (SD §8.2).
  */
 
 /** The snapshot, or `null` when api cannot answer; the product shell around it still renders. */
@@ -64,7 +64,11 @@ type LivePurchaseProps = { product: Product; drop: DropInfo };
  */
 export async function LivePurchase({ product, drop }: LivePurchaseProps) {
   const viewer = await getViewer();
-  const [read, heldOrder] = await Promise.all([readStock(drop), readHeldOrder(viewer, drop.id)]);
+  const [read, claim, next] = await Promise.all([
+    readStock(drop),
+    readViewerClaim(viewer, drop.id),
+    getNextDrop(drop.id, drop.room?.slug ?? null),
+  ]);
   if (!read) {
     return (
       <div className="mt-6">
@@ -92,7 +96,8 @@ export async function LivePurchase({ product, drop }: LivePurchaseProps) {
         currency={drop.currency}
         signedIn={viewer !== null}
         returnTo={href}
-        heldOrder={heldOrder}
+        claim={claim}
+        next={next}
       />
       {watchHref && (
         <Link
@@ -114,9 +119,9 @@ type ProductJsonLdProps = {
   offer: { drop: DropInfo; stock: StockState } | null;
 };
 
-/** schema.org `Product`, with its `Offer` when the page shows one (SD §8.1). Absolute URLs from the request. */
+/** schema.org `Product`, with its `Offer` when the page shows one (SD §8.1). Absolute against the public origin. */
 export async function ProductJsonLd({ product, offer }: ProductJsonLdProps) {
-  const origin = await requestOrigin();
+  const origin = await publicOrigin();
   const data = productJsonLd({
     product,
     drop: offer?.drop ?? null,

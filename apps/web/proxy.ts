@@ -1,6 +1,7 @@
 import { SESSION_COOKIE } from '@flashdrop/config/constants';
 import { type NextRequest, NextResponse } from 'next/server';
 import { loginHref } from './lib/routes';
+import { checkOrder } from './lib/server/order-check';
 import { productExists, roomExists } from './lib/server/product-check';
 import { verifySession } from './lib/server/session';
 
@@ -12,8 +13,9 @@ import { verifySession } from './lib/server/session';
  * - Unknown products and live rooms get a real 404 (design-system §10.0). The pages keep their own notFound()
  *   as the fallback for a check that couldn't reach api.
  * - The buyer's own pages (checkout, orders) send a visitor without a session cookie to sign in, with a real
- *   redirect, and back afterwards (§10.0 "Signed out"). Only the cookie's presence is checked here; an expired
- *   session is caught by the page itself, when api answers 401.
+ *   redirect, and back afterwards (§10.0 "Signed out"). An order or checkout URL is also asked of api with the
+ *   buyer's session: an unknown order, or another buyer's, gets a real 404 and the not-found page's title
+ *   (WCAG 2.4.2), and a session api no longer accepts signs in. When api can't answer, the page decides.
  * - Admin pages admit only an admin's session (SD §8.1, §11), verified here with the key api signs it with.
  *   A visitor without a valid session signs in first; a signed-in buyer gets the 404 any unknown URL gets, so
  *   the area doesn't announce itself. api checks the role again on every admin read and write.
@@ -55,5 +57,10 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     if (viewer === null) return signIn(request);
     return viewer.role === 'admin' ? NextResponse.next() : notFound(request);
   }
-  return token ? NextResponse.next() : signIn(request);
+  if (!token) return signIn(request);
+  const orderId = /^\/(?:checkout|orders)\/([^/]+)$/.exec(pathname)?.[1];
+  if (orderId === undefined) return NextResponse.next();
+  const order = await checkOrder(orderId, token);
+  if (order === 'signed-out') return signIn(request);
+  return order === 'found' ? NextResponse.next() : notFound(request);
 }

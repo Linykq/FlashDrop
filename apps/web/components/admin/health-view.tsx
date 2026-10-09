@@ -9,10 +9,12 @@ import { ChevronRight, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { useServerTime } from '../../lib/clock';
+import { cx } from '../../lib/cx';
 import { formatCount, plural, shortId } from '../../lib/format';
 import { useMediaQuery } from '../../lib/use-media-query';
 import { Banner } from '../ui/banner';
 import { Button } from '../ui/button';
+import { CopyText } from '../ui/copy-id';
 import { Skeleton, SkeletonText } from '../ui/skeleton';
 import { DropStatusPill, StatusPill } from '../ui/status-pill';
 import { ShortDateTime } from './admin-time';
@@ -20,6 +22,7 @@ import { DataTable, Td, Th } from './data-table';
 import { formatLagSeconds, formatShortDuration } from './format';
 import {
   countHealth,
+  DLQ_REPLAY_COMMAND,
   deadLetterLine,
   driftHealth,
   EMPTY_LAG,
@@ -111,7 +114,15 @@ export function HealthView({
       <PageHeader
         title="Health"
         actions={
-          <Button variant="plain" size="sm" aria-pressed={paused} onClick={() => setPaused(!paused)}>
+          // Wrapped under the title on a phone, the plain button's padding would inset its label from the
+          // page margin the title and tiles share; the margin takes it back, as CopyId does its icon's.
+          <Button
+            variant="plain"
+            size="sm"
+            aria-pressed={paused}
+            onClick={() => setPaused(!paused)}
+            className="max-sm:-ml-3"
+          >
             Pause updates
           </Button>
         }
@@ -353,9 +364,11 @@ function Tiles({ polled, pipeline }: { polled: Polled; pipeline: readonly Pipeli
         />
         <StatTile
           {...tile('dead-letters')}
+          // Letters waiting bring a command to the tile: on a phone it takes the row, so the command can be read.
+          className={cx('scroll-mt-24', (data.events.deadLetters ?? 0) > 0 && 'max-sm:col-span-2')}
           label="Dead letters"
           value={data.events.deadLetters === null ? '—' : formatCount(data.events.deadLetters)}
-          sub={deadLetterLine(data.events.deadLettersRetained)}
+          sub={<DeadLetterSub waiting={data.events.deadLetters} retained={data.events.deadLettersRetained} />}
         />
         <StatTile
           {...tile('quarantine')}
@@ -453,7 +466,7 @@ function TrackedDrops({
                   <Td last className="whitespace-nowrap">
                     <Link
                       href={`/admin/dashboard/${drop.dropId}`}
-                      className="inline-flex items-center gap-1 text-accent-label"
+                      className="inline-flex min-h-6 items-center gap-1 text-accent-label"
                     >
                       Dashboard
                       {/* Every row's link reads "Dashboard": its drop is part of its name (WCAG 2.4.4). */}
@@ -492,5 +505,30 @@ export function HealthSkeleton() {
         <Skeleton className="mt-4 h-150 rounded-lg" />
       </div>
     </div>
+  );
+}
+
+/**
+ * Under the dead-letter count: what is retained, and while any wait, the next step. Letters are replayed by an
+ * operator, never by the page (SD §12): the runbook's command, dry run first, with a copy button.
+ */
+function DeadLetterSub({ waiting, retained }: { waiting: number | null; retained: number | null }) {
+  return (
+    <>
+      {deadLetterLine(retained)}
+      {waiting !== null && waiting > 0 && (
+        <span className="mt-1 flex items-center gap-2">
+          <span>
+            Replay with <code className="whitespace-nowrap font-mono">{DLQ_REPLAY_COMMAND}</code> first
+          </span>
+          <CopyText
+            text={DLQ_REPLAY_COMMAND}
+            label="Copy the replay command"
+            done="Command copied."
+            failed="Couldn't copy the command."
+          />
+        </span>
+      )}
+    </>
   );
 }

@@ -1,3 +1,5 @@
+import { withTimeout } from '@flashdrop/config';
+
 /*
  * Application deadlines on Redis calls (design §4.2). node-redis 6 stops applying a command's own timeout
  * once the command is written, and a frozen Redis or a blackholed network keeps the socket open until TCP
@@ -23,17 +25,5 @@ export class RedisDeadlineError extends Error {
 
 /** Runs `call` and rejects with `RedisDeadlineError` if it has not settled within `ms`. */
 export async function withDeadline<T>(name: string, ms: number, call: () => Promise<T>): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new RedisDeadlineError(`redis ${name} got no answer within ${ms} ms`)),
-      ms,
-    );
-  });
-  try {
-    // Promise.race subscribes to both, so a call that settles after the deadline is never unhandled.
-    return await Promise.race([call(), deadline]);
-  } finally {
-    clearTimeout(timer);
-  }
+  return withTimeout(call(), ms, () => new RedisDeadlineError(`redis ${name} got no answer within ${ms} ms`));
 }

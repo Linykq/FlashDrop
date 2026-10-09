@@ -6,6 +6,7 @@ import {
 } from '@flashdrop/contracts';
 import type { APIRequestContext, Browser, Page } from '@playwright/test';
 import { expect, orderOf, reserveViaApi, signInNewBuyer, stockOf, test } from './support/fixtures';
+import { expectFocusOnPage } from './support/keyboard';
 
 /*
  * Reserving from the product page (design §4.5, §5.2, §8.2; design-system §9.13, §10.4): Buy holds a unit
@@ -86,7 +87,10 @@ async function listenToAnnouncer(page: Page): Promise<() => Promise<string[]>> {
   return () => page.evaluate(() => (window as unknown as { spoken: string[] }).spoken);
 }
 
-/** Longer than the stock announcements' 3 s cooldown, so one that was held back would have been said. */
+/**
+ * Longer than the stock announcements' 3 s cooldown, so one that was held back would have been said. Run on
+ * `page.clock`, installed before the page loads, rather than waited out.
+ */
 const COOLDOWN_PASSED_MS = 3_500;
 
 test('Buy holds a unit and checkout counts the hold down', async ({ page, drop, buyer: _ }) => {
@@ -155,6 +159,31 @@ test.describe('with a limit of 1', () => {
   });
 });
 
+test.describe('a hold that ends on the product page', () => {
+  // The shortest hold there is, left to run out on the page (real time: the page corrects its clock against
+  // the server's on every order read, which would take back a jump of page.clock).
+  test.use({ dropSettings: { perUserLimit: 1, holdSeconds: 10 } });
+
+  test('takes "Go to checkout" with it and leaves focus on the page, not on <body>', async ({
+    page,
+    drop,
+    buyer: _,
+    baseURL,
+  }) => {
+    await reserveViaApi(page.request, baseURL, drop.id);
+    await page.goto(`/p/${drop.productSlug}`);
+    const main = page.getByRole('main');
+    const back = main.getByRole('link', { name: 'Go to checkout' });
+    await back.focus();
+    await expect(back).toBeFocused();
+
+    // The notice ends the hold 2 s before api does (held-order-notice.tsx), and its row goes with it.
+    await expect(main.getByText('You have 1 reserved', { exact: true })).toHaveCount(0, { timeout: 15_000 });
+    await expect(back).toHaveCount(0);
+    await expectFocusOnPage(page, 'after the hold ended under it');
+  });
+});
+
 test.describe('refused on stale stock', () => {
   test.use({ dropSettings: { stock: 3 } });
 
@@ -166,6 +195,7 @@ test.describe('refused on stale stock', () => {
     request,
     baseURL,
   }) => {
+    await page.clock.install();
     await holdStockStill(page, request, drop.id);
     await page.goto(`/p/${drop.productSlug}`);
     const main = page.getByRole('main');
@@ -188,7 +218,7 @@ test.describe('refused on stale stock', () => {
     );
     // Said once: the refresh's own crossing to "1 left." is the note's to tell.
     await expect.poll(spoken).toContain(note);
-    await page.waitForTimeout(COOLDOWN_PASSED_MS);
+    await page.clock.runFor(COOLDOWN_PASSED_MS);
     expect(await spoken()).toEqual([note]);
   });
 });
@@ -206,6 +236,7 @@ test.describe('on a phone', () => {
     request,
     baseURL,
   }) => {
+    await page.clock.install();
     await holdStockStill(page, request, drop.id);
     await page.goto(`/p/${drop.productSlug}`);
     // The row out of view: the sticky buy bar takes over (design-system §10.2).
@@ -225,7 +256,7 @@ test.describe('on a phone', () => {
     await expect(inline).toHaveAccessibleDescription(note);
     await expect(bar).toHaveCount(0);
     await expect.poll(spoken).toContain(note);
-    await page.waitForTimeout(COOLDOWN_PASSED_MS);
+    await page.clock.runFor(COOLDOWN_PASSED_MS);
     expect(await spoken()).toEqual([note]);
   });
 });
@@ -279,11 +310,15 @@ test('after a reload loses the answer, Buy replays the same reservation', async 
 
   await page.reload();
   await page.unrouteAll({ behavior: 'ignoreErrors' });
+  // The reloaded page reads the buyer's holds from api, so it shows the reservation the lost answer was
+  // for, with the gray "Buy 1 more" beside "Go to checkout".
+  const main = page.getByRole('main');
+  await expect(main.getByText('You have 1 reserved', { exact: true })).toBeVisible();
   // The key outlives the reload (sessionStorage), so this press continues the same intent.
   const answer = page.waitForResponse(
     (response) => response.request().method() === 'POST' && RESERVATIONS.test(response.url()),
   );
-  await buyButton(page).click();
+  await main.getByRole('button', { name: 'Buy 1 more', exact: true }).click();
   const replay = await answer;
 
   expect(replay.request().headers()[IDEMPOTENCY_KEY_HEADER]).toBe(first.key);

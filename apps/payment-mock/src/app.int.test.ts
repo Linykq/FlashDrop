@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { createLogger } from '@flashdrop/config';
+import { createLogger, postgresCheck } from '@flashdrop/config';
 import {
   PspChargeList,
   PspChargeResponse,
@@ -10,7 +10,6 @@ import {
 } from '@flashdrop/contracts';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp, type PspApp } from './app';
-import { postgresCheck } from './postgres';
 import { createSimulation, type SimulationConfig } from './simulation';
 import { createPspTestDatabase, type PspTestDatabase } from './test/database';
 
@@ -32,6 +31,8 @@ afterEach(async () => {
 });
 
 const logger = createLogger({ name: 'payment-mock-int', level: 'silent' });
+const API_KEY = 'int-test-psp-api-key-at-least-32-chars';
+const AUTH = { authorization: `Bearer ${API_KEY}` };
 
 async function start(config: Partial<SimulationConfig> = {}): Promise<string> {
   const simulation = createSimulation(
@@ -40,6 +41,7 @@ async function start(config: Partial<SimulationConfig> = {}): Promise<string> {
   );
   const app = await buildApp({
     logger,
+    apiKey: API_KEY,
     ledger: psp.ledger,
     simulation,
     checks: { postgres: postgresCheck(psp.pool) },
@@ -52,7 +54,7 @@ async function start(config: Partial<SimulationConfig> = {}): Promise<string> {
 function post(url: string, idempotencyKey: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
   return fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
+    headers: { ...AUTH, 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     ...(signal === undefined ? {} : { signal }),
   });
@@ -78,13 +80,13 @@ async function close(base: string, reference: string) {
 }
 
 async function chargesOf(base: string, reference: string) {
-  const response = await fetch(`${base}/v1/charges?reference=${reference}`);
+  const response = await fetch(`${base}/v1/charges?reference=${reference}`, { headers: AUTH });
   expect(response.status).toBe(200);
   return PspChargeList.parse(await response.json()).charges;
 }
 
 async function ledger(base: string) {
-  return PspLedgerResponse.parse(await (await fetch(`${base}/v1/admin/ledger`)).json());
+  return PspLedgerResponse.parse(await (await fetch(`${base}/v1/admin/ledger`, { headers: AUTH })).json());
 }
 
 describe('timeout after success', () => {
@@ -212,5 +214,23 @@ describe('GET /health', () => {
     const response = await fetch(`${base}/health`);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: 'ok', checks: { postgres: 'ok' } });
+  });
+});
+
+describe('the API key', () => {
+  it('keeps a caller without it from refunding a captured charge or reading the ledger', async () => {
+    const base = await start();
+    const reference = randomUUID();
+    expect(await charge(base, reference)).toMatchObject({ status: 'succeeded' });
+
+    const refund = await fetch(`${base}/v1/references/${reference}/close`, {
+      method: 'POST',
+      headers: { 'idempotency-key': `close:${reference}` },
+    });
+    expect(refund.status).toBe(401);
+    expect(PspErrorBody.parse(await refund.json()).error.code).toBe('unauthorized');
+    expect((await fetch(`${base}/v1/admin/ledger`)).status).toBe(401);
+
+    expect(await chargesOf(base, reference)).toEqual([expect.objectContaining({ status: 'succeeded' })]);
   });
 });

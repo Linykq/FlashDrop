@@ -4,9 +4,9 @@ import { type DropSummary, uploadPath } from '@flashdrop/contracts';
 import Image from 'next/image';
 import { useEffect, useEffectEvent, useId } from 'react';
 import { useLiveStock } from '../../lib/live-stock';
-import { buyAction } from '../../lib/purchase';
+import { buyAction, purchaseRow } from '../../lib/purchase';
 import { reserveNote } from '../../lib/reserve-copy';
-import { checkoutHref } from '../../lib/routes';
+import { checkoutHref, ORDERS_HREF, orderPageHref } from '../../lib/routes';
 import { describeStock, toLiveSeed } from '../../lib/stock';
 import { useReserve } from '../../lib/use-reserve';
 import { BuyButton } from '../commerce/buy-button';
@@ -18,22 +18,23 @@ import type { RoomPurchase } from './room-drop-card';
 /**
  * The drop card docked over the fullscreen player (design-system §9.12): 320 px of `material-overlay` with the
  * thumbnail, the title, the stock's primary line and an md Buy that runs the same reserve flow, one unit at a
- * time. Everything on the material is white: the word "Only" carries urgency, never red (§2.5). A hold that
- * takes the whole limit leads back to checkout instead. A refusal's note is announced once and describes Buy,
- * as the inline panel's does: in fullscreen this card is all there is to buy with.
+ * time. Everything on the material is white: the word "Only" carries urgency, never red (§2.5). A live hold
+ * leads back to its checkout instead, and a buyer who has their limit to their order, as in the inline panel
+ * (§9.13); before the drop opens the stock line's countdown is all there is. A refusal's note is announced
+ * once and describes Buy, as the inline panel's does: in fullscreen this card is all there is to buy with.
  */
 export function DockedDropCard({
   drop,
   serverNow,
   signedIn,
   returnTo,
-  heldOrder,
+  claim,
 }: RoomPurchase & { drop: DropSummary }) {
   const { level } = useLiveStock(drop.id, toLiveSeed(drop.stock, drop.status));
   const { state, buy } = useReserve(drop.id, returnTo, { prefetch: false });
   const action = buyAction(level, signedIn);
   const photo = drop.product.imageKeys[0];
-  const fullHold = heldOrder !== null && heldOrder.qty >= drop.perUserLimit ? heldOrder : null;
+  const row = purchaseRow(claim, drop.perUserLimit, false);
   const note = state.problem && reserveNote(state.problem, { perUserLimit: drop.perUserLimit, stock: level });
   const noteId = useId();
   // Once per refusal, worded from the level it was refused at, like the panel's (`purchase-panel.tsx`).
@@ -59,28 +60,38 @@ export function DockedDropCard({
           </p>
         </div>
       </div>
-      {action.kind !== 'hidden' && (
+      {row.kind === 'checkout' ? (
         <div className="mt-3 flex">
-          {fullHold ? (
-            <ButtonLink href={checkoutHref(fullHold.id)} className="flex-1">
-              Go to checkout
-            </ButtonLink>
-          ) : (
+          <ButtonLink href={checkoutHref(row.held.id)} className="flex-1">
+            Go to checkout
+          </ButtonLink>
+        </div>
+      ) : row.kind === 'have-limit' ? (
+        <div className="mt-3 flex">
+          <ButtonLink
+            href={row.lastPlacedId === null ? ORDERS_HREF : orderPageHref(row.lastPlacedId)}
+            className="flex-1"
+          >
+            View your order
+          </ButtonLink>
+        </div>
+      ) : (
+        action.kind !== 'hidden' &&
+        !(action.kind === 'closed' && action.reason === 'opens') && (
+          <div className="mt-3 flex">
             <BuyButton
               action={action}
               reserve={state}
               quantity={1}
               maxQuantity={1}
               onBuy={() => buy(1)}
-              startsAt={drop.startsAt}
-              serverNow={serverNow}
               returnTo={returnTo}
               size="md"
               describedBy={note ? noteId : undefined}
               className="flex-1"
             />
-          )}
-        </div>
+          </div>
+        )
       )}
       {note && (
         <p id={noteId} className="mt-2 animate-fade-in text-footnote">

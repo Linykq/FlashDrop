@@ -17,6 +17,8 @@
         "vitest.config.ts",
         "playwright.config.ts",
         "tests/e2e/**",
+        "tests/chaos/**",
+        "tests/load/**",
         "infra/docker/*.ts"
       ]
     },

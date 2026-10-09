@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canonicalSpaces,
   formatLagSeconds,
+  formatLatency,
   formatPercent,
   formatShortDuration,
   formatTileCount,
@@ -44,11 +44,10 @@ describe('admin formats', () => {
     );
   });
 
-  it("spells times the same whatever spaces the runtime's ICU uses", () => {
-    expect(canonicalSpaces('8:32\u202fAM\u2009–\u200912:00\u202fPM UTC')).toBe(
-      '8:32\u00a0AM – 12:00\u00a0PM UTC',
-    );
-    expect(canonicalSpaces('8:32 AM – 12:00 PM UTC')).toBe('8:32\u00a0AM – 12:00\u00a0PM UTC');
-    expect(canonicalSpaces('7:00\u2009–\u20097:30\u202fPM')).toBe('7:00–7:30\u00a0PM');
+  it('says a latency under a tenth of a second as such, never as 0.0 s', () => {
+    expect(formatLatency(9_800)).toBe('9.8 s');
+    expect(formatLatency(100)).toBe('0.1 s');
+    expect(formatLatency(40)).toBe('<0.1 s');
+    expect(formatLatency(0)).toBe('<0.1 s');
   });
 });

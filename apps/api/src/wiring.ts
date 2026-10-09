@@ -1,18 +1,23 @@
-import type { Logger } from '@flashdrop/config';
+import { dependencyCheck, type Logger, postgresCheck } from '@flashdrop/config';
 import { createDb, type createPool, readSalesTotals } from '@flashdrop/db';
-import { createSyncNudger, type FlashdropRedis, fdRateLimitHit } from '@flashdrop/inventory';
+import {
+  createReservationService,
+  createReservePorts,
+  createSyncNudger,
+  type FlashdropRedis,
+  fdRateLimitHit,
+} from '@flashdrop/inventory';
 import type { AppServices } from './app';
-import { createPostgresListings } from './routes/admin/listings-store';
+import { instrumentReservations, timeReserveTransaction } from './metrics';
 import { createAdminCatalog } from './services/admin-catalog';
 import { createAdminDashboard } from './services/admin-dashboard';
 import { createAdminDrops } from './services/admin-drops';
 import { createAdminHealth } from './services/admin-health';
+import { createAdminListings } from './services/admin-listings';
 import { createPostgresCatalog } from './services/catalog';
-import { postgresCheck, redisCheck } from './services/health';
 import { createKafkaProbe, type KafkaClient } from './services/kafka-probe';
 import { createOrderService, createPostgresOrderPorts } from './services/orders';
 import { createPgBreaker } from './services/pg-breaker';
-import { createReservationService, createReservePorts } from './services/reserve';
 import { createPostgresRoomReader, createPostgresTopicIdLookup } from './services/rooms';
 import { createPostgresStockReader, createRedisStockReader } from './services/stock';
 import { createTestRouteService, type TestRouteService } from './services/testing';
@@ -86,15 +91,20 @@ export function wireServices(infra: Infrastructure): Wired {
       catalog: createPostgresCatalog(db),
       stock,
       users: createPostgresUsers(db),
-      reservations: createReservationService(createReservePorts({ db, redis, breaker, nudger }), now),
+      reservations: instrumentReservations(
+        createReservationService(
+          timeReserveTransaction(createReservePorts({ db, redis, breaker, nudger })),
+          now,
+        ),
+      ),
       orders: createOrderService(createPostgresOrderPorts(db), now),
       adminDrops,
       adminCatalog: createAdminCatalog(db),
       adminDashboard: createAdminDashboard({ db, stock, health: adminHealth, now }),
       adminHealth,
-      listings: createPostgresListings({ db, logger }),
+      listings: createAdminListings({ db, logger }),
       rateLimitCounter: (key, windowMs) => fdRateLimitHit(redis, key, windowMs),
-      checks: { postgres: postgresCheck(pool), redis: redisCheck(redis) },
+      checks: { postgres: postgresCheck(pool), redis: dependencyCheck('redis', () => redis.ping()) },
     },
     testRoutes: createTestRouteService({ db, adminDrops }),
     realtime: {

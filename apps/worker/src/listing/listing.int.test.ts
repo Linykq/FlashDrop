@@ -2,8 +2,13 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ImageKey, ListingCall } from '@flashdrop/contracts';
-import { eq, listingJobs, sql } from '@flashdrop/db';
+import {
+  type ImageKey,
+  type ListingCall,
+  StoredListingCalls,
+  StoredListingIssues,
+} from '@flashdrop/contracts';
+import { claimListingJob, eq, LEASE_SECONDS, listingJobs, renewListingLease, sql } from '@flashdrop/db';
 import { TransientError } from '@flashdrop/domain';
 import { createSubscriber, userChannel } from '@flashdrop/inventory';
 import {
@@ -14,13 +19,10 @@ import {
   loadListingFixtures,
   prepareListingImage,
   REPO_FIXTURES_DIR,
-  StoredListingCalls,
-  StoredListingIssues,
 } from '@flashdrop/llm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createUsers, createWorkerTestEnv, type WorkerTestEnv } from '../test/harness';
 import { startListingWorker } from '.';
-import { claimListingJob, LEASE_SECONDS, renewLease } from './jobs';
 import { type ListingRunDeps, RETRY_DELAY_SECONDS, runListingJob } from './run';
 
 /*
@@ -272,9 +274,9 @@ describe('the lease', () => {
     const id = await insertJob([await storePhoto('valid-draft')]);
     const job = await claimListingJob(env.db, { provider: 'fixture', model: 'm', promptVersion: 'v' });
     if (job === null) throw new Error('no job');
-    const renewed = await renewLease(env.db, id, job.lease);
+    const renewed = await renewListingLease(env.db, id, job.lease);
     expect(renewed).not.toBe(job.lease);
-    await expect(renewLease(env.db, id, job.lease)).rejects.toThrow(/no longer leased/);
+    await expect(renewListingLease(env.db, id, job.lease)).rejects.toThrow(/no longer leased/);
     await env.db
       .update(listingJobs)
       .set({ status: 'FAILED', lockedUntil: null })

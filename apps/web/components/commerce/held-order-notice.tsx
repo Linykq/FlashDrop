@@ -6,29 +6,26 @@ import { useServerTime } from '../../lib/clock';
 import { cx } from '../../lib/cx';
 import { formatCount, formatCountdown } from '../../lib/format';
 import { type HeldOrder, holdClock, holdState } from '../../lib/hold';
-import { checkoutHref } from '../../lib/routes';
-import { ButtonLink } from '../ui/button';
 import { LocalTime } from './local-time';
 
 type HeldOrderNoticeProps = {
   order: HeldOrder;
   /** The server's clock when it rendered the page, which corrects the device clock (as in checkout). */
   serverNow: number;
-  /** Shows "Go to checkout" here; left out where the filled action already is that link. */
-  link: boolean;
   /** Called once, when the hold ends (2 s before api ends it, like checkout's countdown). */
   onEnd: () => void;
   className?: string;
 };
 
 /**
- * The buyer's live hold on this drop, above the Buy row (design-system §9.13): what is held, the time left on
- * the shared clock, and the way back to its checkout. "Leave checkout" releases a hold, but Back or a closed
- * tab keeps it until it expires, so without this a buyer back on the product page would hold units they can't
- * see, and with a limit of 1 meet only a refusal. The digits change every second, so they are hidden from assistive technology, which reads
- * the deadline as a time instead. Calm, like the hold card: no motion, no warning colour.
+ * The buyer's live hold on this drop, above the purchase row (design-system §9.13): what is held and the time
+ * left on the shared clock. The row under it leads to the hold's checkout with the filled action. "Leave
+ * checkout" releases a hold, but Back or a closed tab keeps it until it expires, so without this a buyer back
+ * on the product page would hold units they can't see. The digits change every second, so they are hidden from
+ * assistive technology, which reads the deadline as a time instead. Calm, like the hold card: no motion, no
+ * warning colour.
  */
-export function HeldOrderNotice({ order, serverNow, link, onEnd, className }: HeldOrderNoticeProps) {
+export function HeldOrderNotice({ order, serverNow, onEnd, className }: HeldOrderNoticeProps) {
   const now = useServerTime(serverNow);
   const { remainingMs, expired } = holdState(now, holdClock(order.createdAt, order.expiresAt));
   const end = useEffectEvent(onEnd);
@@ -37,14 +34,13 @@ export function HeldOrderNotice({ order, serverNow, link, onEnd, className }: He
   }, [expired]);
 
   return (
-    // A query container: the link sits beside the text where the panel is wide enough, and below it, full
-    // width, in the narrow panel of phones and tablets. In the narrowest (320 px phones) the time left takes a
-    // line of its own rather than breaking the sentence before it. A translucent fill, not `bg-secondary`: the
-    // row sits on `bg` on the product page and on `surface` in the drop card, and in dark mode `bg-secondary`
-    // and `surface` are the same colour, which left only the row's padding showing there, like a misalignment.
-    // The quaternary fill, the lightest: on white the tertiary one takes `label-secondary` under 4.5:1.
+    // A query container: in the narrowest panels (320 px phones) the time left takes a line of its own rather
+    // than breaking the sentence before it. A translucent fill, not `bg-secondary`: the row sits on `bg` on the
+    // product page and on `surface` in the drop card, and in dark mode `bg-secondary` and `surface` are the
+    // same colour, which left only the row's padding showing there, like a misalignment. The quaternary fill,
+    // the lightest: on white the tertiary one takes `label-secondary` under 4.5:1.
     <div className={cx('@container', className)}>
-      <div className="flex flex-wrap items-center gap-3 rounded-lg bg-fill-quaternary py-3 pr-3 pl-4">
+      <div className="flex items-center gap-3 rounded-lg bg-fill-quaternary px-4 py-3">
         <Timer className="shrink-0 text-accent-label" />
         <p className="min-w-0 flex-1 text-callout">
           <span className="font-medium">You have {formatCount(order.qty)} reserved</span>
@@ -56,11 +52,6 @@ export function HeldOrderNotice({ order, serverNow, link, onEnd, className }: He
             , held until <LocalTime iso={order.expiresAt} format="time" />
           </span>
         </p>
-        {link && (
-          <ButtonLink href={checkoutHref(order.id)} variant="tinted" className="w-full @min-[28rem]:w-auto">
-            Go to checkout
-          </ButtonLink>
-        )}
       </div>
     </div>
   );

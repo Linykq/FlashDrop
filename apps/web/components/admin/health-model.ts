@@ -33,6 +33,9 @@ export function deadLetterLine(retained: number | null): string {
   return retained === null ? "Kafka didn't answer" : `Not replayed · ${formatCount(retained)} retained`;
 }
 
+/** What replays dead letters (SD §12 runbook): see what it would do first, then run it without the flag. */
+export const DLQ_REPLAY_COMMAND = 'pnpm dlq:replay --dry-run';
+
 /** Dead letters and quarantined orders: any is failing; `null` (Kafka didn't answer) is unknown. */
 export function countHealth(count: number | null): HealthLevel {
   if (count === null) return 'unknown';
@@ -100,8 +103,16 @@ export function trackLag(
 }
 
 /**
- * A group's health (§10.11): lag 0, or falling, is healthy; lag that kept rising for over 30 s is degraded; a
- * lagging partition whose committed offset hasn't moved for over 5 minutes is failing.
+ * Records a group may owe before its projection counts as behind whatever its trend: a replay
+ * (`pnpm dash:rebuild`) owes the whole topic and falls fast, but totals read off it are incomplete until it
+ * is through, which "Healthy" beside six figures of lag would hide.
+ */
+export const BACKLOG = 1_000;
+
+/**
+ * A group's health (§10.11): lag 0, or falling, is healthy; lag that kept rising for over 30 s, or a backlog of
+ * `BACKLOG` records or more, is degraded; a lagging partition whose committed offset hasn't moved for over 5
+ * minutes is failing.
  */
 export function groupHealth(tracker: LagTracker, group: string, now: number): HealthLevel {
   for (const [key, stall] of tracker.stalls) {
@@ -110,12 +121,23 @@ export function groupHealth(tracker: LagTracker, group: string, now: number): He
   const samples = tracker.totals.get(group) ?? [];
   const latest = samples.at(-1);
   if (latest === undefined || latest.lag === 0) return 'healthy';
+  if (latest.lag >= BACKLOG) return 'degraded';
   // Rising: every poll of the last 30 s (and the one just before them) saw at least the lag of the one before.
   const start = samples.findLastIndex((sample) => latest.at - sample.at >= RISING_MS);
   if (start === -1) return 'healthy';
   const window = samples.slice(start);
   const rising = window.every((sample, index) => index === 0 || sample.lag >= (window[index - 1]?.lag ?? 0));
   return rising && latest.lag > (window[0]?.lag ?? 0) ? 'degraded' : 'healthy';
+}
+
+/**
+ * The events the sales projection still owes, when that many that its totals can't be read as current (a
+ * replay after `pnpm dash:rebuild`, or a consumer far behind); `null` otherwise, or when Kafka didn't answer.
+ * The dashboard then says totals are incomplete rather than showing zeros as if nothing had sold (§10.10).
+ */
+export function projectionBacklog(groups: readonly ConsumerGroupLag[] | null): number | null {
+  const lag = groups?.find((group) => group.name === 'dashboard')?.lag ?? 0;
+  return lag >= BACKLOG ? lag : null;
 }
 
 type TrackedDrop = {

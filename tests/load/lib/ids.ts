@@ -13,6 +13,14 @@ function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+/** Sets the RFC 9562 version nibble and variant bits of a 16-byte id in place. */
+function stamp(bytes: Uint8Array, version: number): Uint8Array {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  view.setUint8(6, (view.getUint8(6) & 0x0f) | (version << 4));
+  view.setUint8(8, (view.getUint8(8) & 0x3f) | 0x80);
+  return bytes;
+}
+
 function format(bytes: Uint8Array): string {
   const h = hex(bytes.subarray(0, 16));
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
@@ -26,9 +34,7 @@ export function uuidv7(now: number = Date.now()): string {
     bytes[i] = ms % 256;
     ms = Math.floor(ms / 256);
   }
-  bytes[6] = (bytes[6] & 0x0f) | 0x70;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  return format(bytes);
+  return format(stamp(bytes, 7));
 }
 
 /** RFC 9562 version 5 (SHA-1, name-based). */
@@ -38,10 +44,7 @@ function uuidv5(name: string, namespace: string): string {
   const input = new Uint8Array(16 + encoded.length);
   for (let i = 0; i < 16; i += 1) input[i] = Number.parseInt(ns.slice(i * 2, i * 2 + 2), 16);
   input.set(encoded, 16);
-  const hash = new Uint8Array(sha1(input.buffer, 'binary'));
-  hash[6] = (hash[6] & 0x0f) | 0x50;
-  hash[8] = (hash[8] & 0x3f) | 0x80;
-  return format(hash);
+  return format(stamp(new Uint8Array(sha1(input.buffer, 'binary')), 5));
 }
 
 /** The order id every request with this (user, drop, key) must answer with, created or replayed. */

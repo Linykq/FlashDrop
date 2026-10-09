@@ -28,15 +28,16 @@ export {
 export * from './checkout';
 export * from './client';
 export * from './dashboard';
+export * from './db-roles';
 export * from './drops';
 export * from './errors';
+export * from './listings';
 export * from './migrate';
 export * from './orders';
 export * from './outbox';
 export * from './payments';
 export * from './pool';
 export * from './processed-events';
-export * from './psp-role';
 export * from './relay';
 export { PgTimestamp, PgUuid, parseRows } from './rows';
 export * from './schema';

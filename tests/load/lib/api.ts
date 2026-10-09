@@ -1,5 +1,5 @@
 import http from 'k6/http';
-import { API, BASE_URL, ORIGIN, PSP_URL, TEST_SECRET } from './config.ts';
+import { API, BASE_URL, ORIGIN, PSP_API_KEY, PSP_URL, TEST_SECRET } from './config.ts';
 import type { OrderAnswer } from './verdict.ts';
 
 /*
@@ -92,12 +92,16 @@ export function mintSessions(count: number): Session[] {
   return sessions;
 }
 
-/** `POST /test/drops`: a fresh product and drop, armed (its Redis state built) and open from now. */
+/**
+ * `POST /test/drops`: a fresh product and drop, armed (its Redis state built) and open from `startsAt`, by
+ * default now.
+ */
 export function createTestDrop(settings: {
   readonly stock: number;
   readonly perUserLimit: number;
   readonly holdSeconds: number;
   readonly durationSeconds: number;
+  readonly startsAt?: string;
 }): TestDrop {
   const response = http.post(`${API}/test/drops`, JSON.stringify({ ...settings, paymentSeconds: 300 }), {
     headers: TEST_HEADERS,
@@ -259,10 +263,17 @@ export interface PspCharge {
 
 /**
  * `GET /v1/charges?reference=<orderId>` on payment-mock (§6.5): the PSP's own book for one order. The PSP is
- * not behind Caddy; the Compose k6 service reaches it on the Compose network (`PSP_URL`).
+ * not behind Caddy; the Compose k6 service reaches it on the Compose network (`PSP_URL`), with the stack's
+ * `PSP_API_KEY`.
  */
 export function pspCharges(reference: string): PspCharge[] {
+  if (PSP_API_KEY === '') {
+    throw new Error(
+      "PSP_API_KEY is not set: pass the stack's key (-e PSP_API_KEY=...), or skip the PSP checks with -e PSP_URL=",
+    );
+  }
   const response = http.get(`${PSP_URL}/v1/charges?reference=${encodeURIComponent(reference)}`, {
+    headers: { authorization: `Bearer ${PSP_API_KEY}` },
     tags: { name: 'psp-charges' },
     timeout: '10s',
   });

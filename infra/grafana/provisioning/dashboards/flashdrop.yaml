@@ -1,0 +1,10 @@
+# Dashboards are files in infra/grafana/dashboards, mounted read-only: edit the JSON, not the UI.
+apiVersion: 1
+
+providers:
+  - name: flashdrop
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

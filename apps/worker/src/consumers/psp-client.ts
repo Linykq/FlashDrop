@@ -6,6 +6,7 @@ import {
 } from '@flashdrop/contracts';
 import { BugError, TransientError } from '@flashdrop/domain';
 import type { z } from 'zod';
+import { countPspRequest, type PspResult } from '../metrics';
 
 /*
  * The payment consumer's client of the PSP (`apps/payment-mock`, design §6.5), across a real socket so that
@@ -24,6 +25,8 @@ import type { z } from 'zod';
  *   retries it for a minute, then dead-letters it. Money stays safe either way: an order.placed given up on
  *   leaves the order to expire, and an expired or cancelled order whose close was given up on is closed
  *   again by the `close-unpaid` loop, which quarantines it and alerts if the close keeps failing.
+ *
+ * Every call counts once in `fd_psp_requests_total{op,result}` (§12): its answer, or which failure it was.
  */
 
 /** §6.5: the PSP's answer must arrive within this, or the outcome is unknown. */
@@ -39,6 +42,8 @@ export interface PspClient {
 export interface PspClientOptions {
   /** `PAYMENT_MOCK_URL`, e.g. http://payment-mock:4100. */
   readonly baseUrl: string;
+  /** `PSP_API_KEY`, sent as `Authorization: Bearer <key>` on every call. */
+  readonly apiKey: string;
   readonly timeoutMs?: number;
 }
 
@@ -49,12 +54,19 @@ export class PspUnavailableError extends TransientError {
 
 const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([408, 429]);
 
-export function createPspClient({ baseUrl, timeoutMs = PSP_TIMEOUT_MS }: PspClientOptions): PspClient {
+export function createPspClient({
+  baseUrl,
+  apiKey,
+  timeoutMs = PSP_TIMEOUT_MS,
+}: PspClientOptions): PspClient {
+  const authorization = `Bearer ${apiKey}`;
   async function post<T>(
+    op: 'charge' | 'close',
     path: string,
     idempotencyKey: string,
     body: unknown,
     schema: z.ZodType<T>,
+    resultOf: (answer: T) => PspResult,
   ): Promise<T> {
     const call = `POST ${path}`;
     // One deadline for the whole exchange: the signal aborts the body read too.
@@ -65,6 +77,7 @@ export function createPspClient({ baseUrl, timeoutMs = PSP_TIMEOUT_MS }: PspClie
       const response = await fetch(new URL(path, baseUrl), {
         method: 'POST',
         headers: {
+          authorization,
           [PSP_IDEMPOTENCY_KEY_HEADER]: idempotencyKey,
           ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         },
@@ -74,33 +87,45 @@ export function createPspClient({ baseUrl, timeoutMs = PSP_TIMEOUT_MS }: PspClie
       status = response.status;
       text = await response.text();
     } catch (cause) {
+      // The deadline's signal tells a timeout from a connection that failed before it.
+      countPspRequest(op, signal.aborted ? 'timeout' : 'unreachable');
       throw new PspUnavailableError(`PSP ${call} got no answer: ${describe(cause)}`, { cause });
     }
     if (status >= 500 || RETRYABLE_STATUSES.has(status)) {
+      countPspRequest(op, 'unavailable');
       throw new PspUnavailableError(`PSP ${call} answered ${status}: ${text.slice(0, 500)}`);
     }
-    if (status !== 200)
+    if (status !== 200) {
+      countPspRequest(op, 'refused');
       throw new BugError(`PSP ${call} refused the request (${status}): ${text.slice(0, 500)}`);
+    }
     let json: unknown;
     try {
       json = JSON.parse(text);
     } catch (cause) {
+      countPspRequest(op, 'invalid');
       throw new BugError(`PSP ${call} answered 200 with a body that is not JSON`, { cause });
     }
     const parsed = schema.safeParse(json);
-    if (!parsed.success)
+    if (!parsed.success) {
+      countPspRequest(op, 'invalid');
       throw new BugError(`PSP ${call} answered outside its contract: ${parsed.error.message}`);
+    }
+    countPspRequest(op, resultOf(parsed.data));
     return parsed.data;
   }
 
   return {
-    charge: (request, idempotencyKey) => post('/v1/charges', idempotencyKey, request, PspChargeResponse),
+    charge: (request, idempotencyKey) =>
+      post('charge', '/v1/charges', idempotencyKey, request, PspChargeResponse, (answer) => answer.status),
     closeReference: (reference, idempotencyKey) =>
       post(
+        'close',
         `/v1/references/${encodeURIComponent(reference)}/close`,
         idempotencyKey,
         undefined,
         PspCloseResponse,
+        (answer) => (answer.refundedChargeId === undefined ? 'closed' : 'refunded'),
       ),
   };
 }

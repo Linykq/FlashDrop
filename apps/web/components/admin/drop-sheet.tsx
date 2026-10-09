@@ -21,6 +21,8 @@ import {
 
 export type DropSheetMode =
   | { kind: 'create'; productId: string | null }
+  /** "Run again": a new draft with an ended drop's settings (§10.8). */
+  | { kind: 'copy'; drop: AdminDropListing }
   | { kind: 'edit'; drop: AdminDropListing };
 
 type DropSheetProps = {
@@ -74,7 +76,7 @@ export function DropSheet({ mode, onClose, products, rooms }: DropSheetProps) {
       {mode && (
         <DropForm
           // A new mode is a fresh form: its own initial values, nothing left over from the last one.
-          key={mode.kind === 'edit' ? mode.drop.id : `new:${mode.productId ?? ''}`}
+          key={mode.kind === 'create' ? `new:${mode.productId ?? ''}` : `${mode.kind}:${mode.drop.id}`}
           id={formId}
           mode={mode}
           pending={pending}
@@ -103,7 +105,14 @@ type DropFormProps = {
 function DropForm({ id, mode, pending, startTransition, onChange, onDone, products, rooms }: DropFormProps) {
   const router = useRouter();
   const [values, setValues] = useState<DropFormValues>(() =>
-    initialDropForm(mode.kind === 'edit' ? mode.drop : { productId: mode.productId }, Date.now()),
+    initialDropForm(
+      mode.kind === 'edit'
+        ? mode.drop
+        : mode.kind === 'copy'
+          ? { copyOf: mode.drop }
+          : { productId: mode.productId },
+      Date.now(),
+    ),
   );
   const [errors, setErrors] = useState<DropFormErrors>({});
   const [failure, setFailure] = useState<string | null>(null);

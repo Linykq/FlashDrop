@@ -45,8 +45,15 @@ describe('planSeed', () => {
       expect(starts[0]).toBeLessThan(2 * HOUR);
       expect(starts[1]).toBeGreaterThanOrEqual(24 * HOUR);
 
+      // The room's rundown: what sells next sells there too; the ended drop's history stays out of it.
+      expect(byStatus('SCHEDULED').map((planned) => planned.drop.roomId)).toEqual([
+        SEED_ROOM.id,
+        SEED_ROOM.id,
+      ]);
+
       const [ended] = byStatus('ENDED');
       expect(ended?.drop.endsAt.getTime()).toBeLessThan(now.getTime());
+      expect(ended?.drop.roomId).toBeNull();
 
       for (const { drop } of plan.drops)
         expect(drop.endsAt.getTime()).toBeGreaterThan(drop.startsAt.getTime());

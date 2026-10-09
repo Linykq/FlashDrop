@@ -9,7 +9,7 @@ import { SignOutButton } from '../../../components/account/sign-out-button';
 import { OrderList } from '../../../components/commerce/order-list';
 import { Skeleton, SkeletonText } from '../../../components/ui/skeleton';
 import { adminHref, ORDERS_HREF, safeReturnTo } from '../../../lib/routes';
-import { getDevUsers } from '../../../lib/server/catalog';
+import { getDevUsers, getProduct, getRoom } from '../../../lib/server/catalog';
 import { log } from '../../../lib/server/log';
 import { readMyOrders } from '../../../lib/server/orders';
 import { getViewer } from '../../../lib/server/session';
@@ -43,10 +43,29 @@ export default function LoginPage({ searchParams }: PageProps<'/login'>) {
 // list is the one surface, as in a grouped list on iOS, and keeps the full width of the screen.
 const cardClass = 'sm:rounded-xl sm:bg-surface sm:p-8 sm:elevation-1';
 
+/**
+ * What the visitor was about to buy, when "Sign in to buy" sent them here from a product page or a live room,
+ * so the page says why they are here. `null` for any other return path, or when the read fails: the generic
+ * line is fine then.
+ */
+async function buyingTitle(returnTo: string): Promise<string | null> {
+  const [, area, slug] = /^\/(p|live)\/([^/?#]+)/.exec(returnTo) ?? [];
+  if (slug === undefined) return null;
+  try {
+    if (area === 'p') return (await getProduct(slug))?.product.title ?? null;
+    return (await getRoom(slug))?.drop?.product.title ?? null;
+  } catch (error) {
+    unstable_rethrow(error);
+    log().warn({ err: error, returnTo }, 'cannot name what the visitor was buying');
+    return null;
+  }
+}
+
 async function Login({ searchParams }: Pick<PageProps<'/login'>, 'searchParams'>) {
   // The request's own inputs first: the cached read must never start while `next build` prerenders.
-  const [{ returnTo }, viewer] = await Promise.all([searchParams, getViewer()]);
-  const users = await getDevUsers();
+  const [{ returnTo: rawReturnTo }, viewer] = await Promise.all([searchParams, getViewer()]);
+  const returnTo = safeReturnTo(rawReturnTo);
+  const [users, buying] = await Promise.all([getDevUsers(), viewer ? null : buyingTitle(returnTo)]);
   const admin = viewer ? adminHref(viewer.role) : null;
 
   return (
@@ -73,15 +92,17 @@ async function Login({ searchParams }: Pick<PageProps<'/login'>, 'searchParams'>
         </>
       ) : (
         <p className="mt-2 text-body text-label-secondary">
-          Development sign-in. Pick a seeded account; there's no password.
+          {buying ? (
+            <>
+              Sign in to buy <span className="font-medium text-label">{buying}</span>. Pick a seeded account;
+              there's no password.
+            </>
+          ) : (
+            "Development sign-in. Pick a seeded account; there's no password."
+          )}
         </p>
       )}
-      <LoginForm
-        className="mt-6"
-        users={users}
-        currentUserId={viewer?.id ?? null}
-        returnTo={safeReturnTo(returnTo)}
-      />
+      <LoginForm className="mt-6" users={users} currentUserId={viewer?.id ?? null} returnTo={returnTo} />
       <p className="mt-4 text-footnote text-label-secondary">Sessions last 12 hours.</p>
     </div>
   );

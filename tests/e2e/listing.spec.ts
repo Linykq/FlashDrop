@@ -1,5 +1,4 @@
 import { join } from 'node:path';
-import { expect, test } from '@playwright/test';
 import {
   choosePhotos,
   LISTING_PHOTOS,
@@ -9,6 +8,7 @@ import {
   signInAdmin,
   uploadListing,
 } from './support/admin';
+import { expect, test } from './support/fixtures';
 import { decodeHtmlText, escapeRegExp } from './support/text';
 
 /*

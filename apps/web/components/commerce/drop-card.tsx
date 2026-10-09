@@ -3,10 +3,8 @@ import type { ReactNode } from 'react';
 import { cx } from '../../lib/cx';
 import { formatCount, formatDuration } from '../../lib/format';
 import type { StockState } from '../../lib/stock';
-import { DropStatusPill } from '../ui/status-pill';
 import { TitleText } from '../ui/title-text';
-import { Countdown } from './countdown';
-import { LiveBadge } from './live-badge';
+import { DropStatusLine } from './drop-status-line';
 import { Price } from './price';
 import { StockText } from './stock-text';
 
@@ -24,6 +22,8 @@ type DropCardProps = {
   serverNow: number;
   /** Live updates stopped arriving: LiveStock says so (§9.9). */
   paused?: boolean;
+  /** In the live room, while the stream shows this product (§10.3). */
+  onScreen?: boolean;
   /** The purchase area: the lg quantity stepper and the lg Buy button, 12 px apart, and any note under them. */
   children: ReactNode;
   className?: string;
@@ -47,9 +47,12 @@ export function DropCard({
   endsAt,
   serverNow,
   paused = false,
+  onScreen = false,
   children,
   className,
 }: DropCardProps) {
+  const closedForGood =
+    stock.status === 'ENDED' || (stock.status === 'LIVE' && stock.avail === 0 && stock.held === 0);
   return (
     <section aria-label={title} className={cx(cardClass, className)}>
       <div className="flex gap-4">
@@ -57,15 +60,9 @@ export function DropCard({
           {image && <Image src={image} alt="" fill sizes="72px" className="object-cover" />}
         </div>
         <div className="min-w-0">
-          <div className="flex min-h-6 items-center gap-2 text-footnote text-label-secondary">
-            {stock.status === 'LIVE' ? (
-              <>
-                <LiveBadge />
-                <Countdown target={endsAt} serverNow={serverNow} verb="Ends" />
-              </>
-            ) : (
-              <DropStatusPill status={stock.status} />
-            )}
+          <div className="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-1 text-footnote text-label-secondary">
+            <DropStatusLine stock={stock} startsAt={startsAt} endsAt={endsAt} serverNow={serverNow} />
+            {onScreen && <span className="text-accent-label">On screen now</span>}
           </div>
           <h2 className="mt-1 line-clamp-2 text-title-3">
             <TitleText text={title} />
@@ -84,9 +81,12 @@ export function DropCard({
         paused={paused}
       />
       <div className="mt-4">{children}</div>
-      <p className="mt-3 text-footnote text-label-secondary">
-        Limit {formatCount(perUserLimit)} per person · Held {formatDuration(holdSeconds)} at checkout
-      </p>
+      {/* Terms only while they can still apply: not once every unit is sold, or the drop ended. */}
+      {!closedForGood && (
+        <p className="mt-3 text-footnote text-label-secondary">
+          Limit {formatCount(perUserLimit)} per person · Held {formatDuration(holdSeconds)} at checkout
+        </p>
+      )}
     </section>
   );
 }

@@ -2,7 +2,7 @@ import { topicOf } from '@flashdrop/contracts';
 import type { Browser, Page } from '@playwright/test';
 import { expect, reserveViaApi, signInNewBuyer, test } from './support/fixtures';
 import { expectFocusOnPage, tabTo } from './support/keyboard';
-import { expectPlaying, paintedOpacity, player, viewerCount } from './support/live';
+import { expectPlaying, paintedOpacity, player, UNMUTE, viewerCount } from './support/live';
 import {
   expectPropagated,
   type GatewayRecording,
@@ -103,6 +103,8 @@ test('the player works from the keyboard alone: captions, controls that stay whi
 }) => {
   const room = drop.room;
   if (room === null) throw new Error('the drop was created without its room');
+  // Before the page loads, so the idle fade's timer runs on a clock the spec moves past it.
+  await page.clock.install();
   await page.goto(`/live/${room.slug}`);
   await expectPlaying(page);
   const video = player(page).locator('video');
@@ -121,18 +123,18 @@ test('the player works from the keyboard alone: captions, controls that stay whi
 
   // On a control, past the idle fade: the capsules stay, so focus never sits on something invisible.
   await tabTo(page, captions);
-  await page.waitForTimeout(PAST_IDLE_FADE_MS);
+  await page.clock.runFor(PAST_IDLE_FADE_MS);
   await expect.poll(() => paintedOpacity(captions)).toBe(1);
   await page.keyboard.press('Enter');
   await expect(captions).toHaveAttribute('aria-pressed', 'false');
   await expect.poll(fill).toBe('rgba(0, 0, 0, 0)');
 
-  // Back to "Tap to unmute", before the capsules: it goes once used, and focus must move to something on
+  // Back to the unmute pill, before the capsules: it goes once used, and focus must move to something on
   // the page rather than fall to the body.
-  const unmute = player(page).getByRole('button', { name: 'Tap to unmute' });
+  const unmute = player(page).getByRole('button', { name: UNMUTE });
   await tabTo(page, unmute, { backwards: true });
   await page.keyboard.press('Enter');
   await expect(unmute).toHaveCount(0);
   expect(await video.evaluate((element: HTMLVideoElement) => element.muted)).toBe(false);
-  await expectFocusOnPage(page, 'after "Tap to unmute" went away');
+  await expectFocusOnPage(page, 'after the unmute pill went away');
 });

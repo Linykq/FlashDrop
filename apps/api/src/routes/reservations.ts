@@ -5,11 +5,11 @@ import {
   OrderResponse,
   ReserveBody,
 } from '@flashdrop/contracts';
+import type { ReservationService } from '@flashdrop/inventory';
 import type { Api } from '../http/api';
 import { IdempotencyHeaders } from '../http/idempotency';
 import type { ReservationLimits } from '../http/rate-limit';
 import { requireSession, signedIn } from '../http/session';
-import type { ReservationService } from '../services/reserve';
 
 export interface ReservationDeps {
   readonly reservations: ReservationService;

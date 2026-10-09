@@ -10,8 +10,12 @@ import {
 } from '@flashdrop/contracts';
 import type { PublicDropStatus } from '@flashdrop/domain';
 import { cacheLife, cacheTag } from 'next/cache';
+import { unstable_rethrow } from 'next/navigation';
 import { cache } from 'react';
+import type { NextDrop } from '../purchase';
+import { productHref } from '../routes';
 import { ApiError, apiGet } from './api';
+import { log } from './log';
 
 /*
  * Catalog reads for Server Components (design §8.1). The `'use cache'` helpers run only at request time,
@@ -87,6 +91,25 @@ export const getRoom = cache(async (slug: string): Promise<RoomDetail | null> =>
 export async function getLiveRoom(): Promise<DropSummary['room']> {
   const drops = await getDrops(['LIVE', 'PAUSED', 'SCHEDULED'], 20);
   return drops.find((drop) => drop.status === 'LIVE' && drop.room !== null)?.room ?? null;
+}
+
+/**
+ * Where a sold-out drop sends the buyer (design-system §9.13): the next scheduled drop of the same room, else
+ * the catalog's next one, from the cached list; `null` when nothing is scheduled. A list api can't serve right
+ * now costs only the pointer, never the page.
+ */
+export async function getNextDrop(dropId: string, roomSlug: string | null): Promise<NextDrop | null> {
+  let scheduled: DropSummary[];
+  try {
+    scheduled = (await getDrops(['SCHEDULED'], 20)).filter((drop) => drop.id !== dropId);
+  } catch (error) {
+    unstable_rethrow(error);
+    log().warn({ err: error, dropId }, 'cannot list scheduled drops for the next-drop link');
+    return null;
+  }
+  const next =
+    scheduled.find((drop) => roomSlug !== null && drop.room?.slug === roomSlug) ?? scheduled[0] ?? null;
+  return next && { title: next.product.title, href: productHref(next.product.slug) };
 }
 
 /** The seeded accounts `/login` offers. They change only when the seed does. */

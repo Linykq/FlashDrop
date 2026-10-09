@@ -1,9 +1,9 @@
 import { ListingJobListResponse } from '@flashdrop/contracts';
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
+import { ListingList } from '../../../../components/admin/listing-list';
 import { ListingUploadForm } from '../../../../components/admin/listing-upload-form';
 import { PageHeader } from '../../../../components/admin/page-header';
-import { RecentListings } from '../../../../components/admin/recent-listings';
 import { adminRead } from '../../_lib/api';
 
 export const metadata: Metadata = { title: 'New listing' };
@@ -38,5 +38,5 @@ async function Recent() {
     ListingJobListResponse,
     '/admin/listings/new',
   );
-  return <RecentListings jobs={jobs} />;
+  return <ListingList id="recent-listings" title="Recent listings" jobs={jobs} className="mt-14" />;
 }

@@ -1,0 +1,165 @@
+name: Nightly
+
+# Design §13: on one stack built from the commit, the k6 nightly profile (§1: 300 units, 3,000 buyers, 600
+# reserves/s for 30 s, and 500 sockets; correctness gated, latency reported only), then the chaos suite, then
+# `verify:invariants` across every drop the night touched. The M9 demo: 0 oversell, 0 double charge and 0
+# leaked units after a Redis restart and a relay kill (§16).
+#
+# The stack is the isolated Compose project (compose.isolated.yaml, `flashdrop-sys`): the env block below is
+# exactly what a run on a shared dev machine sets (with `;` between the files on Windows), so this job and a
+# local dry run drive the same commands against the same ports.
+on:
+  schedule:
+    # 03:17 UTC: off the hour. GitHub delays scheduled runs at the top of the hour, and drops some under load.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: >-
+          Chaos scenarios, space-separated: all, or any of redis-restart, redis-lost-tail, relay-kill,
+          consumer-kill, psp-outage, dup-delivery
+        required: true
+        default: all
+
+# A manual run waits for the scheduled one rather than sharing the runner's attention or cancelling it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  nightly:
+    name: Load (nightly profile), chaos suite, invariants
+    runs-on: ubuntu-latest
+    # The dry run on the 12-thread dev laptop (2026-10-09): stack 0.5 min, load 2, chaos 8.5 (mostly fixed by
+    # the bursts' pacing, the holds and the faults' own durations). A 4-vCPU runner is slower and also builds
+    # the images (3-8 min with the Actions layer cache): 25-30 minutes in all, well inside this cap.
+    timeout-minutes: 60
+    env:
+      # Every docker compose command, the chaos run's own included, acts on the isolated project: the CI
+      # overrides (test routes, raised rate limits, Postgres on tmpfs, fixture LLM, 50 ms PSP) plus its ports.
+      COMPOSE_FILE: compose.yaml:compose.ci.yaml:compose.isolated.yaml
+      # Required by compose.ci.yaml; k6, the chaos run's buyers and its test drops send the same value.
+      TEST_ROUTES_SECRET: nightly-only-test-routes-secret
+      # The chaos run (tests/chaos/target.ts) refuses to break a stack COMPOSE_FILE names without it.
+      FD_SYSTEM_TESTS: '1'
+      # verify:invariants and the chaos run read the stack from the runner, through its published ports.
+      DATABASE_URL: postgres://flashdrop:flashdrop@127.0.0.1:15433/flashdrop
+      REDIS_URL: redis://127.0.0.1:16379
+      KAFKA_BROKERS: 127.0.0.1:19094
+      E2E_BASE_URL: http://127.0.0.1:18080
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # For verify:invariants, the chaos run and the summaries, which run on the runner.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:native
+      # compose.yaml has no default for any secret: the stack's own go into .env (tools/ensure-env.ts); the
+      # job's TEST_ROUTES_SECRET still wins, as a shell variable does.
+      - run: pnpm exec tsx tools/ensure-env.ts
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # As ci.yml's images job, sharing its Actions layer cache scopes (docker-bake.hcl); `load` puts the
+      # images in the local store, from which Compose (pull_policy: never) runs them.
+      - name: Build images
+        timeout-minutes: 25
+        uses: docker/bake-action@018cb6412ab401ebaa809aa5f85966b74628600f # v7.4.0
+        with:
+          source: .
+          files: docker-bake.hcl
+          load: true
+      - name: Start the stack
+        id: stack
+        timeout-minutes: 8
+        run: docker compose --profile app up --detach --wait --wait-timeout 300
+
+      # The nightly profile (tests/load/burst.ts): an opening spike of 300 buyers firing together, then 600
+      # reserves/s for 30 s on 300 units with limit 2; of the winners 70% check out (90% pm_ok, 10%
+      # pm_decline), 20% cancel and 10% walk away. Only correctness thresholds: every unit sold at most once,
+      # every replay consistent, every pm_ok order PAID and every pm_decline order PAYMENT_FAILED in time, no
+      # 429, and the stock back. Its latencies are in the summary, never gated (§1: a shared 4-vCPU runner
+      # measures the runner).
+      - name: Burst (k6, nightly profile)
+        if: ${{ !cancelled() && steps.stack.outcome == 'success' }}
+        timeout-minutes: 10
+        run: docker compose --profile load run --rm k6 run /scripts/burst.ts -e PROFILE=nightly
+      # 500 sockets across /ws/1 and /ws/2 during a reserve storm: every frame well formed, conserved and in
+      # order; coalescing gated as in every profile (at most 10.5 frames/s per socket over the storm, 23 in
+      # any 2 s); every final level equal to Redis. Propagation is reported only.
+      - name: WebSocket fan-out (k6, nightly profile)
+        if: ${{ !cancelled() && steps.stack.outcome == 'success' }}
+        timeout-minutes: 8
+        run: docker compose --profile load run --rm k6 run /scripts/ws-fanout.ts -e PROFILE=nightly
+      # Before any fault: a violation here is the load's, not a chaos case's. No dead letters on this fresh
+      # broker; each chaos case then allows none beyond the DLQ's size when it starts. The report goes with
+      # the k6 summaries.
+      - name: Verify invariants after the load
+        if: ${{ !cancelled() && steps.stack.outcome == 'success' }}
+        timeout-minutes: 6
+        run: pnpm verify:invariants --max-dead-letters 0 --out tests/load/results/invariants.json
+
+      # tests/chaos/run.ts: each case on a fresh drop, a scripted burst with the fault injected mid-burst,
+      # then quiescence, verify:invariants, every order's end against its buyer's choice, the case's own
+      # evidence and a restart audit. Core (§13): redis-restart (SIGKILL Redis, back from its AOF) and
+      # relay-kill (SIGKILL the worker with a batch in flight); then redis-lost-tail (back from a truncated AOF
+      # copy), consumer-kill, psp-outage (503 for 60 s, past the 30 s backoff cap) and dup-delivery (every
+      # batch published twice). `--skip-up`: the stack is up, and the load's drops stay tracked.
+      - name: Chaos suite
+        if: ${{ !cancelled() && steps.stack.outcome == 'success' }}
+        timeout-minutes: 35
+        env:
+          # The input reaches the shell as a variable, never interpolated into the script; run.ts rejects
+          # any name that is not a scenario.
+          SCENARIOS: ${{ inputs.scenarios || 'all' }}
+        run: |
+          set -f
+          # Unquoted on purpose: one argument per scenario name (globbing is off above).
+          # shellcheck disable=SC2086
+          pnpm exec tsx tests/chaos/run.ts $SCENARIOS --skip-up
+
+      # The whole night at once: the seeded drops, the load's and every chaos case's, against Postgres, Redis,
+      # the PSP ledger and Kafka. The DLQ must still be empty: any dead letter is an event a consumer gave up
+      # on, which the settle safety net would otherwise hide.
+      - name: Verify invariants
+        if: ${{ !cancelled() && steps.stack.outcome == 'success' }}
+        timeout-minutes: 6
+        run: pnpm verify:invariants --max-dead-letters 0
+      # The chaos cases stopped and killed services by hand, which Docker never undoes; a restart means a
+      # process crashed and `restart: unless-stopped` brought it back.
+      - name: No container restarted
+        if: ${{ !cancelled() && steps.stack.outcome == 'success' }}
+        run: sh tools/check-restarts.sh
+
+      # Also after a failure or the job's timeout: the tables say how far the night got.
+      - name: Step summary
+        if: ${{ always() }}
+        run: |
+          {
+            pnpm exec tsx tools/chaos-summary.ts
+            echo
+            pnpm exec tsx tools/load-smoke-summary.ts --profile nightly
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Collect Compose logs
+        if: ${{ always() }}
+        run: docker compose --profile app logs --no-color --timestamps > compose-logs.txt
+      # Uploaded on success too: the night's evidence (k6 summaries, each chaos case's report and its
+      # invariants report, the final invariants report).
+      - name: Upload k6 summaries, chaos reports, invariants reports and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nightly-results
+          path: |
+            tests/load/results/
+            tests/chaos/results/
+            invariants-report.json
+            compose-logs.txt
+          if-no-files-found: warn
+          retention-days: 30

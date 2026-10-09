@@ -22,23 +22,34 @@
  *                                               hold every event already in the topic; then, after the
  *                                               rebuild, waits until the group has caught up again (each
  *                                               wait at most --timeout, default 120 s) and compares every
- *                                               drop's totals with the ones before the wipe
- *   pnpm dash:rebuild --accept-history-loss     rebuilds from what retention left (the lost totals stay lost)
+ *                                               drop that has orders with them
+ *   pnpm dash:rebuild --accept-history-loss     rebuilds from what the topic holds (the lost totals stay lost)
  *
- * A drop whose totals changed across the rebuild (orders placed meanwhile, or events the group had not
- * reached when it stopped) is judged by INV-5 instead: its replayed projection must equal its orders.
+ * The replay is judged on every drop with orders, not on the totals before the wipe alone: each dashboard
+ * must count every order of its drop and, where the outbox still holds their events, equal them (INV-5). A
+ * drop whose totals changed across the rebuild (orders placed meanwhile, or events the group had not reached
+ * when it stopped) is fine when it does. A dashboard short of orders is history the topic does not hold:
+ * recreated after their events were published, or orders written without events. The low-watermark check
+ * before the wipe cannot see that (such a topic starts at offset 0), and an identical projection hides it.
  *
- * Exit codes: 0 rebuilt (and, with --wait, every drop identical or equal to its orders); 1 consumers were
- * running, history was lost, the group did not catch up, or a replayed drop disagrees with its orders;
- * 2 could not run.
+ * Exit codes: 0 rebuilt (and, with --wait, every dashboard equal to its orders); 1 consumers were running,
+ * history was lost (unless --accept-history-loss), the group did not catch up, or a replayed drop disagrees
+ * with its orders; 2 could not run.
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs, promisify } from 'node:util';
-import { CONSUMER_GROUPS, KafkaEnv, loadEnv, PostgresEnv, RedisEnv } from '@flashdrop/config';
+import { CONSUMER_GROUPS, KafkaEnv, loadEnv, PostgresEnv, RedisEnv, TOPICS } from '@flashdrop/config';
 import type { DashboardTotalsMessage } from '@flashdrop/contracts';
-import { createDb, createPool, POOL_PROFILES, readAllSalesTotals, readDashboardCheck } from '@flashdrop/db';
+import {
+  createDb,
+  createPool,
+  orders,
+  POOL_PROFILES,
+  readAllSalesTotals,
+  readDashboardChecks,
+} from '@flashdrop/db';
 import { createCommandClient, dashboardChannel, REDIS_DEADLINE_MS, withDeadline } from '@flashdrop/inventory';
 import { createKafka, fetchGroupLag } from '@flashdrop/messaging';
 import { z } from 'zod';
@@ -124,20 +135,38 @@ async function caughtUp(what: string): Promise<boolean> {
   }
 }
 
+/** How long an unresolved judgement must stay the same to be final rather than an order in flight. */
+const SETTLED_MS = 5_000;
+/** Drops listed per kind of problem; the counts cover the rest. */
+const LISTED = 20;
+
 /**
- * INV-5 on the drops whose totals changed, until every one agrees with its orders or the timeout passes: an
- * order still on its way through the outbox and the group disagrees for a moment.
+ * The replay judged on every drop with orders (one statement per table for all of them), until each agrees
+ * or the problems stay the same for SETTLED_MS: an order still on its way through the outbox and the group
+ * disagrees for a moment, a history the topic lacks for good. The timeout bounds both.
  */
-async function judgeChanged(dropIds: readonly string[]): Promise<ReplayJudgement> {
+async function judgeEveryDrop(): Promise<ReplayJudgement> {
+  const dropIds = (await db.selectDistinct({ dropId: orders.dropId }).from(orders)).map((row) => row.dropId);
   const deadline = Date.now() + timeoutMs;
+  let last = '';
+  let sameSince = Date.now();
   for (;;) {
-    const checks = new Map(
-      await Promise.all(dropIds.map(async (id) => [id, await readDashboardCheck(db, id)] as const)),
-    );
-    const judgement = judgeReplay(checks);
-    if (judgement.disagree.size === 0 || Date.now() >= deadline) return judgement;
+    const judgement = judgeReplay(await readDashboardChecks(db, dropIds));
+    if (judgement.disagree.size === 0 && judgement.lost.size === 0) return judgement;
+    const problems = JSON.stringify([[...judgement.lost], [...judgement.disagree.keys()]]);
+    if (problems !== last) {
+      last = problems;
+      sameSince = Date.now();
+    }
+    if (Date.now() - sameSince >= SETTLED_MS || Date.now() >= deadline) return judgement;
     await sleep(1_000);
   }
+}
+
+function listSome<T>(entries: Iterable<T>, line: (entry: T) => string): void {
+  const all = [...entries];
+  for (const entry of all.slice(0, LISTED)) console.error(`  ${line(entry)}`);
+  if (all.length > LISTED) console.error(`  ... and ${all.length - LISTED} more`);
 }
 
 /**
@@ -204,28 +233,52 @@ async function run(): Promise<number> {
   }
   const after = await readAllSalesTotals(db);
   const differences = totalsDifferences(before, after);
-  if (differences.length === 0) {
-    console.log(`Replayed: every drop's totals are identical to before the wipe (${before.size} drops).`);
+  const changed = new Set(differences.map(({ dropId }) => dropId));
+  if (differences.length > 0) {
+    console.log(`${differences.length} drops changed across the rebuild; each must now equal its orders:`);
+    for (const { dropId, detail } of differences.slice(0, LISTED)) console.log(`  ${dropId}: ${detail}`);
+  }
+
+  const { lost, disagree, skipped } = await judgeEveryDrop();
+  // A drop that changed must now equal its orders: the change was orders placed meanwhile, or the replay is
+  // wrong. One that came back identical but disagrees was short before the wipe too: the replay reproduced
+  // it, so what is missing is events the topic does not hold, like the lost orders.
+  const wrong = [...disagree].filter(([dropId]) => changed.has(dropId));
+  const shortBefore = [...disagree].filter(([dropId]) => !changed.has(dropId));
+  // Changed and not comparable: nothing shows the change was orders placed meanwhile.
+  const unjudged = [...skipped].filter(([dropId]) => changed.has(dropId));
+  let ok = true;
+  if (wrong.length > 0 || unjudged.length > 0) {
+    ok = false;
+    console.error('The replay is not proven: these drops changed and do not match their orders (INV-5):');
+    listSome(wrong, ([dropId, messages]) => `${dropId}: ${messages.join('; ')}`);
+    listSome(unjudged, ([dropId, reason]) => `${dropId} cannot be judged: ${reason}`);
+  }
+  const history = lost.size + shortBefore.length;
+  if (history > 0) {
+    const accepted = args['accept-history-loss'];
+    if (!accepted) ok = false;
+    console.error(
+      `${accepted ? 'warning: ' : ''}${history} dashboards are short of their orders: ${TOPICS.orders} does ` +
+        'not hold all of their events (recreated after they were published, or the orders were written ' +
+        'without them), so no replay can restore them.',
+    );
+    listSome(lost, ([dropId, n]) => {
+      const orders = `${n} order${n === 1 ? '' : 's'} not counted`;
+      return `${dropId}: ${orders}${changed.has(dropId) ? ', lost by this rebuild' : ''}`;
+    });
+    listSome(shortBefore, ([dropId, messages]) => `${dropId}: ${messages.join('; ')}, as before the wipe`);
+    if (!accepted) console.error('Pass --accept-history-loss to accept dashboards short of their orders.');
+  }
+  if (!ok) return 1;
+  if (history > 0) {
+    console.log(`Rebuilt from what ${TOPICS.orders} holds; every other dashboard equals its orders.`);
     return 0;
   }
-  // Drops with totals on either side: one whose first order came meanwhile has none before the wipe.
   const drops = new Set([...before.keys(), ...after.keys()]).size;
   console.log(
-    `${differences.length} drops changed across the rebuild; each must now equal its orders (INV-5):`,
-  );
-  for (const { dropId, detail } of differences) console.log(`  ${dropId}: ${detail}`);
-  const { agree, disagree, skipped } = await judgeChanged(differences.map(({ dropId }) => dropId));
-  for (const [dropId, reason] of skipped) console.error(`  ${dropId} cannot be judged: ${reason}`);
-  for (const [dropId, messages] of disagree) console.error(`  ${dropId}: ${messages.join('; ')}`);
-  if (disagree.size > 0 || skipped.size > 0) {
-    console.error(
-      'The replay is not proven: the drops above differ from before and do not match their orders.',
-    );
-    return 1;
-  }
-  console.log(
-    `Replayed: ${drops - agree.length} drops identical, and ${agree.length} changed by orders placed ` +
-      'meanwhile, each equal to its orders.',
+    `Replayed: ${drops - changed.size} drops identical and ${changed.size} changed by orders placed ` +
+      'meanwhile; every dashboard equals its orders.',
   );
   return 0;
 }

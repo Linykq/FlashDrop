@@ -2,8 +2,9 @@
 
 import { type DropSummary, uploadPath } from '@flashdrop/contracts';
 import { useLayoutEffect, useRef } from 'react';
-import type { HeldOrder } from '../../lib/hold';
+import type { ViewerClaim } from '../../lib/hold';
 import { useLiveStock } from '../../lib/live-stock';
+import type { NextDrop } from '../../lib/purchase';
 import { toLiveSeed } from '../../lib/stock';
 import { useStockAnnouncements } from '../../lib/use-stock-announcements';
 import { DropCard, DropCardEmpty } from '../commerce/drop-card';
@@ -15,8 +16,10 @@ export type RoomPurchase = {
   signedIn: boolean;
   /** The room, to come back to after signing in. */
   returnTo: string;
-  /** The viewer's live hold on the pinned drop when the page was rendered (§9.13), or `null`. */
-  heldOrder: HeldOrder | null;
+  /** What the viewer already has of the pinned drop when the page was rendered (§9.13). */
+  claim: ViewerClaim;
+  /** Where the card points once the pinned drop sells out. */
+  next: NextDrop | null;
 };
 
 /**
@@ -25,7 +28,15 @@ export type RoomPurchase = {
  * and its content crossfades over 200 ms (opacity only, so reduced motion keeps it too), focus stays where it
  * was, and the polite region says "Now selling: {title}" (§13.3).
  */
-export function RoomDropCard({ drop, ...purchase }: RoomPurchase & { drop: DropSummary | null }) {
+export function RoomDropCard({
+  drop,
+  onScreen,
+  ...purchase
+}: RoomPurchase & {
+  drop: DropSummary | null;
+  /** The stream shows the pinned product right now (its cue), which the status line says. */
+  onScreen: boolean;
+}) {
   const frame = useRef<HTMLDivElement>(null);
   const shown = useRef(drop?.id ?? null);
   const dropId = drop?.id ?? null;
@@ -44,16 +55,22 @@ export function RoomDropCard({ drop, ...purchase }: RoomPurchase & { drop: DropS
     if (title !== null) announce(`Now selling: ${title}`);
   }, [dropId, title]);
 
-  return <div ref={frame}>{drop ? <PinnedDropCard drop={drop} {...purchase} /> : <DropCardEmpty />}</div>;
+  return (
+    <div ref={frame}>
+      {drop ? <PinnedDropCard drop={drop} onScreen={onScreen} {...purchase} /> : <DropCardEmpty />}
+    </div>
+  );
 }
 
 function PinnedDropCard({
   drop,
+  onScreen,
   serverNow,
   signedIn,
   returnTo,
-  heldOrder,
-}: RoomPurchase & { drop: DropSummary }) {
+  claim,
+  next,
+}: RoomPurchase & { drop: DropSummary; onScreen: boolean }) {
   const { level, paused, quiet } = useLiveStock(drop.id, toLiveSeed(drop.stock, drop.status));
   useStockAnnouncements(level, paused, quiet);
   const photo = drop.product.imageKeys[0];
@@ -70,6 +87,7 @@ function PinnedDropCard({
       endsAt={drop.endsAt}
       serverNow={serverNow}
       paused={paused}
+      onScreen={onScreen}
     >
       <PurchasePanel
         layout="card"
@@ -77,13 +95,13 @@ function PinnedDropCard({
         stock={level}
         perUserLimit={drop.perUserLimit}
         holdSeconds={drop.holdSeconds}
-        startsAt={drop.startsAt}
         serverNow={serverNow}
         priceCents={drop.priceCents}
         currency={drop.currency}
         signedIn={signedIn}
         returnTo={returnTo}
-        heldOrder={heldOrder}
+        claim={claim}
+        next={next}
       />
     </DropCard>
   );

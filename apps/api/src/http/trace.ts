@@ -4,7 +4,7 @@ import type { IncomingMessage } from 'node:http';
 /*
  * Trace ids (design §12): taken from an incoming W3C `traceparent`, otherwise created here. Every log line
  * of a request carries it, and so does every problem response, so a user-visible error can be found in the
- * logs. From M3 it is copied into the outbox headers and travels on to Kafka and the consumers.
+ * logs. It is copied into the outbox headers and travels on to Kafka and the consumers.
  */
 
 // version-traceid-parentid-flags. Version ff and all-zero ids are invalid (W3C Trace Context §3.2).

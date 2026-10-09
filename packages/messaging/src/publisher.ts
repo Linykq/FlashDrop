@@ -1,5 +1,5 @@
 import { KafkaJS } from '@confluentinc/kafka-javascript';
-import type { Logger } from '@flashdrop/config';
+import { type Logger, withTimeout } from '@flashdrop/config';
 import { describeError } from './errors';
 import { createProducer } from './kafka';
 
@@ -140,15 +140,12 @@ export function createPublisher({
   const connect = async (): Promise<KafkaJS.Producer> => {
     const producer = createProducer(kafka);
     const connecting = producer.connect();
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new ConnectTimeoutError(`kafka producer did not connect within ${connectTimeoutMs} ms`)),
-        connectTimeoutMs,
-      );
-    });
     try {
-      await Promise.race([connecting, timeout]);
+      await withTimeout(
+        connecting,
+        connectTimeoutMs,
+        () => new ConnectTimeoutError(`kafka producer did not connect within ${connectTimeoutMs} ms`),
+      );
       return producer;
     } catch (err) {
       // The client keeps connecting after the bound; drop this producer once it has settled either way.
@@ -162,8 +159,6 @@ export function createPublisher({
         () => undefined,
       );
       throw err;
-    } finally {
-      clearTimeout(timer);
     }
   };
 

@@ -113,7 +113,7 @@ describe('admin catalog over Postgres', () => {
 
   it('lists products with their open drop, and the rooms', async () => {
     const { products } = AdminProductListResponse.parse(await get('/admin/products'));
-    const live = products.find((product) => product.id === seedProductId('sage-wireless-headphones'));
+    const live = products.find((product) => product.id === seedProductId('faceted-eau-de-parfum'));
     const ended = products.find((product) => product.id === seedProductId('amber-jar-candle'));
     expect(live?.openDropId).not.toBeNull();
     expect(ended?.openDropId).toBeNull();

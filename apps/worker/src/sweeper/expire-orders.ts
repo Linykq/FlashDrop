@@ -1,6 +1,6 @@
 import { EXPIRE_BATCH, expireDueOrders } from '@flashdrop/db';
-import { alert } from '@flashdrop/domain';
 import type { WorkerDeps } from '../deps';
+import { reportQuarantine } from './settle';
 
 /** A tick stops draining after this long; the loop runs every second. */
 const TICK_BUDGET_MS = 800;
@@ -33,13 +33,9 @@ export async function expireOrders(
     }
     if (tick.kind === 'fallback') {
       deps.logger.error({ err: tick.batchError }, 'expiry batch failed; expired the due orders one by one');
+      // `expireDueOrders` wrote their quarantine rows in its fallback; this only reports them.
       for (const { orderId, error } of tick.quarantined) {
-        alert(
-          deps.logger,
-          'sweeper_quarantine',
-          { loop: 'expire-orders', orderId, error },
-          'order quarantined',
-        );
+        reportQuarantine(deps.logger, 'expire-orders', orderId, error);
       }
       return;
     }

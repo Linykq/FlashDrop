@@ -15,17 +15,23 @@ type DataTableProps = {
 
 /**
  * An admin data table (design system §9.22) in a card. `overflow-clip` rounds the corners without creating a
- * scroll container, so from 735 px the header row sticks under the navigation bar. Below 735 px the table
- * scrolls sideways in its own region, with the first column sticky, at most about half the region wide and
- * edged with a hairline, so the columns that scroll under it can be seen; the header doesn't stick there.
+ * scroll container, so from 735 px the header row sticks under the navigation bar, and focus brought into
+ * view clears that header as well as the bar (WCAG 2.4.11). Below 735 px the table scrolls sideways in its own
+ * region, with the first column sticky, at most about half the region wide and edged with a hairline, so the
+ * columns that scroll under it can be seen; the header doesn't stick there. At any width, a table wider than
+ * its card scrolls the same way rather than being cut off (WCAG 1.4.10, 2.1.1); its header then sticks to the
+ * region rather than the page, the price of reaching every column.
  */
 export function DataTable({ id, caption, hideCaption = true, children, className }: DataTableProps) {
   const captionId = `${id}-caption`;
   return (
     <div className={cx('overflow-clip rounded-lg bg-surface elevation-1', className)}>
       {/* Positioned, so the visually hidden text in its cells (absolute) scrolls and clips with the table. */}
-      <ScrollRegion labelledBy={captionId} className="relative max-sm:overflow-x-auto">
-        <table className="w-full border-separate border-spacing-0 text-callout">
+      <ScrollRegion
+        labelledBy={captionId}
+        className="relative max-sm:overflow-x-auto data-overflows:overflow-x-auto"
+      >
+        <table className="w-full border-separate border-spacing-0 text-callout sm:[&_tbody_:is(a,button,input)]:scroll-mt-9">
           <caption
             id={captionId}
             className={hideCaption ? 'sr-only' : 'px-4 pt-4 pb-2 text-start text-headline'}

@@ -11,6 +11,7 @@ import {
   type LagTracker,
   outboxHealth,
   type PipelineCheck,
+  projectionBacklog,
   rebuildHealth,
   splitSkippedNote,
   summarizeHealth,
@@ -82,6 +83,23 @@ describe('consumer lag trend', () => {
       [40_000, 12, '3'],
     ]);
     expect(groupHealth(falling, 'dashboard', 40_000)).toBe('healthy');
+  });
+
+  it('degrades a backlog of 1,000 or more even while it falls, as a replay does', () => {
+    const replay = polls([
+      [0, 155_474, '1'],
+      [20_000, 120_000, '2'],
+      [40_000, 80_000, '3'],
+    ]);
+    expect(groupHealth(replay, 'dashboard', 40_000)).toBe('degraded');
+    expect(groupHealth(polls([[0, 999, '1']]), 'dashboard', 0)).toBe('healthy');
+  });
+
+  it("says the projection owes a backlog only from 1,000 of its group's records", () => {
+    expect(projectionBacklog([group(155_474)])).toBe(155_474);
+    expect(projectionBacklog([group(999)])).toBeNull();
+    expect(projectionBacklog([{ ...group(5_000), name: 'payment' }])).toBeNull();
+    expect(projectionBacklog(null)).toBeNull();
   });
 
   it('degrades when lag kept rising for over 30 s', () => {

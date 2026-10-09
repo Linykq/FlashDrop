@@ -146,27 +146,50 @@ export function totalsDifferences(
   return differences;
 }
 
+/**
+ * The drop's orders its dashboard does not count. The projection counts every order exactly once, as
+ * reserved or as rejected, so this needs no events: it also sees orders whose events orders.v1 lost, or
+ * never carried, where INV-5 cannot compare (their outbox rows are past retention, or never existed).
+ */
+export function ordersMissing(check: DashboardCheck): number {
+  const orders = check.truth.reserved + check.truth.rejected + check.eventless;
+  return Math.max(0, orders - check.totals.reserved - check.totals.rejected);
+}
+
 export interface ReplayJudgement {
   /** Drops whose replayed projection equals the Postgres truth of their orders (INV-5). */
   readonly agree: readonly string[];
-  /** INV-5's messages for each drop whose replay does not. */
+  /**
+   * Drops whose dashboard leaves out orders, with how many: the topic does not hold their events (recreated
+   * after they were published, or they were written without any), so no replay can restore them.
+   */
+  readonly lost: ReadonlyMap<string, number>;
+  /** INV-5's messages for each drop that counts every order yet disagrees with them: a wrong replay. */
   readonly disagree: ReadonlyMap<string, readonly string[]>;
-  /** Drops INV-5 cannot judge, with why (orders whose events are past the outbox's retention). */
+  /**
+   * Drops that count every order but that INV-5 cannot compare counter by counter, with why (orders whose
+   * events are past the outbox's retention).
+   */
   readonly skipped: ReadonlyMap<string, string>;
 }
 
 /**
  * Judges replayed drops against their orders rather than against the snapshot before the wipe: the events of
  * orders placed while the consumers were stopped, or still lagging when they stopped, are in the replay but
- * not in the snapshot, and INV-5 tells such a legitimate change from a replay that counted wrong.
+ * not in the snapshot, and INV-5 tells such a legitimate change from a replay that counted wrong. Run on
+ * every drop with orders, not only those that changed: a projection already short of orders before the wipe
+ * comes back identical, and only its orders show what the topic lacks.
  */
 export function judgeReplay(checks: ReadonlyMap<string, DashboardCheck>): ReplayJudgement {
   const agree: string[] = [];
+  const lost = new Map<string, number>();
   const disagree = new Map<string, string[]>();
   const skipped = new Map<string, string>();
   for (const [dropId, check] of checks) {
+    const missing = ordersMissing(check);
     const result = checkDashboard(dropId, check);
-    if (result.skipped !== undefined) skipped.set(dropId, result.skipped);
+    if (missing > 0) lost.set(dropId, missing);
+    else if (result.skipped !== undefined) skipped.set(dropId, result.skipped);
     else if (result.violations.length > 0)
       disagree.set(
         dropId,
@@ -174,5 +197,5 @@ export function judgeReplay(checks: ReadonlyMap<string, DashboardCheck>): Replay
       );
     else agree.push(dropId);
   }
-  return { agree, disagree, skipped };
+  return { agree, lost, disagree, skipped };
 }

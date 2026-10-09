@@ -61,12 +61,22 @@ export function formatPriceInput(cents: number): string {
 
 /**
  * A new drop starts at the next whole hour after the coming one and runs an hour, so it is never already
- * open when the admin arms it a minute later.
+ * open when the admin arms it a minute later. Editing starts from the draft's values; running an ended drop
+ * again (`copyOf`) starts from its product, room, price and stock settings, in a fresh window of its length.
  */
 export function initialDropForm(
-  source: AdminDropListing | { productId: string | null },
+  source: AdminDropListing | { productId: string | null } | { copyOf: AdminDropListing },
   now: number,
 ): DropFormValues {
+  const start = Math.ceil(now / HOUR_MS) * HOUR_MS + HOUR_MS;
+  if ('copyOf' in source) {
+    const length = Date.parse(source.copyOf.endsAt) - Date.parse(source.copyOf.startsAt);
+    return {
+      ...initialDropForm(source.copyOf, now),
+      startsAt: toLocalInput(new Date(start).toISOString()),
+      endsAt: toLocalInput(new Date(start + Math.max(length, HOUR_MS / 60)).toISOString()),
+    };
+  }
   if ('id' in source) {
     return {
       productId: source.productId,
@@ -80,7 +90,6 @@ export function initialDropForm(
       paymentSeconds: String(source.paymentSeconds),
     };
   }
-  const start = Math.ceil(now / HOUR_MS) * HOUR_MS + HOUR_MS;
   return {
     productId: source.productId ?? '',
     roomId: '',

@@ -50,6 +50,26 @@ describe('dashboard model', () => {
     expect(spec.points.map((point) => point.partial)).toEqual([false]);
   });
 
+  it("caps the running minute's pace at what the drop had left, so a burst can't stretch the axis", () => {
+    // 15 s into its second minute a 100-unit drop sells at 120 a minute, but only 40 were left.
+    const burst = unitsPerMinute(
+      [minute('2026-10-06T19:00:00.000Z', 60), minute('2026-10-06T19:01:00.000Z', 30)],
+      Date.parse('2026-10-06T19:01:15.000Z'),
+      label,
+      100,
+    );
+    expect(burst.points.at(-1)?.pace).toBe(40);
+    expect(burst.ticks.at(-1)).toBe(60);
+    // Never below what the minute sold itself.
+    const sold = unitsPerMinute(
+      [minute('2026-10-06T19:00:00.000Z', 95), minute('2026-10-06T19:01:00.000Z', 5)],
+      Date.parse('2026-10-06T19:01:02.000Z'),
+      label,
+      100,
+    );
+    expect(sold.points.at(-1)?.pace).toBe(5);
+  });
+
   it('puts round ticks on the value axis, up to the first one at or above the peak', () => {
     expect(niceTicks(140)).toEqual([0, 50, 100, 150]);
     expect(niceTicks(150)).toEqual([0, 50, 100, 150]);
@@ -83,6 +103,13 @@ describe('dashboard model', () => {
       value: '30m',
       sub: 'Not sold out · 8 left',
     });
+    // Cancelled before it opened.
+    expect(
+      unsoldTile({ ...drop, status: 'ENDED' }, Date.parse('2026-10-06T18:00:00.000Z'), {
+        avail: 10,
+        held: 0,
+      }),
+    ).toEqual({ label: 'Opened', value: 'Never', sub: 'Ended before its start · 10 left' });
     expect(unsoldTile({ ...drop, status: 'SCHEDULED' }, at, { avail: 12, held: 0 })).toEqual({
       label: 'Time to sell-out',
       value: 'Not open',

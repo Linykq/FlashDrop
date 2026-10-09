@@ -1,7 +1,7 @@
 {
   "name": "@flashdrop/worker",
   "private": true,
-  "description": "Background roles via WORKER_ROLES: relay, sweeper and reconciler (worker); payment and settlement consumers (consumers); dashboard (M7), listing (M8).",
+  "description": "Background roles via WORKER_ROLES, in four Compose services: relay, sweeper and reconciler (worker); listing (listing); payment and settlement (consumers); dashboard (dashboard-consumers).",
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=../../.env src/main.ts",
@@ -16,6 +16,7 @@
     "@flashdrop/inventory": "workspace:*",
     "@flashdrop/llm": "workspace:*",
     "@flashdrop/messaging": "workspace:*",
+    "@prometheus-io/client": "catalog:",
     "pg": "catalog:",
     "zod": "catalog:"
   },

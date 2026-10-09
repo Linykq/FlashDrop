@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { BugError } from '@flashdrop/domain';
 import { classifyFailure } from '@flashdrop/messaging';
 import { afterEach, describe, expect, it } from 'vitest';
+import { registry } from '../metrics';
 import { createPspClient, PspUnavailableError } from './psp-client';
 
 /*
@@ -20,6 +21,7 @@ afterEach(async () => {
 });
 
 interface Received {
+  readonly authorization: string | undefined;
   readonly method: string | undefined;
   readonly url: string | undefined;
   readonly key: string | string[] | undefined;
@@ -35,6 +37,7 @@ async function psp(
     let body = '';
     for await (const chunk of request) body += String(chunk);
     received.push({
+      authorization: request.headers.authorization,
       method: request.method,
       url: request.url,
       key: request.headers['idempotency-key'],
@@ -61,17 +64,22 @@ const request = {
 
 const transient = (error: unknown) => classifyFailure(error, () => false);
 
+const API_KEY = 'test-psp-api-key-at-least-32-chars';
+const client = (baseUrl: string, timeoutMs?: number) =>
+  createPspClient({ baseUrl, apiKey: API_KEY, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+
 describe('createPspClient', () => {
   it('sends the charge with its Idempotency-Key and parses the answer', async () => {
     const { url, received } = await psp(json(200, { status: 'succeeded', id: 'ch_1' }));
-    const client = createPspClient({ baseUrl: url });
+    const pspClient = client(url);
 
-    await expect(client.charge(request, `charge:${request.reference}`)).resolves.toEqual({
+    await expect(pspClient.charge(request, `charge:${request.reference}`)).resolves.toEqual({
       status: 'succeeded',
       id: 'ch_1',
     });
     expect(received).toEqual([
       {
+        authorization: `Bearer ${API_KEY}`,
         method: 'POST',
         url: '/v1/charges',
         key: `charge:${request.reference}`,
@@ -82,9 +90,9 @@ describe('createPspClient', () => {
 
   it('closes a reference without a body', async () => {
     const { url, received } = await psp(json(200, { refundedChargeId: 'ch_1', amountCents: 1_999 }));
-    const client = createPspClient({ baseUrl: url });
+    const pspClient = client(url);
 
-    await expect(client.closeReference(request.reference, `close:${request.reference}`)).resolves.toEqual({
+    await expect(pspClient.closeReference(request.reference, `close:${request.reference}`)).resolves.toEqual({
       refundedChargeId: 'ch_1',
       amountCents: 1_999,
     });
@@ -93,18 +101,19 @@ describe('createPspClient', () => {
 
   it('reads past fields the contract does not know: a PSP adding one must not fail every charge and close', async () => {
     const { url } = await psp(json(200, { status: 'succeeded', id: 'ch_1', livemode: false }));
-    const client = createPspClient({ baseUrl: url });
-    await expect(client.charge(request, 'k')).resolves.toEqual({ status: 'succeeded', id: 'ch_1' });
+    const pspClient = client(url);
+    await expect(pspClient.charge(request, 'k')).resolves.toEqual({ status: 'succeeded', id: 'ch_1' });
 
     const closed = await psp(json(200, { refundedChargeId: 'ch_1', amountCents: 1_999, refundId: 're_1' }));
-    await expect(
-      createPspClient({ baseUrl: closed.url }).closeReference(request.reference, 'k'),
-    ).resolves.toEqual({ refundedChargeId: 'ch_1', amountCents: 1_999 });
+    await expect(client(closed.url).closeReference(request.reference, 'k')).resolves.toEqual({
+      refundedChargeId: 'ch_1',
+      amountCents: 1_999,
+    });
   });
 
   it.each([500, 503, 408, 429])('takes %i as an unknown outcome to retry', async (status) => {
     const { url } = await psp(json(status, { error: { code: 'unavailable', message: 'busy' } }));
-    const error = await createPspClient({ baseUrl: url })
+    const error = await client(url)
       .charge(request, 'k')
       .catch((e: unknown) => e);
 
@@ -114,7 +123,7 @@ describe('createPspClient', () => {
 
   it('takes no answer within the timeout as an unknown outcome to retry', async () => {
     const { url } = await psp(() => undefined); // never answers
-    const error = await createPspClient({ baseUrl: url, timeoutMs: 100 })
+    const error = await client(url, 100)
       .charge(request, 'k')
       .catch((e: unknown) => e);
 
@@ -123,7 +132,7 @@ describe('createPspClient', () => {
   });
 
   it('takes a refused connection as an unknown outcome to retry', async () => {
-    const error = await createPspClient({ baseUrl: 'http://127.0.0.1:9' })
+    const error = await client('http://127.0.0.1:9')
       .charge(request, 'k')
       .catch((e: unknown) => e);
 
@@ -136,11 +145,43 @@ describe('createPspClient', () => {
     ['a 200 that is not JSON', (response: ServerResponse) => response.writeHead(200).end('ok')],
   ])('takes %s as a bug, not as something to retry forever', async (_, answer) => {
     const { url } = await psp(answer);
-    const error = await createPspClient({ baseUrl: url })
+    const error = await client(url)
       .charge(request, 'k')
       .catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(BugError);
     expect(transient(error)).toBe('unclassified');
+  });
+
+  it('counts every call once, by operation and result (fd_psp_requests_total)', async () => {
+    const counted = async (op: string, result: string) => {
+      const metric = registry.getSingleMetric('fd_psp_requests_total');
+      const values = (await metric?.get())?.values ?? [];
+      return values.find((v) => v.labels.op === op && v.labels.result === result)?.value ?? 0;
+    };
+    const before = {
+      declined: await counted('charge', 'declined'),
+      timeout: await counted('charge', 'timeout'),
+      unavailable: await counted('close', 'unavailable'),
+      closed: await counted('close', 'closed'),
+    };
+
+    const declined = await psp(json(200, { status: 'declined', id: 'ch_2', declineCode: 'card_declined' }));
+    await client(declined.url).charge(request, 'k');
+    const silent = await psp(() => undefined);
+    await client(silent.url, 50)
+      .charge(request, 'k')
+      .catch(() => undefined);
+    const busy = await psp(json(503, { error: { code: 'unavailable', message: 'busy' } }));
+    await client(busy.url)
+      .closeReference(request.reference, 'k')
+      .catch(() => undefined);
+    const nothing = await psp(json(200, {}));
+    await client(nothing.url).closeReference(request.reference, 'k');
+
+    expect(await counted('charge', 'declined')).toBe(before.declined + 1);
+    expect(await counted('charge', 'timeout')).toBe(before.timeout + 1);
+    expect(await counted('close', 'unavailable')).toBe(before.unavailable + 1);
+    expect(await counted('close', 'closed')).toBe(before.closed + 1);
   });
 });

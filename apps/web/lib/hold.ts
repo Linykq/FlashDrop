@@ -169,6 +169,35 @@ export function liveHold(orders: readonly OrderView[], dropId: string): HeldOrde
 }
 
 /**
+ * What a signed-in viewer already has of a drop (design-system §9.13): the live hold the product page offers
+ * back, and the units already past their hold, being paid for or paid. Both count against the per-person
+ * limit (Redis keeps the claim until an order ends unpaid, SD §4.3), so a buyer who has their limit is shown
+ * that, never a Buy that api can only refuse.
+ */
+export type ViewerClaim = {
+  held: HeldOrder | null;
+  /** Units in PENDING_PAYMENT and PAID orders on the drop. */
+  placedQty: number;
+  /** The newest of those orders, for "View your order"; `null` when there is none. */
+  lastPlacedId: string | null;
+};
+
+export const NO_CLAIM: ViewerClaim = { held: null, placedQty: 0, lastPlacedId: null };
+
+/** The viewer's claim on `dropId` among their latest orders, newest first as api lists them. */
+export function viewerClaim(orders: readonly OrderView[], dropId: string): ViewerClaim {
+  let placedQty = 0;
+  let lastPlacedId: string | null = null;
+  for (const order of orders) {
+    if (order.dropId !== dropId) continue;
+    if (order.status !== 'PENDING_PAYMENT' && order.status !== 'PAID') continue;
+    placedQty += order.qty;
+    lastPlacedId ??= order.id;
+  }
+  return { held: liveHold(orders, dropId), placedQty, lastPlacedId };
+}
+
+/**
  * The order list's order (design-system §10.6): live holds first, the one ending soonest on top, because they
  * are the only rows with something left to do; then everything else as api listed it, newest first.
  */

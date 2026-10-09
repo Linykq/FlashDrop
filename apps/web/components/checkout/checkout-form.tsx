@@ -4,9 +4,9 @@ import { useRouter } from 'next/navigation';
 import { type FormEvent, type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   CHECKOUT_PAYMENT_METHODS,
-  type CheckoutField,
   COUNTRIES,
   erroredFields,
+  errorSummaryTitle,
   FIELD_SPECS,
   type FieldErrors,
   fieldErrorsFromIssues,
@@ -20,10 +20,10 @@ import { checkoutHref, loginHref } from '../../lib/routes';
 import { orderRequests } from '../../lib/use-order-requests';
 import { Banner } from '../ui/banner';
 import { Button } from '../ui/button';
+import { ErrorSummary, type ErrorSummaryItem } from '../ui/error-summary';
 import { RadioCard } from '../ui/radio-card';
 import { errorId, SelectField, TextField } from '../ui/text-field';
 import { toast } from '../ui/toast';
-import { ErrorSummary } from './error-summary';
 
 const subscribeNever = () => () => {};
 
@@ -71,8 +71,11 @@ export function CheckoutForm({
 }: CheckoutFormProps) {
   const router = useRouter();
   const [errors, setErrors] = useState<FieldErrors>({});
-  // The summary is a snapshot of the last submit; fields clear their own error as they are fixed.
-  const [summary, setSummary] = useState<{ fields: CheckoutField[]; errors: FieldErrors } | null>(null);
+  // Shown after a failed submit, listing the fields that still fail as they are fixed one by one. Once the
+  // last is fixed it fades out over 200 ms with what it said last (`leaving`), then goes.
+  const [summary, setSummary] = useState<{ leaving: ErrorSummaryItem[] | null } | null>(null);
+  // Bumped by each failed submit, which moves focus to the summary, including one that repeats the last.
+  const [failedSubmits, setFailedSubmits] = useState(0);
   const [failed, setFailed] = useState(false);
   const summaryRef = useRef<HTMLElement>(null);
   const running = useRef<AbortController | null>(null);
@@ -96,14 +99,22 @@ export function CheckoutForm({
     };
   }, [onBusyChange]);
 
-  // Each failed submit moves focus to the summary, including one that repeats the last.
   useEffect(() => {
-    if (summary) summaryRef.current?.focus();
-  }, [summary]);
+    if (failedSubmits > 0) summaryRef.current?.focus();
+  }, [failedSubmits]);
+
+  // Focus is on the field just fixed by then, so nothing is lost when the summary goes.
+  const leaving = summary?.leaving ?? null;
+  useEffect(() => {
+    if (leaving === null) return;
+    const timer = setTimeout(() => setSummary(null), 200);
+    return () => clearTimeout(timer);
+  }, [leaving]);
 
   function showErrors(next: FieldErrors): void {
     setErrors(next);
-    setSummary({ fields: erroredFields(next), errors: next });
+    setSummary({ leaving: null });
+    setFailedSubmits((count) => count + 1);
   }
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -172,7 +183,10 @@ export function CheckoutForm({
     }
   }
 
-  /** A field that had an error loses it once it passes; no new errors appear until the next submit. */
+  /**
+   * A field that had an error loses it once it passes, and leaves the summary with it; no new errors appear
+   * until the next submit.
+   */
   function recheck(form: HTMLFormElement): void {
     if (Object.keys(errors).length === 0) return;
     const checked = validateCheckout(new FormData(form));
@@ -181,7 +195,9 @@ export function CheckoutForm({
       const message = checked.ok ? undefined : checked.errors[field];
       if (message) still[field] = message;
     }
-    if (erroredFields(still).length !== erroredFields(errors).length) setErrors(still);
+    if (erroredFields(still).length === erroredFields(errors).length) return;
+    setErrors(still);
+    if (erroredFields(still).length === 0 && summary !== null) setSummary({ leaving: summaryItems(errors) });
   }
 
   const field = (name: ShippingField) => ({
@@ -204,7 +220,14 @@ export function CheckoutForm({
       onSubmit={(event) => void submit(event)}
       onChange={(event) => recheck(event.currentTarget)}
     >
-      {summary && <ErrorSummary ref={summaryRef} fields={summary.fields} errors={summary.errors} />}
+      {summary && (
+        <ErrorSummary
+          ref={summaryRef}
+          title={errorSummaryTitle((summary.leaving ?? summaryItems(errors)).length)}
+          items={summary.leaving ?? summaryItems(errors)}
+          leaving={summary.leaving !== null}
+        />
+      )}
 
       {/* min-w-0: a fieldset is min-content wide by default, which would push a field past a 320 px screen. */}
       <fieldset className={summary ? 'mt-8 min-w-0' : 'min-w-0'}>
@@ -300,4 +323,17 @@ export function CheckoutForm({
       </p>
     </form>
   );
+}
+
+/** The summary's rows: each failing field in the form's order, linking to it (§10.4). */
+function summaryItems(errors: FieldErrors): ErrorSummaryItem[] {
+  return erroredFields(errors).map((field) => ({
+    targetId: fieldId(field),
+    message: errors[field] ?? '',
+    // A radio group takes focus on its checked radio, as Tab would.
+    focusTarget:
+      field === 'paymentMethod'
+        ? () => document.querySelector<HTMLInputElement>('input[name="paymentMethod"]:checked')
+        : undefined,
+  }));
 }

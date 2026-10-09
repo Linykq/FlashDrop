@@ -1,0 +1,14 @@
+# The stack's Prometheus (infra/prometheus/prometheus.yml), under the uid the dashboards reference.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # The scrape interval, so that rate() windows and $__rate_interval match the data.
+      timeInterval: 5s

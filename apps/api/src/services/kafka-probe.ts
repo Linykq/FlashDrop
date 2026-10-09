@@ -1,5 +1,10 @@
-import { DLQ_REPLAY_GROUP, TOPICS } from '@flashdrop/config';
-import { createGroupLagReader, type createKafka, type PartitionLag } from '@flashdrop/messaging';
+import { DLQ_REPLAY_GROUP, TOPICS, withTimeout } from '@flashdrop/config';
+import {
+  countTopicRecords,
+  createGroupLagReader,
+  type createKafka,
+  type PartitionLag,
+} from '@flashdrop/messaging';
 
 /** The Kafka client `createKafka` builds; api depends on the client only through @flashdrop/messaging. */
 export type KafkaClient = ReturnType<typeof createKafka>;
@@ -45,8 +50,7 @@ export function createKafkaProbe(kafka: KafkaClient): KafkaProbe {
       });
     }
     await connected;
-    const watermarks = await admin.fetchTopicOffsets(TOPICS.ordersDlq);
-    return watermarks.reduce((sum, w) => sum + Number(BigInt(w.high) - BigInt(w.low)), 0);
+    return countTopicRecords(admin, TOPICS.ordersDlq);
   }
 
   async function deadLetters(): Promise<DeadLetterCount> {
@@ -59,7 +63,8 @@ export function createKafkaProbe(kafka: KafkaClient): KafkaProbe {
     deadLetters: () => bounded(deadLetters(), TIMEOUT_MS),
     async close() {
       const opened = connected;
-      await Promise.allSettled([
+      // Every client closes even when one fails; the failures go to the caller, which logs them.
+      const results = await Promise.allSettled([
         lag.close(),
         replayProgress.close(),
         opened === undefined
@@ -69,18 +74,13 @@ export function createKafkaProbe(kafka: KafkaClient): KafkaProbe {
               TIMEOUT_MS,
             ),
       ]);
+      const failures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+      if (failures.length > 0) throw new AggregateError(failures, 'kafka probe did not close cleanly');
     },
   };
 }
 
-async function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Kafka did not answer within ${ms} ms`)), ms);
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
+/** A Kafka read that answers within `ms` or fails as "did not answer". */
+function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return withTimeout(promise, ms, () => new Error(`Kafka did not answer within ${ms} ms`));
 }

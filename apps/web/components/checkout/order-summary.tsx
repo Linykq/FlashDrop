@@ -1,5 +1,6 @@
 import { type OrderView, uploadPath } from '@flashdrop/contracts';
 import Image from 'next/image';
+import Link from 'next/link';
 import { formatCount, formatMoney } from '../../lib/format';
 import { Price } from '../commerce/price';
 import { TitleText } from '../ui/title-text';
@@ -9,9 +10,10 @@ import { TitleText } from '../ui/title-text';
  * the total. Checkout always shows cents (§3.3) and never truncates what is being bought: the title wraps.
  * An order is one line, so its amount is the total just below; on phones that column goes and the quantity
  * joins the unit price's line, so the title has the card's width. The thumbnail's alt text is empty: the title
- * beside it names the product.
+ * beside it names the product. On the order page (§10.5) the title links to the product, the way back to it;
+ * checkout leaves it plain, with nothing to wander off to (§1.6).
  */
-export function OrderSummary({ order }: { order: OrderView }) {
+export function OrderSummary({ order, productHref }: { order: OrderView; productHref?: string }) {
   const { product, qty, unitPriceCents, totalCents, currency } = order;
   const photo = product.imageKeys[0];
   return (
@@ -25,7 +27,13 @@ export function OrderSummary({ order }: { order: OrderView }) {
         </div>
         <div className="min-w-0 flex-1">
           <p className="wrap-break-word text-headline">
-            <TitleText text={product.title} />
+            {productHref ? (
+              <Link href={productHref} className="underline decoration-1 underline-offset-4">
+                <TitleText text={product.title} />
+              </Link>
+            ) : (
+              <TitleText text={product.title} />
+            )}
           </p>
           <p className="mt-0.5 text-footnote text-label-secondary tabular-nums">
             {formatMoney(unitPriceCents, currency, 'exact')} each

@@ -1,0 +1,152 @@
+import { randomBytes } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { parseEnv } from 'node:util';
+
+/*
+ * The repo's `.env` (design §15): Compose interpolates compose.yaml from it, the dev servers and Vitest load
+ * it, and `tools/ensure-env.ts` keeps the stack's secrets in it. compose.yaml has no default for any secret,
+ * so every stack on a machine runs with values made on that machine, never with a value this public repo
+ * holds.
+ */
+
+/** The `.env` next to compose.yaml, the one `docker compose` reads from the repo root. */
+export const DOT_ENV = fileURLToPath(new URL('../.env', import.meta.url));
+
+/**
+ * The secrets compose.yaml requires (`${NAME:?...}`), generated when `.env` lacks one. Shared by the
+ * services that check each other (SESSION_SECRET by api and web, REVALIDATE_SECRET by worker, api and web,
+ * TEST_ROUTES_SECRET by api and its test clients, PSP_DB_PASSWORD by migrate and payment-mock,
+ * APP_DB_PASSWORD by migrate and every service that connects as the application role, PSP_API_KEY by
+ * payment-mock and the payment consumers), and the logins of the tools profile's UIs.
+ */
+export const STACK_SECRETS = [
+  'SESSION_SECRET',
+  'REVALIDATE_SECRET',
+  'TEST_ROUTES_SECRET',
+  'PSP_DB_PASSWORD',
+  'APP_DB_PASSWORD',
+  'PSP_API_KEY',
+  'KAFKA_UI_PASSWORD',
+  'GRAFANA_ADMIN_PASSWORD',
+] as const;
+export type StackSecret = (typeof STACK_SECRETS)[number];
+
+/**
+ * The prefix of the development values `.env.example` documents. They are public, so a `.env` copied from
+ * it gets fresh values in their place: Compose runs the services with NODE_ENV=production.
+ */
+export const PUBLIC_VALUE_PREFIX = 'dev-only-';
+
+/** payment-mock's ledger URL for a native `pnpm dev`, which logs in with the password migrate set (§3). */
+const LOCAL_PSP_DATABASE_URL = 'postgres://flashdrop_psp@127.0.0.1:5433/flashdrop';
+
+/** Each generated secret: 32 random bytes, base64url (43 characters, safe in a URL and unquoted in .env). */
+const SECRET_BYTES = 32;
+
+/** `.env`'s variables, or none when there is no `.env`. */
+export function readDotEnv(path: string = DOT_ENV): Readonly<Record<string, string>> {
+  if (!existsSync(path)) return {};
+  return definedOnly(parseEnv(readFileSync(path, 'utf8')));
+}
+
+/**
+ * A secret of the stack as Compose resolves it: the shell's value wins over `.env`'s. Test clients (the
+ * Playwright fixtures, the system tests) send what the api was started with this way.
+ */
+export function stackSecret(name: StackSecret, path: string = DOT_ENV): string {
+  const value = process.env[name] || readDotEnv(path)[name];
+  if (!value) {
+    throw new Error(
+      `${name} is set neither in the environment nor in .env: pnpm stack:up writes it (tools/ensure-env.ts)`,
+    );
+  }
+  return value;
+}
+
+export interface EnsuredSecrets {
+  /** The file's new text: the old one with only the lines of the secrets it changed rewritten or added. */
+  readonly text: string;
+  /** Secrets the file lacked, or had empty. */
+  readonly added: readonly StackSecret[];
+  /** Secrets that held a public development value. */
+  readonly replaced: readonly StackSecret[];
+}
+
+/**
+ * Gives `.env` (its text, empty when there is none) a value of its own for every stack secret it lacks,
+ * holds empty or holds as a public development value; leaves every other line, and every value someone
+ * chose, as it was. A new PSP_DB_PASSWORD also goes into PSP_DATABASE_URL, which a native payment-mock logs
+ * in with: the Compose migrate job sets the role's password on the shared Postgres (§3).
+ */
+export function ensureSecrets(text: string, generate: () => string): EnsuredSecrets {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const current = definedOnly(parseEnv(text));
+  const lines = text === '' ? [] : text.replace(/\r?\n$/, '').split(/\r?\n/);
+  const added: StackSecret[] = [];
+  const replaced: StackSecret[] = [];
+  const appended: string[] = [];
+
+  const assign = (name: string, value: string): void => {
+    const line = `${name}=${value}`;
+    const pattern = assignmentOf(name);
+    let found = false;
+    for (const [index, existing] of lines.entries()) {
+      if (pattern.test(existing)) {
+        lines[index] = line;
+        found = true;
+      }
+    }
+    if (!found) appended.push(line);
+  };
+
+  for (const name of STACK_SECRETS) {
+    const value = current[name]?.trim() ?? '';
+    if (value !== '' && !value.startsWith(PUBLIC_VALUE_PREFIX)) continue;
+    (value === '' ? added : replaced).push(name);
+    const secret = generate();
+    assign(name, secret);
+    if (name === 'PSP_DB_PASSWORD')
+      assign('PSP_DATABASE_URL', withPassword(current.PSP_DATABASE_URL, secret));
+  }
+
+  if (added.length === 0 && replaced.length === 0) return { text, added, replaced };
+  if (appended.length > 0) {
+    if (lines.length > 0 && lines.at(-1) !== '') lines.push('');
+    lines.push(
+      '# Generated by tools/ensure-env.ts: compose.yaml has no default for these secrets.',
+      ...appended,
+    );
+  }
+  return { text: `${lines.join(eol)}${eol}`, added, replaced };
+}
+
+/**
+ * `ensureSecrets` on the file itself: writes it back, owner-only where the file system honours that, when a
+ * secret was added or replaced. Values are never returned, only which secrets changed.
+ */
+export function ensureDotEnv(path: string = DOT_ENV): Omit<EnsuredSecrets, 'text'> {
+  const before = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  const { text, added, replaced } = ensureSecrets(before, () =>
+    randomBytes(SECRET_BYTES).toString('base64url'),
+  );
+  if (text !== before) writeFileSync(path, text, { mode: 0o600 });
+  return { added, replaced };
+}
+
+/** `KEY=`, `KEY =` or `export KEY=` at the start of a line, as dotenv files assign. */
+function assignmentOf(name: string): RegExp {
+  return new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=`);
+}
+
+function withPassword(url: string | undefined, password: string): string {
+  const parsed = new URL(url || LOCAL_PSP_DATABASE_URL);
+  parsed.password = password;
+  return parsed.href;
+}
+
+function definedOnly(env: NodeJS.Dict<string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+}

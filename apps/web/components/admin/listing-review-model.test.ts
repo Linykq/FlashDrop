@@ -133,6 +133,12 @@ describe('listing review model', () => {
     expect(reviewStatus(false, 10, 0)).toBe('Fill in every field');
   });
 
+  it('counts the fields blocking publishing first, once any shows an error', () => {
+    expect(reviewStatus(true, 9, 1, 1)).toBe('1 field to fix · 1 uncertainty open');
+    expect(reviewStatus(true, 9, 0, 2)).toBe('2 fields to fix');
+    expect(reviewStatus(false, 10, 0, 3)).toBe('3 fields to fix');
+  });
+
   it('sends a highlights list error to the first entry, or to "Add highlight" when there is none', () => {
     expect(focusKeyOf('highlights', 2)).toBe('highlights.0');
     expect(focusKeyOf('highlights', 0)).toBeNull();

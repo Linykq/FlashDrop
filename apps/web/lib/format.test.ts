@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canonicalSpaces,
   formatAt,
   formatCount,
   formatCountdown,
@@ -7,7 +8,6 @@ import {
   formatDateTime,
   formatDuration,
   formatMoney,
-  formatOpening,
   formatTime,
   plural,
   shortId,
@@ -69,30 +69,36 @@ describe('counts, durations and plurals', () => {
 describe('absolute times', () => {
   const start = '2026-10-06T23:00:00Z';
 
+  it("spells times the same whatever spaces the runtime's ICU uses", () => {
+    expect(canonicalSpaces('8:32\u202fAM\u2009–\u200912:00\u202fPM UTC')).toBe(
+      '8:32\u00a0AM – 12:00\u00a0PM UTC',
+    );
+    expect(canonicalSpaces('8:32 AM – 12:00 PM UTC')).toBe('8:32\u00a0AM – 12:00\u00a0PM UTC');
+    expect(canonicalSpaces('7:00\u2009–\u20097:30\u202fPM')).toBe('7:00–7:30\u00a0PM');
+  });
+
   it('formats in the given zone', () => {
-    expect(formatTime(start, { timeZone: 'America/Chicago' })).toBe('6:00 PM');
-    expect(formatTime(start, { timeZone: 'UTC', withZone: true })).toBe('11:00 PM UTC');
+    expect(formatTime(start, { timeZone: 'America/Chicago' })).toBe('6:00\u00a0PM');
+    expect(formatTime(start, { timeZone: 'UTC', withZone: true })).toBe('11:00\u00a0PM UTC');
     expect(formatDate(start, { timeZone: 'UTC' })).toBe('Tue, Oct 6');
   });
 
   it('says Today only when given now on the same calendar day in that zone', () => {
-    expect(formatDateTime(start, { timeZone: 'UTC' })).toBe('Tue, Oct 6 at 11:00 PM');
-    expect(formatDateTime(start, { timeZone: 'UTC', now: '2026-10-06T08:00:00Z' })).toBe('Today at 11:00 PM');
+    expect(formatDateTime(start, { timeZone: 'UTC' })).toBe('Tue, Oct 6 at 11:00\u00a0PM');
+    expect(formatDateTime(start, { timeZone: 'UTC', now: '2026-10-06T08:00:00Z' })).toBe(
+      'Today at 11:00\u00a0PM',
+    );
     // 23:00 UTC is already Oct 7 in Tokyo, while the morning of Oct 6 UTC is still Oct 6 there.
     expect(formatDateTime(start, { timeZone: 'Asia/Tokyo', now: '2026-10-06T08:00:00Z' })).toBe(
-      'Wed, Oct 7 at 8:00 AM',
+      'Wed, Oct 7 at 8:00\u00a0AM',
     );
   });
 
   it('says a deadline after its verb: the time today, otherwise the date and time', () => {
-    expect(formatAt(start, { timeZone: 'UTC', now: '2026-10-06T08:00:00Z' })).toBe('at 11:00 PM');
-    expect(formatAt(start, { timeZone: 'UTC', now: '2026-10-05T23:30:00Z' })).toBe('Tue, Oct 6 at 11:00 PM');
-    expect(formatAt(start, { timeZone: 'UTC', withZone: true })).toBe('Tue, Oct 6 at 11:00 PM UTC');
-  });
-
-  it('says when a drop opens: the time today, otherwise the date', () => {
-    expect(formatOpening(start, { timeZone: 'UTC', now: '2026-10-06T08:00:00Z' })).toBe('at 11:00 PM');
-    expect(formatOpening(start, { timeZone: 'UTC', now: '2026-10-05T23:30:00Z' })).toBe('Tue, Oct 6');
-    expect(formatOpening(start, { timeZone: 'UTC' })).toBe('Tue, Oct 6');
+    expect(formatAt(start, { timeZone: 'UTC', now: '2026-10-06T08:00:00Z' })).toBe('at 11:00\u00a0PM');
+    expect(formatAt(start, { timeZone: 'UTC', now: '2026-10-05T23:30:00Z' })).toBe(
+      'Tue, Oct 6 at 11:00\u00a0PM',
+    );
+    expect(formatAt(start, { timeZone: 'UTC', withZone: true })).toBe('Tue, Oct 6 at 11:00\u00a0PM UTC');
   });
 });

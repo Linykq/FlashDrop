@@ -106,6 +106,11 @@ export const drops = pgTable(
     holdSeconds: integer('hold_seconds').notNull().default(120),
     paymentSeconds: integer('payment_seconds').notNull().default(300),
     status: dropStatus('status').notNull().default('DRAFT'),
+    /**
+     * When the drop became ENDED: an admin's early end, or its scheduled end when the clock closed it. Set by
+     * the `drops_ended_at` trigger (custom migration 0012), so no transition can forget it; null until then.
+     */
+    endedAt: timestamptz('ended_at'),
   },
   (t) => [
     check('drops_window', sql`${t.endsAt} > ${t.startsAt}`),

@@ -19,6 +19,7 @@ import {
   type SyncOutcome,
   withDropLock,
 } from '@flashdrop/inventory';
+import { countAdminRebuild } from '../metrics';
 
 /*
  * Drop administration (design §4.7, §5.1). A drop is edited only while DRAFT; `arm` moves it to SCHEDULED and
@@ -53,6 +54,7 @@ export function toAdminDrop({ drop, inventory }: AdminDropRecord): AdminDrop {
     status: drop.status,
     startsAt: drop.startsAt.toISOString(),
     endsAt: drop.endsAt.toISOString(),
+    endedAt: drop.endedAt?.toISOString() ?? null,
     priceCents: drop.priceCents,
     currency: drop.currency,
     perUserLimit: drop.perUserLimit,
@@ -91,7 +93,10 @@ function expectRebuilt(dropId: string, outcome: SyncOutcome): void {
   }
 }
 
-/** Arms a DRAFT drop: DRAFT → SCHEDULED in Postgres, then the full Redis sync, under one hold of the lock. */
+/**
+ * Arms a DRAFT drop: DRAFT → SCHEDULED in Postgres, then the full Redis sync, under one hold of the lock.
+ * The sync is the drop's first build, not a rebuild, so `fd_rebuilds_total` does not count it.
+ */
 async function arm(deps: AdminDropDeps, lock: HeldDropLock): Promise<void> {
   await applyDropAction(deps.db, lock.dropId, 'arm');
   // If the sync fails midway the drop is armed but RECONCILING or missing in Redis: it is tracked now, so
@@ -114,11 +119,14 @@ async function changeStatus(
     case 'NOOP':
       return;
     // A dead rebuild left the drop RECONCILING, or its keys are gone: the full sync writes the new status
-    // from the snapshot, which already holds the committed change.
+    // from the snapshot, which already holds the committed change. A rebuild an admin action caused.
     case 'RETRY':
-    case 'NO_DROP':
-      expectRebuilt(lock.dropId, await rebuildDrop(deps, lock));
+    case 'NO_DROP': {
+      const outcome = await rebuildDrop(deps, lock);
+      expectRebuilt(lock.dropId, outcome);
+      if (outcome.kind === 'REBUILT') countAdminRebuild();
       return;
+    }
     case 'BAD_STATUS':
       throw new BugError(`fd_set_status refused ${change.to}`);
   }
@@ -131,6 +139,7 @@ async function reconcile(deps: AdminDropDeps, lock: HeldDropLock): Promise<void>
   if (outcome.kind === 'NOT_ARMED')
     throw new DomainError('CONFLICT', 'A DRAFT drop has no Redis state; arm it');
   // STALE: a newer generation is already in Redis, which is what reconcile asks for.
+  if (outcome.kind === 'REBUILT') countAdminRebuild();
 }
 
 export function createAdminDrops(deps: AdminDropDeps): AdminDropService {

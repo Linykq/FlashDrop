@@ -1,19 +1,20 @@
 import { SESSION_COOKIE } from '@flashdrop/config/constants';
 import { PROBLEM_CONTENT_TYPE, ProblemDetails } from '@flashdrop/contracts';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { notFound, redirect } from 'next/navigation';
 import type { z } from 'zod';
 import { loginHref } from '../../../lib/routes';
 import { ApiError } from '../../../lib/server/api';
 import { apiEnv } from '../../../lib/server/env';
 import { log } from '../../../lib/server/log';
-import { requestOrigin } from '../../../lib/server/request';
+import { browserOrigin } from '../../../lib/server/origin';
 
 /*
  * The admin area's server-side api access (SD §8.1 data access): Server Components and Server Actions call api
  * over API_INTERNAL_URL with the admin's own session cookie, so api re-checks the role on every call (SD §11)
- * and web never holds a privilege of its own. Writes also send the request's own origin: api's CSRF guard
- * admits a mutating request only from an allowed Origin, and this one is the page the admin acted on.
+ * and web never holds a privilege of its own. Writes forward the browser's own `Origin`: api's CSRF guard
+ * admits a mutating request only from an allowed Origin, and it must judge the page the admin acted on, never
+ * a value web made up (a forged Host would otherwise vouch for itself).
  */
 
 /**
@@ -78,6 +79,9 @@ export async function adminWrite<S extends z.ZodType>(
 ): Promise<WriteResult<z.output<S>>> {
   const cookie = await sessionCookie();
   if (cookie === null) return { ok: false, status: 401, problem: undefined };
+  // A Server Action is a POST, which browsers always send with an Origin: without one it isn't from our pages.
+  const origin = browserOrigin(await headers());
+  if (origin === null) return { ok: false, status: 403, problem: undefined };
   let response: Response;
   try {
     response = await fetch(new URL(path, apiEnv().API_INTERNAL_URL), {
@@ -85,7 +89,7 @@ export async function adminWrite<S extends z.ZodType>(
       headers: {
         accept: 'application/json',
         cookie,
-        origin: await requestOrigin(),
+        origin,
         // A body-less POST must not claim JSON: Fastify refuses an empty body declared as JSON.
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       },

@@ -18,7 +18,8 @@ type AlertDialogProps = {
 /**
  * A confirmation on a native modal <dialog> (§9.14): `showModal()` brings the focus trap, the inert
  * background and the top layer, and closing returns focus to the opener. It fades and scales in through the
- * CSS dialog motion of base.css. It sits on `surface-raised`, white like a card in light mode and lifted to
+ * CSS dialog motion of base.css. The two actions share the width under the text, equal halves as in the
+ * platform's alerts, stacked where the dialog is too narrow for two labels side by side. It sits on `surface-raised`, white like a card in light mode and lifted to
  * #2c2c2e in dark mode, so its edge never merges with the #1c1c1e cards under the scrim.
  */
 export function AlertDialog({ open, onCancel, title, description, children }: AlertDialogProps) {
@@ -56,7 +57,8 @@ export function AlertDialog({ open, onCancel, title, description, children }: Al
       <div id={descriptionId} className="mt-2 text-body text-label-secondary">
         {description}
       </div>
-      <div className="mt-6 flex flex-col gap-3 *:w-full sm:flex-row sm:justify-end sm:*:w-auto">
+      {/* Two equal halves while two 128 px buttons fit (the dialog from about 375 px), stacked below that. */}
+      <div className="mt-6 grid grid-cols-[repeat(auto-fit,minmax(min(100%,8rem),1fr))] gap-3 *:w-full">
         {children}
       </div>
     </dialog>

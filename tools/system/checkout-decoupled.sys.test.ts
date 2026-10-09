@@ -5,9 +5,9 @@ import {
   connectStores,
   containerStarts,
   createBuyers,
-  createTestDrop,
   orderOf,
   outboxOf,
+  postTestDrop,
   problemsIn,
   pspCharges,
   reserve,
@@ -40,7 +40,7 @@ afterAll(async () => {
 describe('checkout decoupled from Kafka and the PSP', () => {
   it('answers 202 with both stopped, the outbox grows, and after a restart every order is PAID', async () => {
     const buyers = (await createBuyers(3)) as [Buyer, Buyer, Buyer];
-    const drop = await createTestDrop({ stock: 5, perUserLimit: 1, paymentSeconds: 300 });
+    const drop = await postTestDrop({ stock: 5, perUserLimit: 1, paymentSeconds: 300 });
     const orders = await Promise.all(buyers.map((buyer) => reserve(buyer, drop.dropId)));
     // Every order.reserved is out first, so what piles up below is the checkouts' own events.
     await until(

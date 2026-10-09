@@ -10,8 +10,9 @@ export interface UserStore {
 }
 
 /**
- * Dev login only ever signs in the seeded accounts (design §5.1, §11). Later milestones add users that must
- * not be reachable this way (k6 sessions, M2), so membership is checked against the seed's own list.
+ * Dev login only ever signs in the seeded accounts (design §5.1, §11). Other users exist that must not be
+ * reachable this way (the test routes' k6 and Playwright buyers), so membership is checked against the
+ * seed's own list.
  */
 const DEV_USER_ORDER = new Map<string, number>(SEED_USERS.map((user, index) => [user.id, index]));
 

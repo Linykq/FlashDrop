@@ -5,6 +5,7 @@ import {
   KafkaEnv,
   loadEnv,
   PostgresEnv,
+  PspAuthEnv,
   RedisEnv,
   WorkerEnv,
 } from '@flashdrop/config';
@@ -26,7 +27,8 @@ import { WORKER_POOL_PROFILE } from './postgres';
  * Against the Compose stack that runs this file's bundle as a one-off of the consumers service, inside the
  * stack's network, because payment-mock publishes no host port: a payment letter (a close) replayed from the
  * host could never reach the PSP. `pnpm dlq:replay:dev` runs the source with tsx against the `pnpm dev`
- * processes, whose payment-mock listens on 127.0.0.1:4100 (`PAYMENT_MOCK_URL` in .env).
+ * processes, whose payment-mock listens on 127.0.0.1:4100 (`PAYMENT_MOCK_URL` in .env). Both need
+ * `PSP_API_KEY`, as the payment consumer does: a payment letter is a charge or a close.
  */
 
 const CONSUMER_NAMES: readonly ConsumerName[] = ['payment', 'settlement', 'dashboard'];
@@ -46,7 +48,14 @@ if (only !== undefined && !CONSUMER_NAMES.includes(only as ConsumerName)) {
 const fromOffset = args['from-offset'];
 if (fromOffset !== undefined && !/^\d+$/.test(fromOffset)) throw new Error('--from-offset must be an offset');
 
-const env = loadEnv([CoreEnv, PostgresEnv, RedisEnv, KafkaEnv, WorkerEnv.pick({ PAYMENT_MOCK_URL: true })]);
+const env = loadEnv([
+  CoreEnv,
+  PostgresEnv,
+  RedisEnv,
+  KafkaEnv,
+  WorkerEnv.pick({ PAYMENT_MOCK_URL: true }),
+  PspAuthEnv,
+]);
 const logger = createLogger({ name: 'dlq-replay', level: env.LOG_LEVEL });
 const pool = createPool({
   connectionString: env.DATABASE_URL,
@@ -66,7 +75,7 @@ try {
       redis,
       nudger: createSyncNudger({ db, logger }),
       logger,
-      psp: createPspClient({ baseUrl: env.PAYMENT_MOCK_URL }),
+      psp: createPspClient({ baseUrl: env.PAYMENT_MOCK_URL, apiKey: env.PSP_API_KEY }),
     }),
     logger,
     only,

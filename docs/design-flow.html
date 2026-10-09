@@ -558,9 +558,7 @@ tbody th code { white-space: nowrap; }
   border: 2px solid var(--border-strong); background: var(--bg);
 }
 .ms[data-state="done"]::before { background: var(--success); border-color: var(--success); }
-.ms[data-state="next"]::before { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 5px var(--accent-soft); }
 .ms-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; }
-.ms[data-state="next"] .ms-card { border-color: var(--accent); box-shadow: var(--shadow); }
 .ms-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 10px; }
 .ms-id { font-family: var(--font-mono); font-weight: 750; font-size: 0.95rem; }
 .ms-head h3 { font-size: 1.06rem; flex: 1 1 220px; }
@@ -576,7 +574,6 @@ tbody th code { white-space: nowrap; }
   padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; line-height: 1.5;
 }
 .badge-done { color: var(--success); }
-.badge-next { color: var(--accent-strong); background: var(--accent-soft); }
 .badge-owner { color: var(--accent-strong); }
 .badge-design { color: var(--text-muted); }
 .badge-open { color: var(--warning); }
@@ -674,7 +671,7 @@ tbody th code { white-space: nowrap; }
 <!-- 1. Hero -->
 <section id="overview" class="hero" aria-labelledby="overview-title">
   <div class="wrap">
-    <p class="eyebrow">System design v1 · 2026-10-01</p>
+    <p class="eyebrow">System design v1 · 2026-10-01 · built M0–M10 by 2026-10-09</p>
     <h1 id="overview-title">FlashDrop</h1>
     <p class="hero-lede">A live-shopping flash-sale platform that sells a limited drop to a burst of buyers without overselling, double-charging or losing an event, and proves it with machine-checked invariants.</p>
     <p class="hero-sub">This page walks through the design as a flow, from the first page view to a paid order and every way that path can break. It summarises <a href="system-design.md">system-design.md</a>, which stays the source of truth.</p>
@@ -728,8 +725,8 @@ tbody th code { white-space: nowrap; }
         <ul class="facts">
           <li><span class="fact-n">4</span><span class="fact-l">deployables from 2 images (<code>node</code>, <code>web</code>)</span></li>
           <li><span class="fact-n">9</span><span class="fact-l">machine-checked invariants, INV-1 to INV-9</span></li>
-          <li><span class="fact-n">M0–M10</span><span class="fact-l">milestones, each ending in a demo</span></li>
-          <li><span class="fact-n">≈ 41</span><span class="fact-l">focused days, or 10–12 weeks part-time</span></li>
+          <li><span class="fact-n">M0–M10</span><span class="fact-l">milestones, all built, each ending in a demo</span></li>
+          <li><span class="fact-n">0</span><span class="fact-l">oversells, double charges, lost events or leaked units in 18 measured load runs (<a href="perf.md">perf.md</a>)</span></li>
         </ul>
       </div>
     </div>
@@ -746,25 +743,25 @@ tbody th code { white-space: nowrap; }
       <p class="source">Source: <a href="system-design.md#2-architecture-overview">§2 Architecture overview</a></p>
     </header>
 
-    <figure class="diagram" style="--w: 1462px">
+    <figure class="diagram" style="--w: 1521px">
       <div class="paper">
         <a class="zoom" href="diagrams/architecture.svg" target="_blank" rel="noopener">
           <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
-          <img src="diagrams/architecture.svg" width="1462" height="1398" loading="lazy" decoding="async"
-               alt="Container diagram. Clients reach caddy on port 8080, which sends pages to web and REST plus WebSocket traffic to api-1 and api-2; web also calls api for SSR fetches and Server Actions. api calls Redis (fd_reserve, pub/sub) and Postgres (order transaction plus outbox). The async tier, worker (relay, sweeper and scheduler, reconciler, listing) and consumers x2 (payment, settlement, dashboard), connects Postgres, Redis and Kafka orders.v1, calls payment-mock for charges and close-by-reference, and calls the Anthropic Messages API or a fixture provider.">
+          <img src="diagrams/architecture.svg" width="1521" height="1433" loading="lazy" decoding="async"
+               alt="Container diagram. Clients reach caddy on 127.0.0.1:8080, which sends pages to web and REST plus WebSocket traffic to api-1 and api-2, and answers 404 for /_internal and /metrics; web also calls api for SSR fetches and Server Actions. api calls Redis (fd_reserve, pub/sub) and Postgres (order transaction plus outbox). The async tier is four services from one image: worker (relay, sweeper and scheduler, reconciler) connects Postgres, Redis and Kafka and asks web to revalidate cache tags; consumers x2 (payment, settlement) read orders.v1, use Postgres and Redis and call payment-mock for charges and close-by-reference; dashboard-consumers x2 read orders.v1 into the Postgres projection and publish totals on Redis; listing claims jobs from Postgres and calls the Anthropic Messages API or a fixture provider. The optional tools profile runs Prometheus, which scrapes every app's /metrics, Grafana and kafka-ui.">
           <span class="sr-only">(Full size, opens in a new tab)</span>
         </a>
       </div>
-      <figcaption>Container view. Solid arrows are calls and data flow; the dotted arrow is the worker asking <code>web</code> to revalidate a cache tag over the Compose network.</figcaption>
+      <figcaption>Container view. Solid arrows are calls and data flow; the dotted arrow is the worker asking <code>web</code> to revalidate a cache tag over the Compose network. The <code>tools</code> profile is optional; Prometheus scrapes every app service inside the Compose network.</figcaption>
     </figure>
 
     <h3 class="sub">Deployables and their jobs</h3>
-    <p class="sub-lede"><code>worker</code> and <code>consumers</code> are one deployable run as two Compose services; the one-shot <code>migrate</code> job uses the same <code>node</code> image.</p>
+    <p class="sub-lede">The worker is one deployable run as four Compose services with different <code>WORKER_ROLES</code>: <code>worker</code>, <code>listing</code>, <code>consumers</code> and <code>dashboard-consumers</code>. The one-shot <code>migrate</code> job uses the same <code>node</code> image.</p>
     <ul class="cards">
       <li class="card">
         <h4>web</h4>
         <p class="tech">Next.js 16.3 · React 19.3 · Tailwind 4</p>
-        <p>Storefront, SSR product pages, live room, checkout, order page and admin UI. No database or Redis credentials: it reads and writes only through <code>api</code>.</p>
+        <p>Storefront, SSR product pages, live room (hls.js on a committed fragmented-MP4 HLS sample with captions), checkout, order page and admin UI. No database or Redis credentials: it reads and writes only through <code>api</code>.</p>
       </li>
       <li class="card">
         <h4>api-1, api-2</h4>
@@ -773,13 +770,18 @@ tbody th code { white-space: nowrap; }
       </li>
       <li class="card">
         <h4>worker</h4>
-        <p class="tech">WORKER_ROLES=relay,<wbr>sweeper,<wbr>reconciler,<wbr>listing</p>
-        <p>Outbox relay to Kafka; Postgres-driven expiry, safety net and drop scheduler; Redis reconciler and rebuild; LLM listing jobs. Leader-elected per loop with Postgres advisory locks.</p>
+        <p class="tech">WORKER_ROLES=relay,<wbr>sweeper,<wbr>reconciler</p>
+        <p>Outbox relay to Kafka; Postgres-driven expiry, safety net and drop scheduler; Redis reconciler and rebuild. Leader-elected per loop with Postgres advisory locks.</p>
       </li>
       <li class="card">
-        <h4>consumers ×2</h4>
-        <p class="tech">WORKER_ROLES=payment,<wbr>settlement,<wbr>dashboard</p>
-        <p>Consumer groups <code>payment</code>, <code>inventory-settlement</code> and <code>sales-dashboard</code> across 6 partitions. Two replicas demonstrate rebalancing when one is killed.</p>
+        <h4>listing</h4>
+        <p class="tech">WORKER_ROLES=listing</p>
+        <p>LLM listing jobs in a process of their own, so a provider failure never takes the relay or expiry down. Jobs are claimed with <code>SKIP LOCKED</code> under a lease.</p>
+      </li>
+      <li class="card">
+        <h4>consumers ×2, dashboard-consumers ×2</h4>
+        <p class="tech">WORKER_ROLES=payment,<wbr>settlement · WORKER_ROLES=dashboard</p>
+        <p>Consumer groups <code>payment</code> and <code>inventory-settlement</code>, and <code>sales-dashboard</code> on its own service so a dashboard rebuild never pauses payments. 6 partitions; killing one replica shows a rebalance.</p>
       </li>
       <li class="card">
         <h4>payment-mock</h4>
@@ -789,7 +791,7 @@ tbody th code { white-space: nowrap; }
       <li class="card">
         <h4>caddy</h4>
         <p class="tech">Caddy 2 · edge on :8080</p>
-        <p><code>/</code> to <code>web</code>; <code>/api/*</code>, <code>/ws</code> and <code>/uploads/*</code> round-robin to <code>api-1</code>/<code>api-2</code>; <code>/ws/1</code> and <code>/ws/2</code> pinned for deterministic tests; 404 for <code>/_internal/*</code>.</p>
+        <p><code>/</code> to <code>web</code>; <code>/api/*</code>, <code>/ws</code> and <code>/uploads/*</code> round-robin to <code>api-1</code>/<code>api-2</code>; <code>/ws/1</code> and <code>/ws/2</code> pinned for deterministic tests; 404 for <code>/_internal/*</code> and <code>/metrics</code>.</p>
       </li>
       <li class="card">
         <h4>infra</h4>
@@ -921,14 +923,14 @@ tbody th code { white-space: nowrap; }
             <div class="step-body">
               <div class="what">
                 <p>Buy creates a uuidv7 <code>Idempotency-Key</code>, kept in <code>sessionStorage</code> per drop, and calls <code>POST /api/v1/drops/:dropId/reservations</code>. The API derives <code>rid = uuidv5(userId:dropId:Idempotency-Key)</code>.</p>
-                <p><code>fd_reserve</code> atomically checks the drop window, the per-user limit (<code>uq</code>) and <code>avail</code>, then takes a hold (<code>avail −q</code>, <code>held +q</code>, <code>rsv</code> entry HELD) and publishes the new level. Losers stop there with a 409. Winners run one Postgres transaction, in lock order:</p>
+                <p><code>fd_reserve</code> atomically checks the drop window, the per-user limit (<code>uq</code>) and <code>avail</code>, then takes a hold (<code>avail −q</code>, <code>held +q</code>, <code>rsv</code> entry HELD) and publishes the new level. Losers stop there with a 409. Each winner sends <strong>one statement</strong>, <code>SELECT … FROM fd_record_reservation(…)</code>: a PL/pgSQL function that runs the whole transaction server-side, in lock order:</p>
                 <ol class="txn">
                   <li><code>INSERT orders</code> (<code>id = rid</code>, status <code>RESERVED</code>) <code>ON CONFLICT DO NOTHING</code></li>
                   <li>claim <code>user_drop_quota</code> under <code>within_limit</code></li>
                   <li><code>INSERT outbox</code> <code>order.reserved</code></li>
-                  <li><code>takeStock</code>: <code>UPDATE drop_inventory</code>, last, guarded by <code>redis_gen</code>, stock and the drop window</li>
+                  <li><code>fd_take_stock</code>: <code>UPDATE drop_inventory</code>, last, guarded by <code>redis_gen</code>, stock and the drop window</li>
                 </ol>
-                <p>Commit, then <strong>201</strong> with <code>orderId</code>, <code>expiresAt</code> and <code>serverNow</code>. If Postgres refuses with <code>SOLD_OUT</code>, <code>LIMIT</code> or <code>NOT_LIVE</code>, the API writes a <code>REJECTED</code> tombstone and its <code>order.rejected</code> event in one statement; a stale generation answers 503 instead, retried with the same key.</p>
+                <p>Postgres commits as the function returns, in the same round trip, so no winner holds the hot row while waiting on Node's event loop (measured in M3: hot-row commits on the CI burst rose from about 100/s to about 450/s). Then <strong>201</strong> with <code>orderId</code>, <code>expiresAt</code> and <code>serverNow</code>. If Postgres refuses with <code>SOLD_OUT</code>, <code>LIMIT</code> or <code>NOT_LIVE</code>, the API writes a <code>REJECTED</code> tombstone and its <code>order.rejected</code> event in one statement; a stale generation answers 503 instead, retried with the same key.</p>
                 <details class="snippet">
                   <summary>Show the takeStock statement</summary>
 <pre tabindex="0"><code>UPDATE drop_inventory di SET reserved = di.reserved + $q, updated_at = now()
@@ -983,10 +985,10 @@ RETURNING *;</code></pre>
             <p class="who"><span class="label">Who</span><span class="actor">worker (relay)</span><span class="arrow" aria-hidden="true">→</span><span class="sr-only">publishes to</span><span class="actor">Kafka</span></p>
             <div class="step-body">
               <div class="what">
-                <p>The relay wakes on <code>LISTEN outbox</code> (checkout, cancel and expiry batches notify) or on a 250 ms poll. Each batch is one transaction on one connection:</p>
+                <p>The relay wakes on <code>LISTEN outbox</code> (only checkout submit and expiry batches notify; reserve, payment and cancel events wait for the poll) or on a 250 ms poll. Each batch is one transaction on one connection:</p>
                 <ol class="txn">
                   <li><code>pg_try_advisory_xact_lock(hashtext('fd.relay'))</code>, so one publisher at a time</li>
-                  <li>select up to 500 rows <code>WHERE published_at IS NULL ORDER BY id</code>, <code>FOR UPDATE SKIP LOCKED</code></li>
+                  <li>select up to 500 rows <code>WHERE published_at IS NULL ORDER BY id</code>, <code>FOR UPDATE</code>: not <code>SKIP LOCKED</code>, which could pass over a row another session locked and publish the same order's later event first</li>
                   <li><code>producer.send</code> with headers <code>event-id</code>, <code>event-type</code>, <code>schema-version</code>, <code>trace-id</code>; resolves on broker acks</li>
                   <li>mark <code>published_at</code> and commit</li>
                 </ol>
@@ -1028,7 +1030,7 @@ RETURNING *;</code></pre>
             <div class="step-body">
               <div class="what">
                 <p>On <code>order.placed</code> the handler re-reads the order. If it is <code>PENDING_PAYMENT</code>, it calls <code>POST /v1/charges</code> with <code>Idempotency-Key: charge:&lt;orderId&gt;</code>. On <code>succeeded</code>, one transaction does the CAS to <code>PAID</code>, writes a <code>SUCCEEDED</code> payments row and <code>order.paid</code>, and moves the inventory (<code>reserved −q</code>, <code>sold +q</code>, last). The status is then pushed on <code>fd:ch:user:&lt;userId&gt;</code> to the buyer's order page.</p>
-                <p>Batches are grouped by <code>orderId</code> (sequential within an order) with up to 32 orders in flight, so a hot product partition still pays quickly.</p>
+                <p>Batches of up to 256 messages are grouped by <code>orderId</code> (sequential within an order) with up to 32 orders in flight inside the partition. Measured, one product's partition drains 35–37 PAID/s with a fault-free PSP and about 17/s with the default faults, because a PSP retry pauses the partition (<a href="perf.md">perf.md</a> §3.3).</p>
               </div>
               <div class="guarantee">
                 <span class="label">Guarantee</span>
@@ -1105,7 +1107,7 @@ RETURNING *;</code></pre>
       <li class="branch tone-warning">
         <p class="tag">Buyer</p>
         <h4>Cancel</h4>
-        <p><code>POST /api/v1/orders/:orderId/cancel</code> is a CAS from <code>RESERVED</code> or <code>PENDING_PAYMENT</code> to <code>CANCELLED</code>, with quota and <code>reserved</code> given back and <code>order.cancelled</code> written in the same transaction. The checkout page's "Leave checkout?" dialog calls it. Settlement releases the hold; the payment group closes the reference.</p>
+        <p><code>POST /api/v1/orders/:orderId/cancel</code> is a CAS from <code>RESERVED</code> or <code>PENDING_PAYMENT</code> to <code>CANCELLED</code>, with quota and <code>reserved</code> given back and <code>order.cancelled</code> written in the same transaction, sent as one statement (<code>fd_cancel_order</code>, PL/pgSQL, stock last). The checkout page's "Leave checkout?" dialog calls it. Settlement releases the hold; the payment group closes the reference.</p>
         <p class="outcome"><span class="label">Outcome</span>Stock returns through settlement; a charge that raced the cancel is refunded.</p>
         <p class="more"><a href="system-design.md#44-reservation-and-order-state-machine">§4.4 State machine</a></p>
       </li>
@@ -1119,8 +1121,8 @@ RETURNING *;</code></pre>
       <li class="branch tone-danger">
         <p class="tag">Redis</p>
         <h4>Redis restart or wipe</h4>
-        <p>Within 2 s the reconciler sees a changed <code>run_id</code>, a missing <code>fd:epoch</code> or a missing library. It reloads the Functions and, for each tracked drop under the drop lock, sets <code>RECONCILING</code> (reserves get 503 with <code>Retry-After: 1</code>), bumps <code>redis_gen</code> so in-flight reserves fail the generation fence, snapshots Postgres and runs one atomic <code>fd_rebuild</code>.</p>
-        <p class="outcome"><span class="label">Outcome</span>About 1–3 s of 503s per drop. After a wipe, 503s and never wrong answers; after a restart, Redis may be stale for up to 2 s before detection, and the Postgres CHECK covers that window.</p>
+        <p>The reconciler sees a missing <code>fd:epoch</code> or library within its 2 s tick, and a changed <code>run_id</code> once its client has reconnected (measured 4.7–5.9 s after a restart). It reloads the Functions and, for each tracked drop under the drop lock, sets <code>RECONCILING</code> (reserves get 503 with <code>Retry-After: 1</code>), bumps <code>redis_gen</code> so in-flight reserves fail the generation fence, snapshots Postgres and runs one atomic <code>fd_rebuild</code>.</p>
+        <p class="outcome"><span class="label">Outcome</span>About 1–3 s of 503s per drop. After a wipe, 503s and never wrong answers; after a restart, Redis may be stale for about 5 s before detection, and the Postgres CHECK covers that window. The chaos runs <code>redis-restart</code> and <code>redis-lost-tail</code> held every invariant.</p>
         <p class="more"><a href="system-design.md#47-redis-durability-rebuild-and-reconciliation">§4.7 Rebuild and reconciliation</a></p>
       </li>
       <li class="branch tone-danger">
@@ -1410,13 +1412,14 @@ RETURNING *;</code></pre>
       </ol>
       <div class="callout" style="margin-top: 0; border-left-color: var(--accent); background: var(--accent-soft)">
         <p><span class="label" style="color: var(--accent-strong)">The numbers</span></p>
-        <p>Keying by product puts a whole flash sale on one partition. Serially, 1,000 orders at about 450 ms of PSP latency would take about 7.5 minutes, longer than the payment window. With 32 concurrent orders it takes about 15 s. That is safe because correctness rests on the orders CAS and PSP idempotency, not on processing order; work for the same order stays sequential.</p>
+        <p>Keying by product puts a whole flash sale on one partition. Serially, 1,000 orders at about 450 ms of PSP latency would take about 7.5 minutes, longer than the payment window. With 32 concurrent orders the estimate was about 15 s. That is safe because correctness rests on the orders CAS and PSP idempotency, not on processing order; work for the same order stays sequential.</p>
+        <p><strong>Measured:</strong> 35–37 PAID/s without PSP faults and about 17/s with the default 2% errors and 1% timeouts, since each retry pauses the partition. Submit → PAID p95 was about 40 s on the laptop profile, against a 2 s target: the price of per-product locality (<a href="perf.md">perf.md</a> §3.3).</p>
       </div>
     </div>
 
     <h3 class="sub">Consumer runner rules</h3>
     <ul class="bullets">
-      <li><strong>Manual offsets.</strong> Committed only after every message in the batch has succeeded or been dead-lettered.</li>
+      <li><strong>Manual offsets.</strong> Committed only up to the highest contiguous offset whose message has succeeded or been dead-lettered, and read back every 5 s to confirm the commit landed.</li>
       <li><strong>Start at earliest.</strong> All groups set <code>fromBeginning: true</code>, so a brand-new group (every CI run) never skips events; a consumer is healthy only once it has a partition assignment.</li>
       <li><strong>Transient failures stall, never drop.</strong> Postgres or Redis errors, PSP 5xx or timeouts and Lua <code>RETRY</code> pause the partition, seek back and retry with backoff (100 ms → 30 s), indefinitely and never to the DLQ.</li>
       <li><strong>Poison goes to the DLQ.</strong> Zod failures, unknown types and <code>InvariantViolation</code> go to <code>orders.v1.dlq</code> with an alert. A DLQ'd event never leaks stock or money: the sweeper, the safety net and close-by-reference still run.</li>
@@ -1514,7 +1517,7 @@ RETURNING *;</code></pre>
     <header class="section-head">
       <p class="eyebrow">08 · Correctness</p>
       <h2 id="correctness-title">Nine invariants, checked by machine</h2>
-      <p class="lede"><code>pnpm verify:invariants</code> waits for quiescence, then checks INV-1 to INV-9 across Postgres, Redis, the PSP ledger and Kafka. It runs after the k6 <code>load-smoke</code> run and the nightly chaos runs, and it is a hard CI gate. The integration suites assert the same checks per test drop.</p>
+      <p class="lede"><code>pnpm verify:invariants</code> waits for quiescence, then checks INV-1 to INV-9 across Postgres, Redis, the PSP ledger and Kafka. It runs after the CI <code>e2e</code>, <code>load-smoke</code> and <code>system</code> jobs and after the nightly load and chaos runs, and it is a hard gate. The integration suites assert the same checks per test drop. Across 18 measured load runs and six chaos scenarios it found 0 violations.</p>
       <p class="source">Source: <a href="system-design.md#11-invariants-checked-by-pnpm-verifyinvariants">§1.1 Invariants</a></p>
     </header>
 
@@ -1558,7 +1561,7 @@ RETURNING *;</code></pre>
       <li class="inv">
         <p class="inv-id">INV-7</p>
         <p class="inv-name">Redis is never optimistic.</p>
-        <p class="inv-rule">Redis <code>avail</code> ≤ Postgres available (<code>total − sold − reserved</code>), except while a drop is <code>RECONCILING</code> or in the detection window after a Redis restart (≤ 2 s plus the rebuild).</p>
+        <p class="inv-rule">Redis <code>avail</code> ≤ Postgres available (<code>total − sold − reserved</code>), except while a drop is <code>RECONCILING</code> or in the detection window after a Redis restart (measured 4.7–5.9 s, plus the rebuild).</p>
         <p class="inv-where">Ordering rule (§4.3), reconciler</p>
       </li>
       <li class="inv">
@@ -1629,25 +1632,30 @@ RETURNING *;</code></pre>
     <header class="section-head">
       <p class="eyebrow">09 · Testing and CI</p>
       <h2 id="testing-title">Every claim has an automated proof</h2>
-      <p class="lede">Six layers, from pure unit tests to nightly chaos. Every load and chaos run ends in <code>verify:invariants</code>; latency thresholds are loose in CI, correctness is strict.</p>
+      <p class="lede">Seven layers, from pure unit tests to nightly chaos. Every load and chaos run ends in <code>verify:invariants</code>; latency thresholds are loose in CI, correctness is strict. Counts as of 2026-10-09.</p>
       <p class="source">Source: <a href="system-design.md#13-testing-strategy--ci-pipeline">§13 Testing strategy &amp; CI pipeline</a></p>
     </header>
 
     <ul class="layers">
       <li class="layer">
         <h3>Unit</h3>
-        <p class="tech">Vitest 5 · unit project</p>
+        <p class="tech">Vitest 5 · unit project · 1,320 tests</p>
         <p>The order state machine including every illegal edge, rid and fingerprint canonicalization, Lua-result → HTTP mapping, Zod round-trips, the coalescer with fake timers, <code>(gen, seq)</code> ordering, <code>ListingDraft</code> and the repair loop, and the drift checker.</p>
       </li>
       <li class="layer">
         <h3>Integration</h3>
-        <p class="tech">Vitest · against Compose Postgres, Redis, Kafka</p>
-        <p>2,000 concurrent <code>fd_reserve</code> calls from 300 users on 100 units give exactly 100 HELD; a same-key storm; a fast-check model test; the race matrix; relay crash; replay ×3; rebuild after <code>FLUSHALL</code>; <code>checkout-decoupled</code>; <code>partitioning</code>.</p>
+        <p class="tech">Vitest · against Compose Postgres, Redis, Kafka · 486 tests</p>
+        <p>2,000 concurrent <code>fd_reserve</code> calls from 300 users on 100 units give exactly 100 HELD; a same-key storm; a fast-check model test; the race matrix; relay crash; redelivery to every group; rebuild after <code>FLUSHALL</code> and a restart; drift injection; <code>partitioning</code>.</p>
+      </li>
+      <li class="layer">
+        <h3>System</h3>
+        <p class="tech">Vitest · against a running stack · 7 tests</p>
+        <p>Failure injection on a whole stack: <code>checkout-decoupled</code> (Kafka and the PSP stopped, submit still 202), relay killed mid-batch, consumers stopped (the safety net returns stock), timeout-after-success on every charge, a DLQ replay.</p>
       </li>
       <li class="layer">
         <h3>End to end</h3>
-        <p class="tech">Playwright 1.63 · @axe-core/playwright 4.13</p>
-        <p>Chromium against the built Compose stack, with one isolated drop per spec via <code>POST /test/drops</code>: <code>ssr.spec</code>, <code>live-stock.spec</code>, <code>checkout-keyboard.spec</code>, <code>checkout-expiry.spec</code>, <code>idempotency.spec</code>, and <code>a11y.spec</code> with 0 serious or critical violations.</p>
+        <p class="tech">Playwright 1.63 · @axe-core/playwright 4.13 · 94 tests in 19 specs</p>
+        <p>Chromium (Chrome for the live room's H.264 stream) against the built Compose stack, with one isolated drop per spec via <code>POST /test/drops</code>: <code>ssr.spec</code>, <code>live-stock.spec</code>, <code>live-room.spec</code>, <code>ws-failover.spec</code>, <code>checkout-keyboard.spec</code>, <code>checkout-expiry.spec</code>, <code>idempotency.spec</code>, <code>listing.spec</code>, <code>dashboard.spec</code>, and <code>a11y.spec</code> with 0 serious or critical violations.</p>
       </li>
       <li class="layer">
         <h3>Load</h3>
@@ -1661,23 +1669,23 @@ RETURNING *;</code></pre>
       </li>
       <li class="layer">
         <h3>Chaos (nightly)</h3>
-        <p class="tech">tests/chaos/*.ts driving docker compose</p>
-        <p>Core: <code>redis-restart</code> mid-burst and <code>relay-kill</code> mid-batch. Stretch: <code>consumer-kill</code>, <code>psp-outage</code>, <code>dup-delivery</code>. Each run ends with <code>verify:invariants</code>.</p>
+        <p class="tech">tests/chaos/*.ts driving docker compose · 6 scenarios</p>
+        <p>All built, on an isolated Compose project: <code>redis-restart</code> mid-burst, <code>redis-lost-tail</code> (Redis back from an older AOF copy), <code>relay-kill</code> mid-batch, <code>consumer-kill</code>, <code>psp-outage</code> (60 s of 503s) and <code>dup-delivery</code> (every event twice). Each ends with <code>verify:invariants</code>; all six passed.</p>
       </li>
     </ul>
 
     <h3 class="sub">CI pipeline</h3>
-    <p class="sub-lede"><code>ci.yml</code> runs on PRs and pushes to <code>main</code>: <code>static</code>, then <code>integration</code>, <code>e2e</code> and <code>load-smoke</code> (ending in <code>verify:invariants</code>). <code>nightly.yml</code> runs the nightly k6 profile, chaos and the invariants. <code>llm-eval.yml</code> is manual only and is the one workflow that uses <code>ANTHROPIC_API_KEY</code>.</p>
-    <figure class="diagram" style="--w: 1401px">
+    <p class="sub-lede"><code>ci.yml</code> runs on PRs and pushes to <code>main</code>: <code>static</code>, then <code>integration</code>, <code>e2e</code> and <code>load-smoke</code> (ending in <code>verify:invariants</code>). As built, an <code>images</code> job bakes the images once for the stack jobs, and a <code>system</code> job runs the failure-injection tests; every stack job ends with <code>verify:invariants</code> and a container-restart check. <code>nightly.yml</code> runs the nightly k6 profile, the six chaos scenarios and the invariants on an isolated Compose project. <code>llm-eval.yml</code> is manual only and is the one workflow that uses <code>ANTHROPIC_API_KEY</code>.</p>
+    <figure class="diagram" style="--w: 1574px">
       <div class="paper">
         <a class="zoom" href="diagrams/ci-pipeline.svg" target="_blank" rel="noopener">
           <span class="zoom-badge" aria-hidden="true">Full size ↗</span>
-          <img src="diagrams/ci-pipeline.svg" width="1401" height="996" loading="lazy" decoding="async"
-               alt="GitHub Actions diagram. ci.yml on pull requests and pushes to main: static, then integration, e2e and load-smoke in parallel, with verify:invariants as load-smoke's final step. Artifacts (Playwright report, k6 summary, invariants report, compose logs on failure) are uploaded and a latency plus invariants table goes to the step summary. Required checks are static, integration, e2e and load-smoke. nightly.yml runs the k6 nightly profile, then chaos, then verify:invariants.">
+          <img src="diagrams/ci-pipeline.svg" width="1574" height="896" loading="lazy" decoding="async"
+               alt="GitHub Actions diagram. ci.yml on pull requests and pushes to main: static, then integration and images in parallel; images feeds e2e, load-smoke and system, and each of those stack jobs ends with verify:invariants (INV-1 to INV-9) and a container-restart check. Artifacts (Playwright traces, k6 summaries, invariants reports, Compose logs) are uploaded and a latency plus invariants table goes to the step summary. The run is green only if every job passes. nightly.yml, on an isolated Compose project, runs the k6 nightly profile, verify:invariants, the six chaos scenarios (redis-restart, redis-lost-tail, relay-kill, consumer-kill, psp-outage, dup-delivery), then verify:invariants and the restart check.">
           <span class="sr-only">(Full size, opens in a new tab)</span>
         </a>
       </div>
-      <figcaption>Jobs and dependencies in <code>ci.yml</code> and <code>nightly.yml</code>.</figcaption>
+      <figcaption>Jobs and dependencies in <code>ci.yml</code> and <code>nightly.yml</code>, as built.</figcaption>
     </figure>
   </div>
 </section>
@@ -1688,7 +1696,7 @@ RETURNING *;</code></pre>
     <header class="section-head">
       <p class="eyebrow">10 · Roadmap</p>
       <h2 id="roadmap-title">M0 to M10, each ending in a demo</h2>
-      <p class="lede">Estimates are focused days. Tests join CI as they are written. M2–M4 carry most of the risk, so they come right after the SSR foundation; M2 is the largest because the correctness core has to land together to be demonstrable.</p>
+      <p class="lede">All eleven milestones are built (2026-10-09), each ending in its demo, with its tests in CI. Estimates are focused days. M2–M4 carried most of the risk, so they came right after the SSR foundation; M2 was the largest because the correctness core had to land together to be demonstrable.</p>
       <p class="source">Source: <a href="system-design.md#16-milestones">§16 Milestones</a> and <a href="system-design.md#15-local-dev--docker-compose">§15 Local dev &amp; Docker Compose</a></p>
     </header>
 
@@ -1706,101 +1714,103 @@ RETURNING *;</code></pre>
             <li>librdkafka's default partitioner isn't Java's, so the producer sets <code>murmur2_random</code>.</li>
             <li>Git Bash rewrites Linux paths; shell snippets set <code>MSYS_NO_PATHCONV=1</code>.</li>
           </ul>
-          <p><span class="label">Still on the checklist</span> Upgrade Node to 22.23.3 (recommended, not blocking); install <code>gh</code> and run <code>gh auth login</code> before the public repo is created; <code>.gitattributes</code> with <code>* text=auto eol=lf</code> in the first code commit, required here because <code>core.autocrlf=true</code>.</p>
+          <p><span class="label">Checklist</span> <code>.gitattributes</code> with <code>* text=auto eol=lf</code> landed in M0, required here because <code>core.autocrlf=true</code>. Still open: upgrade the local Node to 22.23.3 (recommended, not blocking; the images already run it) and install <code>gh</code>.</p>
         </div>
       </li>
-      <li class="ms" data-state="next">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M0</span><h3>Monorepo, Compose infra, CI skeleton</h3><span class="badge badge-next">Next</span><span class="ms-est">3 d</span></div>
+          <div class="ms-head"><span class="ms-id">M0</span><h3>Monorepo, Compose infra, CI skeleton</h3><span class="badge badge-done">Done · bb04176</span><span class="ms-est">3 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
           <p>Monorepo, Biome, TS 6, <code>packages/config</code>, <code>.nvmrc</code>, <code>.gitattributes</code>, the pnpm build allow-list with a native-binding smoke test, <code>pnpm docs:diagrams</code>, Compose infra (PG 5433, Redis, Kafka with the single-node settings, <code>kafka-init</code>), pinned image tags, CI <code>static</code> + <code>integration</code> skeleton. Spike: node-redis's typed Functions API, confluent consumer behaviour on rebalance, Next 16 cache API names.</p>
           <p class="demo"><span class="label">Demo</span><code>pnpm infra:up</code> healthy; topics visible; CI green.</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M1</span><h3>Schema, SSR pages, images</h3><span class="ms-est">3 d</span></div>
+          <div class="ms-head"><span class="ms-id">M1</span><h3>Schema, SSR pages, images</h3><span class="badge badge-done">Done · 8fbfda4</span><span class="ms-est">3 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
           <p>Schema and migrations (with the trigger), seed, dev login, <code>api</code> catalog endpoints, <code>web</code> <code>/</code>, <code>/p/[slug]</code> SSR and <code>/login</code>, Dockerfiles, Caddy, <code>stack:up</code>. Stock is served from Postgres until M2. Acceptance: <code>next build</code> succeeds with <code>api</code> unreachable.</p>
           <p class="demo"><span class="label">Demo</span><code>curl</code> of <code>/p/&lt;slug&gt;</code> shows SSR HTML with the title and the stock; the first Playwright test (<code>ssr.spec</code>).</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M2</span><h3>Correctness core: Functions, reserve, sweeper, rebuild</h3><span class="ms-est">8 d</span></div>
+          <div class="ms-head"><span class="ms-id">M2</span><h3>Correctness core: Functions, reserve, sweeper, rebuild</h3><span class="badge badge-done">Done · 3f82e9f</span><span class="ms-est">8 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 8"></span></div>
           <p>The Redis Functions library; drop lock + <code>syncDropFromPostgres</code> + <code>POST /test/drops</code>; reconciler structural checks; the level-triggered drop scheduler; the reserve endpoint with its Postgres transaction, one-statement tombstones and quota; idempotency; rate limits; the sweeper loops; <code>verify:invariants</code> v1; Functions concurrency, missing-key and fast-check tests; k6 <code>burst.ts</code> (<code>reserve-only</code>) and <code>idempotency-storm.ts</code> (reserve part).</p>
           <p class="demo"><span class="label">Demo</span>2,000 concurrent reserves on 100 units give exactly 100 reservations, nobody over the limit; abandoned holds expire and stock returns within about 15 s; <code>FLUSHALL</code> → the drop is rebuilt within seconds; invariants green.</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M3</span><h3>Checkout, outbox, relay, settlement</h3><span class="ms-est">4 d</span></div>
+          <div class="ms-head"><span class="ms-id">M3</span><h3>Checkout, outbox, relay, settlement</h3><span class="badge badge-done">Done · 6ef00a8</span><span class="ms-est">4 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 4"></span></div>
           <p>Checkout submit, cancel, extend; outbox + relay; the consumer runner (grouping, backoff, DLQ, <code>dlq:replay</code>, earliest offsets, assignment healthcheck); the settlement consumer; the <code>partitioning</code> test; a basic checkout page with the persisted checkout key; <code>burst.ts</code> adds checkout and cancel.</p>
           <p class="demo"><span class="label">Demo</span><code>order.*</code> events keyed by productId visible in kafka-ui; kill the relay mid-batch and nothing is lost; with consumers stopped, stock still returns via the safety net.</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M4</span><h3>Payments</h3><span class="ms-est">4 d</span></div>
+          <div class="ms-head"><span class="ms-id">M4</span><h3>Payments</h3><span class="badge badge-done">Done · 6ef00a8</span><span class="ms-est">4 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 4"></span></div>
           <p><code>payment-mock</code> (ledger, close-by-reference, failure modes), the payment consumer with in-batch concurrency and <code>REFUNDED</code> rows, race-matrix tests, invariants v2 (money), the <code>checkout-decoupled</code> test, <code>burst.ts</code> adds <code>pm_ok</code>/<code>pm_decline</code>.</p>
           <p class="demo"><span class="label">Demo</span>Buy → PAID; with 30% declines, stock comes back; timeout-after-success leaves exactly one charge; a late payment is refunded.</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M5</span><h3>Real-time gateway and live room</h3><span class="ms-est">4 d</span></div>
+          <div class="ms-head"><span class="ms-id">M5</span><h3>Real-time gateway and live room</h3><span class="badge badge-done">Done · daf4343</span><span class="ms-est">4 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 4"></span></div>
           <p>WS gateway in <code>api</code> ×2, ref-counted subscriptions, coalescing, backpressure, snapshot/resync, <code>RealtimeClient</code>, the live room with HLS and captions, viewer count, order and listing push, k6 <code>ws-fanout.ts</code> with <code>ts</code>-based propagation, <code>live-room.spec</code>.</p>
           <p class="demo"><span class="label">Demo</span>Two browsers on <code>/ws/1</code> and <code>/ws/2</code> tick down together during a k6 burst; <code>docker kill api-1</code> → clients reconnect and resync.</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M6</span><h3>Accessible checkout</h3><span class="ms-est">3 d</span></div>
+          <div class="ms-head"><span class="ms-id">M6</span><h3>Accessible checkout</h3><span class="badge badge-done">Done · daf4343</span><span class="ms-est">3 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
           <p>Focus management, countdown announcements, the +60 s extension, the leave dialog, the error summary; Playwright keyboard (<code>page.clock</code>) and axe suites in CI.</p>
           <p class="demo"><span class="label">Demo</span>A recorded keyboard-only purchase (plus an NVDA pass); axe clean in every state.</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M7</span><h3>Live sales dashboard</h3><span class="ms-est">3 d</span></div>
+          <div class="ms-head"><span class="ms-id">M7</span><h3>Live sales dashboard</h3><span class="badge badge-done">Done · daf4343</span><span class="ms-est">3 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
           <p>Dashboard consumer + Postgres projection (with <code>version</code>) + UI + <code>dash:rebuild</code>.</p>
           <p class="demo"><span class="label">Demo</span>A live dashboard during a burst; wipe and replay give identical totals.</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M8</span><h3>LLM listing generator</h3><span class="ms-est">3 d</span></div>
+          <div class="ms-head"><span class="ms-id">M8</span><h3>LLM listing generator</h3><span class="badge badge-done">Done · daf4343</span><span class="ms-est">3 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 3"></span></div>
           <p>Upload pipeline, providers (fixture, recording, Anthropic), Wire/Draft schemas, the <code>create()</code>-based attempt and repair loop, review UI, eval script, <code>llm-eval.yml</code>.</p>
           <p class="demo"><span class="label">Demo</span>Photo → validated draft → admin edits and approves → SSR product page.</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M9</span><h3>Drift checks and chaos</h3><span class="ms-est">4 d</span></div>
+          <div class="ms-head"><span class="ms-id">M9</span><h3>Drift checks and chaos</h3><span class="badge badge-done">Done · 2026-10-09</span><span class="ms-est">4 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 4"></span></div>
           <p>Reconciler drift checks (stable samples, <code>Σuq</code>, the <code>fd_sync</code> refusal trigger, the drift-checker unit test), core chaos scripts (<code>redis-restart</code>, <code>relay-kill</code>), <code>nightly.yml</code> with the nightly k6 profile.</p>
-          <p class="demo"><span class="label">Demo</span>CI fully green; the nightly chaos report shows 0 oversell, 0 double charge and 0 leaked units after a Redis restart and a relay kill.</p>
+          <p><span class="label">As built</span> All six chaos scenarios, <code>redis-lost-tail</code> included; Prometheus and Grafana in the <code>tools</code> profile; <code>nightly.yml</code> on an isolated Compose project, dry-run end to end on the dev machine.</p>
+          <p class="demo"><span class="label">Demo</span>The chaos report shows 0 oversell, 0 double charge, 0 lost events and 0 leaked units in every scenario, including a Redis restart and a relay kill.</p>
         </div>
       </li>
-      <li class="ms" data-state="planned">
+      <li class="ms" data-state="done">
         <div class="ms-card">
-          <div class="ms-head"><span class="ms-id">M10</span><h3>Measured numbers and docs</h3><span class="ms-est">2 d</span></div>
+          <div class="ms-head"><span class="ms-id">M10</span><h3>Measured numbers and docs</h3><span class="badge badge-done">Done · 2026-10-09</span><span class="ms-est">2 d</span></div>
           <div class="ms-bar" aria-hidden="true"><span style="--d: 2"></span></div>
           <p><code>docs/perf.md</code> with measured laptop-profile numbers and the hardware, ADRs, README, interview notes.</p>
+          <p><span class="label">As built</span> <a href="perf.md">perf.md</a> (two runs per scenario on a Ryzen 5 5600 desktop; correctness and the WebSocket targets met, three latency targets not), sixteen <a href="adr/README.md">ADRs</a>, the README with screenshots, and §18 naming the test files behind every claim.</p>
           <p class="demo"><span class="label">Demo</span>A reviewer can follow every §18 row to a demo and a green check.</p>
         </div>
       </li>
     </ol>
 
     <div class="callout">
-      <p><span class="label">Cut-line</span>If the schedule slips, these stretch items are dropped first, and no resume claim depends on them: <code>kafka-ui</code>, Prometheus and Grafana, the chaos cases beyond <code>redis-restart</code> and <code>relay-kill</code> (<code>consumer-kill</code>, <code>psp-outage</code>, <code>dup-delivery</code>), <code>RecordingListingModel</code>, and the <code>llm-eval.yml</code> workflow (the eval stays a manual script). The viewer count stays in scope.</p>
+      <p><span class="label">Cut-line</span>If the schedule slipped, these stretch items were to be dropped first, and no resume claim depends on them: <code>kafka-ui</code>, Prometheus and Grafana, the chaos cases beyond <code>redis-restart</code> and <code>relay-kill</code> (<code>consumer-kill</code>, <code>psp-outage</code>, <code>dup-delivery</code>), <code>RecordingListingModel</code>, and the <code>llm-eval.yml</code> workflow. <strong>All of them were built.</strong></p>
     </div>
   </div>
 </section>
@@ -1874,7 +1884,7 @@ RETURNING *;</code></pre>
           </li>
           <li>
             <p class="d-head"><span class="d-title">Stretch items worth the time</span><span class="badge badge-open">Open</span></p>
-            <p>The cut-line items, plus single-use WS tickets, a Redis Streams room log, an intercepted-route checkout modal, auth/capture, and a public demo host (otherwise recorded videos).</p>
+            <p>The cut-line items, plus single-use WS tickets, a Redis Streams room log, an intercepted-route checkout modal, auth/capture, and a public demo host (otherwise recorded videos). As built, every cut-line item exists; the others don't.</p>
           </li>
           <li>
             <p class="d-head"><span class="d-title">Resume dates</span><span class="badge badge-deferred">Deferred</span></p>
@@ -1946,8 +1956,10 @@ RETURNING *;</code></pre>
     <ul>
       <li><a href="system-design.md">system-design.md</a>: the full design and source of truth</li>
       <li><a href="diagrams/">diagrams/</a>: Mermaid sources (<code>.mmd</code>) and rendered SVGs</li>
+      <li><a href="adr/README.md">adr/</a>: one record per major decision</li>
+      <li><a href="perf.md">perf.md</a>: measured performance</li>
     </ul>
-    <p>FlashDrop design flow · design date 2026-10-01. This page summarises; where the two differ, system-design.md wins.</p>
+    <p>FlashDrop design flow · design date 2026-10-01, updated 2026-10-09 for the system as built. This page summarises; where the two differ, system-design.md wins.</p>
   </div>
 </footer>
 

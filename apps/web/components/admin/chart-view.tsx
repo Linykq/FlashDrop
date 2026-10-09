@@ -14,6 +14,7 @@ import {
   ResponsiveContainer,
   Tooltip,
   XAxis,
+  type XAxisTickContentProps,
   YAxis,
   type YAxisTickContentProps,
 } from 'recharts';
@@ -31,6 +32,11 @@ import type { ChartSpec, FunnelSpec, UnitsSpec } from './chart-spec';
 const TICK = { fill: 'var(--color-label-secondary)', fontSize: 12 } as const;
 /** Dots mark the minutes while there are few of them; a long series is read as a line. */
 const DOTS_BELOW = 12;
+/**
+ * Up to this many minutes are bars: a line needs two points to be drawn at all, and the first minute of a
+ * flash sale, often the one that matters most, would otherwise be one dot at the plot's edge.
+ */
+const BARS_UP_TO = 2;
 
 export default function ChartView({ spec }: { spec: ChartSpec }) {
   return (
@@ -51,6 +57,7 @@ type UnitsDatum = UnitsSpec['points'][number] & {
 };
 
 function UnitsChart({ spec }: { spec: UnitsSpec }) {
+  if (spec.points.length <= BARS_UP_TO) return <UnitsBars spec={spec} />;
   const data: UnitsDatum[] = spec.points.map((point, index) => ({
     ...point,
     closed: point.partial ? null : point.value,
@@ -62,10 +69,17 @@ function UnitsChart({ spec }: { spec: UnitsSpec }) {
     spec.points.length < DOTS_BELOW ? { r: 3, strokeWidth: 0, fill: 'var(--color-chart-1)' } : false;
   const activeDot = { r: 4, stroke: 'var(--color-surface)', strokeWidth: 2, fill: 'var(--color-chart-1)' };
   return (
-    // 24 px on the right: the last minute's tick label is centred on the plot's edge and would be clipped.
-    <AreaChart data={data} margin={{ top: 8, right: 24, bottom: 0, left: 0 }} accessibilityLayer={false}>
+    <AreaChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 0 }} accessibilityLayer={false}>
       <CartesianGrid vertical={false} stroke="var(--color-chart-grid)" />
-      <XAxis dataKey="label" axisLine={false} tickLine={false} tick={TICK} minTickGap={24} tickMargin={8} />
+      <XAxis
+        dataKey="label"
+        axisLine={false}
+        tickLine={false}
+        tick={(props: XAxisTickContentProps) => <MinuteTick {...props} last={data.length - 1} />}
+        interval="preserveStartEnd"
+        minTickGap={24}
+        tickMargin={8}
+      />
       <YAxis
         allowDecimals={false}
         axisLine={false}
@@ -111,6 +125,76 @@ function UnitsChart({ spec }: { spec: UnitsSpec }) {
         isAnimationActive={false}
       />
     </AreaChart>
+  );
+}
+
+/**
+ * A minute's label under the plot. The first and last minutes sit on the plot's edges, where a centred label
+ * would be cut ("12:15 PN"): they align to the edge instead, inward.
+ */
+function MinuteTick({ x, y, payload, index, last }: XAxisTickContentProps & { last: number }) {
+  const anchor = index === 0 && last > 0 ? 'start' : index === last && last > 0 ? 'end' : 'middle';
+  return (
+    <text x={Number(x)} y={Number(y)} dy="0.71em" textAnchor={anchor} {...TICK}>
+      {String(payload.value)}
+    </text>
+  );
+}
+
+type BarDatum = UnitsSpec['points'][number] & {
+  /** What the running minute is still on course to sell, stacked lighter on what it sold. */
+  rest: number;
+};
+
+/**
+ * A minute or two as bars: what each sold in `chart-1`, and for the running minute what it is on pace for
+ * stacked on top at a quarter of the colour, so the first minute of a burst reads at once.
+ */
+function UnitsBars({ spec }: { spec: UnitsSpec }) {
+  const data: BarDatum[] = spec.points.map((point) => ({
+    ...point,
+    rest: point.pace === null ? 0 : Math.max(0, point.pace - point.value),
+  }));
+  return (
+    <BarChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 0 }} accessibilityLayer={false}>
+      <CartesianGrid vertical={false} stroke="var(--color-chart-grid)" />
+      <XAxis dataKey="label" axisLine={false} tickLine={false} tick={TICK} tickMargin={8} />
+      <YAxis
+        allowDecimals={false}
+        axisLine={false}
+        tickLine={false}
+        tick={TICK}
+        width={40}
+        ticks={[...spec.ticks]}
+        domain={[0, spec.ticks.at(-1) ?? 'auto']}
+        interval={0}
+        tickFormatter={(value: number) => formatCount(value)}
+      />
+      <Tooltip
+        cursor={{ fill: 'var(--color-fill-quaternary)' }}
+        isAnimationActive={false}
+        content={({ active, payload, label }) => (
+          <ChartTooltip active={active} datum={payload?.[0]?.payload} label={label} unit={spec.unit} />
+        )}
+      />
+      <Bar
+        dataKey="value"
+        stackId="minute"
+        maxBarSize={24}
+        radius={[4, 4, 0, 0]}
+        fill="var(--color-chart-1)"
+        isAnimationActive={false}
+      />
+      <Bar
+        dataKey="rest"
+        stackId="minute"
+        maxBarSize={24}
+        radius={[4, 4, 0, 0]}
+        fill="var(--color-chart-1)"
+        fillOpacity={0.25}
+        isAnimationActive={false}
+      />
+    </BarChart>
   );
 }
 

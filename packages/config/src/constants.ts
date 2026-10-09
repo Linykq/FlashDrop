@@ -47,3 +47,13 @@ export type WorkerRole = (typeof WORKER_ROLES)[number];
 
 /** The signed session cookie set by `api` and read by `web` and the WebSocket gateway (§11). */
 export const SESSION_COOKIE = 'fd_session';
+
+/**
+ * Who issues `fd_session` and for whom (§11): `api` sets both claims, and every verifier (api, the gateway,
+ * `web`) requires them, so a token signed with the same key for another purpose is never a session.
+ */
+export const SESSION_ISSUER = 'flashdrop';
+export const SESSION_AUDIENCE = 'flashdrop-web';
+
+/** A session's lifetime (§11). Verifiers also refuse a token issued longer ago, whatever its `exp` says. */
+export const SESSION_TTL_SECONDS = 12 * 60 * 60;

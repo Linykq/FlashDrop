@@ -183,7 +183,6 @@ function DropRow({ drop }: { drop: AdminDropListing }) {
   // While a drop sells, its Redis level leads (Redis admits, SD §4.3); otherwise the stock of record.
   const { level } = useLiveStock(selling ? drop.id : null, null);
   const stock = level ?? { avail: total - reserved - sold, held: reserved, sold, status: drop.status };
-  const claimed = stock.held + stock.sold;
   return (
     <tr>
       <Td first className="sm:min-w-64">
@@ -194,7 +193,9 @@ function DropRow({ drop }: { drop: AdminDropListing }) {
           <ProductThumb imageKey={drop.product.imageKeys[0]} />
           <span className="min-w-0">
             <span className="line-clamp-2 font-medium">{drop.product.title}</span>
-            <span className="block truncate font-mono text-footnote text-label-secondary">
+            {/* Capped, so truncation has a width to work against: in an auto-layout cell a long slug would
+                otherwise widen the whole column. */}
+            <span className="block truncate font-mono text-footnote text-label-secondary sm:max-w-64">
               {drop.product.slug}
             </span>
           </span>
@@ -215,8 +216,10 @@ function DropRow({ drop }: { drop: AdminDropListing }) {
           <span className="w-16 shrink-0">
             <StockMeter avail={stock.avail} held={stock.held} sold={stock.sold} size="sm" palette="admin" />
           </span>
+          {/* What is left, as the drop page's legend reads it: "0/250" would read as out of stock. */}
           <span className="tabular-nums">
-            {formatCount(claimed)}/{formatCount(total)}
+            {formatCount(stock.avail)} left{' '}
+            <span className="text-label-secondary">of {formatCount(total)}</span>
           </span>
         </span>
       </Td>

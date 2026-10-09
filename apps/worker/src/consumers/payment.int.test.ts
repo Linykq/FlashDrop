@@ -13,7 +13,7 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { isTransientError } from '../loop';
 import { expireOrders } from '../sweeper/expire-orders';
-import { type FakePsp, startFakePsp } from '../test/fake-psp';
+import { FAKE_PSP_API_KEY, type FakePsp, startFakePsp } from '../test/fake-psp';
 import {
   armDrop,
   claimedBy,
@@ -50,7 +50,7 @@ beforeAll(async () => {
   psp = await startFakePsp();
   context = { logger: env.deps.logger };
   // A short client timeout, so a withheld answer becomes an unknown outcome quickly.
-  const client = createPspClient({ baseUrl: psp.url, timeoutMs: 500 });
+  const client = createPspClient({ baseUrl: psp.url, apiKey: FAKE_PSP_API_KEY, timeoutMs: 500 });
   payment = paymentHandlers({ db: env.db, redis: env.redis, psp: client });
   settlement = settlementHandlers(env.deps);
 });

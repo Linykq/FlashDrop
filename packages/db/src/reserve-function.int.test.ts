@@ -15,11 +15,12 @@ import {
 import { getOrder } from './orders';
 import { orderEvent, outboxRow } from './outbox';
 import { createPool, POOL_PROFILES } from './pool';
+import { claimQuota } from './reserve-steps';
 import { outbox } from './schema';
 import { createTestDatabase, type TestDatabase } from './test-database';
 import { createDrop, createUsers, gate, reached, reservation } from './test-fixtures';
 import { transaction } from './transaction';
-import { claimQuota, recordReservation } from './transitions';
+import { recordReservation } from './transitions';
 
 /*
  * The reserve transaction as one server-side function (migration 0006, design §5.2 "Hot row"): what moving

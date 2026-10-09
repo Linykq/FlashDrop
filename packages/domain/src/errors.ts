@@ -16,6 +16,7 @@ export const ERROR_CODES = [
   'ALREADY_SUBMITTED',
   'DROP_ARMED',
   'DROP_BUSY',
+  'WINDOW_PASSED',
   'RESERVATION_EXPIRED',
   'IDEMPOTENCY_KEY_REUSED',
   'RATE_LIMITED',
@@ -38,6 +39,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   ALREADY_SUBMITTED: 409,
   DROP_ARMED: 409,
   DROP_BUSY: 409,
+  // Arming a drop whose window is over would end it at once, for good: its times must be edited first.
+  WINDOW_PASSED: 409,
   RESERVATION_EXPIRED: 410,
   IDEMPOTENCY_KEY_REUSED: 422,
   RATE_LIMITED: 429,

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ListingJob } from '@flashdrop/contracts';
 import { DomainError, NotFoundError } from '@flashdrop/domain';
-import type { ListingService, NewListingJob } from '../routes/admin/listings-store';
+import type { ListingService, NewListingUpload } from '../services/admin-listings';
 
 export type MultipartPart =
   | { readonly field: string; readonly file: Buffer; readonly filename?: string; readonly type?: string }
@@ -25,12 +25,12 @@ export function multipartBody(parts: readonly MultipartPart[]): { body: Buffer; 
 
 /** An in-memory `ListingService` for `inject()` tests: the routes run for real, without Postgres. */
 export interface FakeListings extends ListingService {
-  readonly submitted: NewListingJob[];
+  readonly submitted: NewListingUpload[];
   readonly jobs: Map<string, ListingJob>;
 }
 
 export function createFakeListings(): FakeListings {
-  const submitted: NewListingJob[] = [];
+  const submitted: NewListingUpload[] = [];
   const jobs = new Map<string, ListingJob>();
   const get = async (jobId: string) => {
     const job = jobs.get(jobId);

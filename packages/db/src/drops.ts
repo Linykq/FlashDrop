@@ -266,7 +266,10 @@ export interface DropSettings {
   readonly stock: number;
 }
 
-/** A DRAFT drop and its inventory, in one transaction. Nothing outside admin sees it until it is armed. */
+/**
+ * A DRAFT drop and its inventory, in one transaction. Nothing outside admin sees it until it is armed.
+ * Throws a validation error for a window that ends before it starts or has already ended.
+ */
 export async function createDraftDrop(db: Db, settings: DropSettings): Promise<AdminDropRecord> {
   const id = randomUUID();
   return transaction(db, async (tx) => {
@@ -275,6 +278,7 @@ export async function createDraftDrop(db: Db, settings: DropSettings): Promise<A
       .insert(drops)
       .values({ id, ...drop, status: 'DRAFT' })
       .catch(rethrowWindow);
+    await assertWindowOpen(tx, id);
     await tx.insert(dropInventory).values({ dropId: id, total: stock });
     const created = await getAdminDrop(tx, id);
     if (created === undefined) throw new BugError(`createDraftDrop: ${id} vanished`);
@@ -285,7 +289,8 @@ export async function createDraftDrop(db: Db, settings: DropSettings): Promise<A
 /**
  * Changes a DRAFT drop. Armed drops are immutable (§4.7): their Redis meta and the `limit_qty` copied into
  * quotas would go stale. Throws `NotFoundError`, 409 `DROP_ARMED`, or a validation error for a window that
- * would end before it starts.
+ * would end before it starts or has already ended. A change that leaves the window alone is accepted on a
+ * draft whose window has passed, so the admin can still fix it in any order; arming then refuses it.
  */
 export async function patchDraftDrop(
   db: Db,
@@ -306,6 +311,8 @@ export async function patchDraftDrop(
     if (Object.keys(dropPatch).length > 0) {
       await tx.update(drops).set(dropPatch).where(eq(drops.id, dropId)).catch(rethrowWindow);
     }
+    if (dropPatch.startsAt !== undefined || dropPatch.endsAt !== undefined)
+      await assertWindowOpen(tx, dropId);
     if (stock !== undefined) {
       await tx.update(dropInventory).set({ total: stock }).where(eq(dropInventory.dropId, dropId));
     }
@@ -313,6 +320,20 @@ export async function patchDraftDrop(
     if (updated === undefined) throw new BugError(`patchDraftDrop: ${dropId} has no inventory`);
     return updated;
   });
+}
+
+/**
+ * A window that has already ended is refused when it is written, by Postgres's clock: the one `arm` and
+ * the scheduler judge it by. Armed, such a drop would go straight to ENDED and burn the drop for good.
+ */
+async function assertWindowOpen(tx: Executor, dropId: string): Promise<void> {
+  const [row] = await tx
+    .select({ passed: sql<boolean>`${drops.endsAt} <= now()` })
+    .from(drops)
+    .where(eq(drops.id, dropId));
+  if (row?.passed === true) {
+    throw new ValidationError([{ path: 'endsAt', message: 'endsAt must be in the future' }]);
+  }
 }
 
 function rethrowWindow(error: unknown): never {
@@ -345,12 +366,22 @@ const ACTION_TARGET: Readonly<Record<DropAction, SQL>> = {
   end: sql`'ENDED'::drop_status`,
 };
 
+/** Arming also needs a window that is still open: SCHEDULED past `ends_at` would end at the next tick. */
+const ACTION_GUARD: Readonly<Record<DropAction, SQL>> = {
+  arm: sql`AND d.ends_at > now()`,
+  pause: sql``,
+  resume: sql``,
+  end: sql``,
+};
+
 /**
  * An admin status change (§4.7), a CAS on the statuses `DROP_ACTION_FROM` allows. The caller holds the
- * drop lock and then applies the new status to Redis (`fd_set_status`, or the full sync for `arm`).
- * Throws `NotFoundError`; 409 `DROP_ARMED` for arming a drop that is no longer DRAFT; 409 `CONFLICT` for
- * any other action from a status it does not apply to, or for arming a product that already has an open
- * drop (`one_open_drop_per_product`).
+ * drop lock and then applies the new status to Redis (`fd_set_status`, or the full sync for `arm`). A
+ * change to ENDED records `ended_at` (the `drops_ended_at` trigger).
+ * Throws `NotFoundError`; 409 `DROP_ARMED` for arming a drop that is no longer DRAFT; 409 `WINDOW_PASSED`
+ * for arming a draft whose window has ended (it would end at once, for good); 409 `CONFLICT` for any other
+ * action from a status it does not apply to, or for arming a product that already has an open drop
+ * (`one_open_drop_per_product`).
  */
 export async function applyDropAction(
   db: Executor,
@@ -367,7 +398,7 @@ export async function applyDropAction(
     ({ rows } = await db.execute(sql`
       WITH prev AS (SELECT id, status FROM drops WHERE id = ${dropId} FOR NO KEY UPDATE)
       UPDATE drops d SET status = ${ACTION_TARGET[action]}
-      FROM prev WHERE d.id = prev.id AND prev.status = ANY(${from}::drop_status[])
+      FROM prev WHERE d.id = prev.id AND prev.status = ANY(${from}::drop_status[]) ${ACTION_GUARD[action]}
       RETURNING prev.status AS from_status, d.status AS to_status`));
   } catch (error) {
     if (constraintOf(error) === 'one_open_drop_per_product') {
@@ -378,8 +409,14 @@ export async function applyDropAction(
   const [change] = parseRows(StatusChangeRow, rows, `applyDropAction ${action}`);
   if (change !== undefined) return change;
 
-  const [current] = await db.select({ status: drops.status }).from(drops).where(eq(drops.id, dropId));
+  const [current] = await db
+    .select({ status: drops.status, passed: sql<boolean>`${drops.endsAt} <= now()` })
+    .from(drops)
+    .where(eq(drops.id, dropId));
   if (current === undefined) throw new NotFoundError('Drop');
+  if (action === 'arm' && current.status === 'DRAFT' && current.passed) {
+    throw new DomainError('WINDOW_PASSED', "This drop's window has passed. Edit its times first.");
+  }
   if (action === 'arm') throw new DomainError('DROP_ARMED', 'The drop is already armed');
   throw new DomainError('CONFLICT', `Cannot ${action} a drop that is ${current.status}`);
 }

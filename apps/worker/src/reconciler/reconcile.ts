@@ -3,6 +3,7 @@ import { dropInventory, eq, inArray, listTrackedDrops, type TrackedDrop } from '
 import { type AlertName, alert, BugError } from '@flashdrop/domain';
 import {
   BULK_DEADLINE_MS,
+  driftSource,
   dropKeys,
   type HeldDropLock,
   keyspaceLoss,
@@ -20,7 +21,11 @@ import {
 import { z } from 'zod';
 import type { WorkerDeps } from '../deps';
 import { isTransientError } from '../loop';
+import type { RebuildReason } from '../metrics';
+import { reportRebuild } from '../rebuilds';
+import { createDriftChecks, type RebuildUnlessBusy } from './drift-checks';
 import type { RedisIdentityStore } from './identity';
+import { createRefusalWatch } from './refusals';
 
 /*
  * The reconciler's checks (design §4.7), run by the leader every 2 s and at once on `NOTIFY fd_sync`. Every
@@ -37,12 +42,18 @@ import type { RedisIdentityStore } from './identity';
  *      the lock, so no live rebuild exists and its holder died), or a generation other than Postgres's.
  *      Holding the lock also keeps the Redis and Postgres reads consistent: no sync can start or finish
  *      between them. A lock-free first pass picks the drops that look broken; healthy ones take no lock.
+ *   3. Drift, every 10 s (`drift-checks.ts`): stable samples of every tracked drop; Redis optimistic twice in
+ *      a row rebuilds it (`drift`), any difference on three quiescent samples too (`leak`).
+ *   4. Refusals, on `NOTIFY fd_sync` (`refusals.ts`): a nudged drop with SOLD_OUT or LIMIT tombstones no
+ *      rebuild has accounted for is rebuilt at once (`refusal`).
+ * While a keyspace recovery is still pending (a busy drop), 3 and 4 wait: it rebuilds every drop anyway.
  *
  * A drop RECONCILING for more than 30 s raises an alert (§12): `slow_rebuild` when another session holds
  * its lock (that holder is alive, or the lock would have vanished with it), `rebuild_failed` when this one
  * holds it and the rebuild keeps failing. Either way every reserve on the drop answers 503 meanwhile.
  *
- * Rebuild logs carry `reason` (restart, wipe, library, structural): the `fd_rebuilds_total{reason}` series.
+ * Rebuild logs carry `reason` (restart, wipe, library, structural, drift, leak, refusal), and each rebuild
+ * counts in `fd_rebuilds_total{reason}` (§12).
  */
 
 /** RECONCILING for longer than this is an alert (§4.7, §12). */
@@ -52,8 +63,18 @@ const RECONCILING_ALERT_EVERY_MS = 10_000;
 
 const ReconcilingFields = z.tuple([z.string().nullable(), z.string().nullable()]);
 
+/** How often the drift checks sample every tracked drop (§4.7). */
+const DRIFT_EVERY_MS = 10_000;
+
+export interface ReconcilerTiming {
+  /** Defaults to `DRIFT_EVERY_MS`; 0 samples on every tick. */
+  readonly driftEveryMs?: number;
+}
+
 export interface Reconciler {
   tick(signal: AbortSignal): Promise<void>;
+  /** A `NOTIFY fd_sync` payload (a drop id), for the next tick's refusal check. */
+  nudged(payload: string): void;
 }
 
 /** ENDED drops last; otherwise the tracked set's order (by `starts_at`). */
@@ -61,9 +82,48 @@ function openDropsFirst(tracked: readonly TrackedDrop[]): TrackedDrop[] {
   return [...tracked].sort((a, b) => Number(a.status === 'ENDED') - Number(b.status === 'ENDED'));
 }
 
-export function createReconciler(deps: WorkerDeps, identity: RedisIdentityStore): Reconciler {
+export function createReconciler(
+  deps: WorkerDeps,
+  identity: RedisIdentityStore,
+  timing: ReconcilerTiming = {},
+): Reconciler {
   const lastReconcilingAlert = new Map<string, number>();
   let warnedLibraryDiffers = false;
+  const driftEveryMs = timing.driftEveryMs ?? DRIFT_EVERY_MS;
+  let nextDriftAt = 0;
+  /** Drops this process rebuilt since the refusal check last ran: their refusals are accounted for. */
+  const rebuiltSinceRefusalCheck = new Set<string>();
+
+  function recordRebuild(dropId: string, log: Logger, reason: RebuildReason, outcome: SyncOutcome): void {
+    reportRebuild(log, reason, outcome);
+    if (outcome.kind === 'REBUILT') rebuiltSinceRefusalCheck.add(dropId);
+  }
+
+  /**
+   * A rebuild the drift and refusal checks decided on, under the drop lock unless another session holds it.
+   * A transient failure ends the tick; any other is logged, the drop stays RECONCILING (fail closed), and
+   * the structural check retries it, alerting after 30 s.
+   */
+  const rebuildUnlessBusy: RebuildUnlessBusy = async (dropId, reason, log) => {
+    try {
+      const result = await tryWithDropLock(deps.lock, dropId, (lock) => rebuildDrop(deps, lock));
+      if (!result.acquired) {
+        log.info({ reason }, 'drop busy; its rebuild waits for the next check');
+        return 'busy';
+      }
+      recordRebuild(dropId, log, reason, result.value);
+      return result.value.kind === 'REBUILT' ? 'rebuilt' : 'failed';
+    } catch (err) {
+      if (isTransientError(err)) throw err;
+      log.error({ err, reason }, 'rebuild failed');
+      return 'failed';
+    }
+  };
+  const driftChecks = createDriftChecks(
+    { source: driftSource(deps), logger: deps.logger },
+    rebuildUnlessBusy,
+  );
+  const refusals = createRefusalWatch(deps, rebuildUnlessBusy);
   /**
    * The full rebuild in progress: one loss of one Redis (reason, run_id, epoch) and the drops already
    * rebuilt for it. A busy or failing drop is retried on the next tick without rebuilding the others again
@@ -114,7 +174,7 @@ export function createReconciler(deps: WorkerDeps, identity: RedisIdentityStore)
         // A busy drop (an admin sync or the scheduler holds it) is left for the next tick.
         const result = await tryWithDropLock(deps.lock, drop.id, (lock) => rebuildDrop(deps, lock));
         if (result.acquired) {
-          logRebuild(log, reason, result.value);
+          recordRebuild(drop.id, log, reason, result.value);
           recovery.rebuilt.add(drop.id);
         } else {
           pending++;
@@ -146,9 +206,8 @@ export function createReconciler(deps: WorkerDeps, identity: RedisIdentityStore)
    * broken drop look repaired because it is being repaired. The decision to rebuild is still taken only
    * under the lock, where no sync can start or finish between the Redis and the Postgres read.
    */
-  async function checkStructure(signal: AbortSignal): Promise<void> {
-    const tracked = await listTrackedDrops(deps.db);
-    for (const dropId of await suspectDrops(tracked.map((drop) => drop.id))) {
+  async function checkStructure(dropIds: readonly string[], signal: AbortSignal): Promise<void> {
+    for (const dropId of await suspectDrops(dropIds)) {
       if (signal.aborted) return;
       const log = deps.logger.child({ dropId });
       try {
@@ -208,7 +267,7 @@ export function createReconciler(deps: WorkerDeps, identity: RedisIdentityStore)
     if (issue === null) return;
     log.warn({ issue }, 'drop structure broken; rebuilding');
     const outcome = await rebuildDrop(deps, lock);
-    logRebuild(log, 'structural', outcome);
+    recordRebuild(lock.dropId, log, 'structural', outcome);
     // STALE under a lock this process holds: Redis has a generation Postgres never issued (Postgres was
     // restored from an older backup, say). The drop stays RECONCILING and every retry is refused the same
     // way, so it counts as a failing rebuild.
@@ -253,17 +312,17 @@ export function createReconciler(deps: WorkerDeps, identity: RedisIdentityStore)
   return {
     async tick(signal) {
       await recoverKeyspace(signal);
-      await checkStructure(signal);
-      // TODO(M9): drift checks on stable samples (optimistic Redis, leaks, Σuq) run here (§4.7).
+      const tracked = (await listTrackedDrops(deps.db)).map((drop) => drop.id);
+      await checkStructure(tracked, signal);
+      if (recovery !== undefined || signal.aborted) return;
+      const now = Date.now();
+      if (now >= nextDriftAt) {
+        nextDriftAt = now + driftEveryMs;
+        await driftChecks.run(tracked, signal);
+      }
+      await refusals.run({ tracked: new Set(tracked), rebuilt: rebuiltSinceRefusalCheck, signal });
+      rebuiltSinceRefusalCheck.clear();
     },
+    nudged: (payload) => refusals.nudged(payload),
   };
-}
-
-function logRebuild(log: Pick<Logger, 'info' | 'warn'>, reason: string, outcome: SyncOutcome): void {
-  if (outcome.kind === 'REBUILT') {
-    log.info({ reason, gen: outcome.gen, status: outcome.status, orders: outcome.orders }, 'drop rebuilt');
-  } else {
-    // STALE: a zombie sync lost to a newer generation. UNKNOWN_DROP / NOT_ARMED: it left the tracked set.
-    log.warn({ reason, outcome: outcome.kind }, 'drop not rebuilt');
-  }
 }

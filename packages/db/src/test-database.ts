@@ -5,6 +5,7 @@ import { createDb, type Db } from './client';
 import { migrateDatabase } from './migrate';
 import { createPool, POOL_PROFILES, type PoolOptions } from './pool';
 
+export { claimQuota, insertOrderOnConflictDoNothing, type TakeStockResult, takeStock } from './reserve-steps';
 export { type HeldTestHook, holdTestHook, waitForLockWaiters } from './test-hooks';
 
 /*

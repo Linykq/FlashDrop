@@ -6,11 +6,11 @@ import {
   checkout,
   connectStores,
   createBuyers,
-  createTestDrop,
   groupLagOn,
   orderOf,
   partitionOf,
   paymentRows,
+  postTestDrop,
   problemsIn,
   pspCharges,
   reserve,
@@ -46,7 +46,7 @@ afterAll(async () => {
 
 describe('consumers stopped', () => {
   it('stock still returns to Redis through the safety net, and the consumers catch up afterwards', async () => {
-    const drop = await createTestDrop({ stock: 4, perUserLimit: 1, holdSeconds: 10, paymentSeconds: 10 });
+    const drop = await postTestDrop({ stock: 4, perUserLimit: 1, holdSeconds: 10, paymentSeconds: 10 });
     const partition = partitionOf(drop.productId);
     const [cancelling, paying, abandoning, idle] = (await createBuyers(4)) as [Buyer, Buyer, Buyer, Buyer];
 

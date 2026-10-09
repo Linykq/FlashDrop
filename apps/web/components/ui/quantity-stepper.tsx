@@ -3,6 +3,7 @@
 import { Minus, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { cx } from '../../lib/cx';
+import { announce } from './announcer';
 import { IconButton } from './icon-button';
 
 type QuantityStepperProps = {
@@ -25,9 +26,10 @@ type QuantityStepperProps = {
 };
 
 /**
- * Minus, the quantity, plus, in one pill. The value is announced politely as it changes, and rises into
- * place once the buyer changed it (a CSS keyframe on the remounted number, so the stepper needs no animation
- * library).
+ * Minus, the quantity, plus, in one pill. The buyer's own presses are announced politely ("Quantity 2");
+ * the value is no live region, because live stock can lower it with nobody pressing anything, and stock
+ * changes speak through the stock announcer alone (§13.3). The number rises into place once the buyer changed
+ * it (a CSS keyframe on the remounted number, so the stepper needs no animation library).
  */
 export function QuantityStepper({
   value,
@@ -45,6 +47,7 @@ export function QuantityStepper({
   function step(next: number): void {
     setChanged(true);
     onChange(next);
+    announce(`Quantity ${next}`);
   }
 
   return (
@@ -63,7 +66,6 @@ export function QuantityStepper({
         onClick={() => step(value - 1)}
       />
       <output
-        aria-live="polite"
         className={cx(
           'inline-grid justify-items-center text-headline tabular-nums',
           size === 'lg' ? 'min-w-10' : 'min-w-8',

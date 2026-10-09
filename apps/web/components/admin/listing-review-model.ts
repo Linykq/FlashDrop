@@ -218,12 +218,20 @@ export function reviewBanner(job: Pick<ListingJob, 'status' | 'draft' | 'issues'
   };
 }
 
-/** The action bar's state line (§10.9): unchanged fields and open uncertainties, or what an empty form needs. */
-export function reviewStatus(hasDraft: boolean, unchanged: number, open: number): string {
-  if (!hasDraft) return 'Fill in every field';
+/**
+ * The action bar's state line (§10.9): the fields that block publishing first, once any shows an error, then
+ * unchanged fields or what an empty form needs, then open uncertainties.
+ */
+export function reviewStatus(hasDraft: boolean, unchanged: number, open: number, toFix = 0): string {
+  const progress =
+    toFix > 0
+      ? `${formatCount(toFix)} ${plural(toFix, 'field', 'fields')} to fix`
+      : hasDraft
+        ? `${formatCount(unchanged)} ${plural(unchanged, 'field', 'fields')} unchanged`
+        : 'Fill in every field';
   return [
-    `${formatCount(unchanged)} ${plural(unchanged, 'field', 'fields')} unchanged`,
-    open > 0 ? `${formatCount(open)} ${plural(open, 'uncertainty', 'uncertainties')} open` : null,
+    progress,
+    hasDraft && open > 0 ? `${formatCount(open)} ${plural(open, 'uncertainty', 'uncertainties')} open` : null,
   ]
     .filter(Boolean)
     .join(' · ');

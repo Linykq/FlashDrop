@@ -11,6 +11,8 @@ import { Cents, Currency, IsoDateTime, Uuid } from './common';
  * Drop administration (design §4.7, §5.1). A drop is edited only while DRAFT; `arm` moves it to SCHEDULED
  * and builds its Redis state, after which it is immutable apart from its status (pause, resume, end).
  * Every action takes the per-drop lock; a busy drop answers 409 `DROP_BUSY`, an armed one 409 `DROP_ARMED`.
+ * A window that has already ended is refused: 400 on create and on a PATCH of the times, 409 `WINDOW_PASSED`
+ * on `arm`, because an armed drop past its window ends at once, for good.
  */
 
 export const DropStatus = z.enum(DROP_STATUSES);
@@ -75,6 +77,8 @@ export const AdminDrop = z.object({
   status: DropStatus,
   startsAt: IsoDateTime,
   endsAt: IsoDateTime,
+  /** When it became ENDED (an early end, or `endsAt` when the clock closed it); null until then. */
+  endedAt: IsoDateTime.nullable(),
   priceCents: Cents,
   currency: Currency,
   perUserLimit: PerUserLimit,

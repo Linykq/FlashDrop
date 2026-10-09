@@ -2,27 +2,33 @@
  * Every price, count, countdown and time the UI shows goes through this module (design-system §3.3), using
  * Intl only. The locale is fixed: the copy is English, and one locale keeps the server render and hydration
  * byte-identical. Time zones are the one thing that differs between server and client; see <LocalTime>.
+ * Admin's own formats (`components/admin/format.ts`) build on the cached formatters here.
  */
-const LOCALE = 'en-US';
+export const LOCALE = 'en-US';
+
+const numberFormatters = new Map<string, Intl.NumberFormat>();
+
+/** One `Intl.NumberFormat` per set of options, made on first use: constructing one is costly. */
+export function numberFormatter(options: Intl.NumberFormatOptions): Intl.NumberFormat {
+  const key = JSON.stringify(options);
+  let formatter = numberFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(LOCALE, options);
+    numberFormatters.set(key, formatter);
+  }
+  return formatter;
+}
 
 /** Deadlines closer than this show a running countdown; further ones show an absolute time (§3.3). */
 export const COUNTDOWN_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-const moneyFormatters = new Map<string, Intl.NumberFormat>();
-
 function moneyFormatter(currency: string, fractionDigits: 0 | 2): Intl.NumberFormat {
-  const key = `${currency}:${fractionDigits}`;
-  let formatter = moneyFormatters.get(key);
-  if (!formatter) {
-    formatter = new Intl.NumberFormat(LOCALE, {
-      style: 'currency',
-      currency,
-      minimumFractionDigits: fractionDigits,
-      maximumFractionDigits: fractionDigits,
-    });
-    moneyFormatters.set(key, formatter);
-  }
-  return formatter;
+  return numberFormatter({
+    style: 'currency',
+    currency,
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  });
 }
 
 /**
@@ -37,10 +43,8 @@ export function formatMoney(cents: number, currency: string, style: MoneyStyle =
   return moneyFormatter(currency, fractionDigits).format(cents / 100);
 }
 
-const countFormatter = new Intl.NumberFormat(LOCALE);
-
 export function formatCount(count: number): string {
-  return countFormatter.format(count);
+  return numberFormatter({}).format(count);
 }
 
 /** "3F2A9C1B": the first 8 hex characters of a UUID, uppercase, as people quote an order or a drop (§10.5). */
@@ -60,12 +64,12 @@ export function formatCountdown(remainingMs: number): string {
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`;
 }
 
-const minuteFormatter = new Intl.NumberFormat(LOCALE, { style: 'unit', unit: 'minute', unitDisplay: 'long' });
-const secondFormatter = new Intl.NumberFormat(LOCALE, { style: 'unit', unit: 'second', unitDisplay: 'long' });
-
 /** Whole units in words: "2 minutes", "90 seconds". */
 export function formatDuration(seconds: number): string {
-  return seconds % 60 === 0 ? minuteFormatter.format(seconds / 60) : secondFormatter.format(seconds);
+  const minutes = seconds % 60 === 0;
+  return numberFormatter({ style: 'unit', unit: minutes ? 'minute' : 'second', unitDisplay: 'long' }).format(
+    minutes ? seconds / 60 : seconds,
+  );
 }
 
 const pluralRules = new Intl.PluralRules(LOCALE);
@@ -86,7 +90,8 @@ type DateInput = string | number | Date;
 
 const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
 
-function dateTimeFormatter(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+/** One `Intl.DateTimeFormat` per set of options, as `numberFormatter`. */
+export function dateTimeFormatter(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
   const key = JSON.stringify(options);
   let formatter = dateTimeFormatters.get(key);
   if (!formatter) {
@@ -96,14 +101,30 @@ function dateTimeFormatter(options: Intl.DateTimeFormatOptions): Intl.DateTimeFo
   return formatter;
 }
 
+/**
+ * One spelling of a formatted time in every runtime. ICU versions space times differently: Node's puts a narrow
+ * no-break space before "PM" and thin spaces around a range's dash, Chromium's plain spaces, and text rendered
+ * on the server must equal what the browser renders while hydrating (`<LocalTime>`, admin times). So every
+ * space becomes a plain one, the day period keeps its number with a no-break space, and a range within one day
+ * closes up around its dash ("7:00–7:30 PM"), as across days it reads "11:00 PM – 1:00 AM".
+ */
+export function canonicalSpaces(text: string): string {
+  return text
+    .replace(/[\u00a0\u2009\u202f]/gu, ' ')
+    .replace(/ (AM|PM)\b/g, '\u00a0$1')
+    .replace(/(\d) \u2013 (\d)/g, '$1\u2013$2');
+}
+
 /** "7:00 PM", or "7:00 PM UTC" with `withZone`. */
 export function formatTime(date: DateInput, { timeZone, withZone = false }: TimeZoneOptions = {}): string {
-  return dateTimeFormatter({
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZone,
-    timeZoneName: withZone ? 'short' : undefined,
-  }).format(new Date(date));
+  return canonicalSpaces(
+    dateTimeFormatter({
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZone,
+      timeZoneName: withZone ? 'short' : undefined,
+    }).format(new Date(date)),
+  );
 }
 
 /** "Tue, Oct 6". */
@@ -147,17 +168,4 @@ export function formatAt(
   return now !== undefined && calendarDay(date, timeZone) === calendarDay(now, timeZone)
     ? `at ${time}`
     : `${formatDate(date, { timeZone })} at ${time}`;
-}
-
-/**
- * When a drop opens, as the Buy button says it (§9.9): "at 7:00 PM" on the same calendar day, otherwise
- * "Tue, Oct 6". Without `now` the date is always spelled out, as for `formatDateTime`.
- */
-export function formatOpening(
-  date: DateInput,
-  { timeZone, withZone = false, now }: TimeZoneOptions & { now?: DateInput } = {},
-): string {
-  return now !== undefined && calendarDay(date, timeZone) === calendarDay(now, timeZone)
-    ? `at ${formatTime(date, { timeZone, withZone })}`
-    : formatDate(date, { timeZone });
 }

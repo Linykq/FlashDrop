@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startConsumer } from './consumers';
 import { createPspClient } from './consumers/psp-client';
 import { type RelayRole, startRelay } from './relay';
-import { type FakePsp, startFakePsp } from './test/fake-psp';
+import { FAKE_PSP_API_KEY, type FakePsp, startFakePsp } from './test/fake-psp';
 import {
   armDrop,
   createDrop,
@@ -70,7 +70,10 @@ beforeAll(async () => {
     close: async () => undefined,
   };
   relay = startRelay(env.deps, { databaseUrl: env.url, publisher: toTestTopic });
-  const deps = { ...env.deps, psp: createPspClient({ baseUrl: psp.url, timeoutMs: 1_000 }) };
+  const deps = {
+    ...env.deps,
+    psp: createPspClient({ baseUrl: psp.url, apiKey: FAKE_PSP_API_KEY, timeoutMs: 1_000 }),
+  };
   const options = { kafka, dlq: publisher, topic, dlqTopic, backoff: { baseMs: 50, capMs: 500 } };
   runners = [
     await startConsumer('payment', deps, { ...options, groupId: groups.payment }),

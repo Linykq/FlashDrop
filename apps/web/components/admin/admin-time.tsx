@@ -2,20 +2,20 @@
 
 import { useSyncExternalStore } from 'react';
 import { formatAt, formatDateTime, formatTime } from '../../lib/format';
-import { canonicalSpaces, formatShortDateTime, formatWindow } from './format';
+import { formatShortDateTime, formatWindow } from './format';
 
 /*
  * Admin times in the viewer's zone, hydration-safe like `<LocalTime>`: the server renders UTC with the zone's
- * name, hydration renders the same, then the client's own reading replaces it. Every string goes through
- * `canonicalSpaces`, because Node's and the browser's ICU space times differently and hydration compares them
- * character by character.
+ * name, hydration renders the same, then the client's own reading replaces it. Every format spells its spaces
+ * one way (`canonicalSpaces` in `lib/format.ts`), because Node's and the browser's ICU space times differently
+ * and hydration compares them character by character.
  */
 
 const subscribeNever = () => () => {};
 const UTC = { timeZone: 'UTC', withZone: true } as const;
 
 function useZoned(server: () => string, client: () => string): string {
-  return canonicalSpaces(useSyncExternalStore(subscribeNever, client, server));
+  return useSyncExternalStore(subscribeNever, client, server);
 }
 
 const SERVER_ZONE = { timeZone: 'UTC' } as const;
@@ -35,7 +35,7 @@ export function useViewerZone(): { timeZone?: string } {
 
 /** "7:02 PM" in a zone from `useViewerZone`, spelled the same in every runtime. */
 export function zonedTime(at: string | number, zone: { timeZone?: string }): string {
-  return canonicalSpaces(formatTime(at, zone));
+  return formatTime(at, zone);
 }
 
 /** A drop's window, "Oct 6, 7:00–7:30 PM" (design system §10.8). */

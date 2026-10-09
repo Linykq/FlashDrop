@@ -5,7 +5,7 @@ import { inList, timestamptz } from './columns';
 /*
  * payment-mock's own schema (design §3). Its ledger is the evidence for INV-4 (no double charge), so the
  * invariant checks read it next to `payments`. payment-mock connects as its own role, which migration 0007
- * limits to this schema (`PSP_DB_ROLE`).
+ * limits to this schema (`PSP_DB_ROLE`, db-roles.ts).
  */
 
 export const psp = pgSchema('psp');

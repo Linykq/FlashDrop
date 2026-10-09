@@ -1,7 +1,7 @@
 {
   "name": "@flashdrop/api",
   "private": true,
-  "description": "REST /api/v1 and, from M5, the WebSocket gateway (Fastify; roles via API_ROLES).",
+  "description": "REST /api/v1 and the WebSocket gateway (Fastify; roles via API_ROLES).",
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=../../.env src/main.ts",
@@ -19,6 +19,7 @@
     "@flashdrop/inventory": "workspace:*",
     "@flashdrop/llm": "workspace:*",
     "@flashdrop/messaging": "workspace:*",
+    "@prometheus-io/client": "catalog:",
     "fastify": "catalog:",
     "file-type": "catalog:",
     "jose": "catalog:",

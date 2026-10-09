@@ -13,7 +13,7 @@ import { ButtonLink } from '../ui/button';
 import { Skeleton, SkeletonText } from '../ui/skeleton';
 import { TitleText } from '../ui/title-text';
 import { Countdown } from './countdown';
-import { LiveBadge } from './live-badge';
+import { LiveDropStatus } from './live-drop-status';
 import { LiveStockText } from './live-stock-text';
 import { LocalTime } from './local-time';
 
@@ -52,19 +52,24 @@ export function DropHero({ drop, intro, serverNow }: DropHeroProps) {
   return (
     <section aria-labelledby="hero-title" className="bg-bg-secondary py-(--section-space)">
       <div className="page-wide flex flex-col items-center text-center">
-        <p className="flex min-h-6 items-center gap-2 text-footnote text-label-secondary">
-          {live ? (
-            <>
-              <LiveBadge pulse />
-              <Countdown target={drop.endsAt} serverNow={serverNow} verb="Ends" />
-            </>
-          ) : (
+        {live ? (
+          // On the drop's live stock, so a drop that sells out stops showing LIVE and a running clock.
+          <LiveDropStatus
+            dropId={drop.id}
+            seed={toLiveSeed(drop.stock, drop.status)}
+            startsAt={drop.startsAt}
+            endsAt={drop.endsAt}
+            serverNow={serverNow}
+            pulse
+          />
+        ) : (
+          <p className="flex min-h-6 items-center gap-2 text-footnote text-label-secondary">
             <span className="inline-flex items-center gap-1.5">
               <CalendarClock size={16} />
               <LocalTime iso={drop.startsAt} />
             </span>
-          )}
-        </p>
+          </p>
+        )}
         <h1 id="hero-title" className={cx('mt-4', headlineClass(product.title))}>
           <TitleText text={product.title} />
         </h1>

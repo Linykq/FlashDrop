@@ -1,7 +1,7 @@
 import type { DashboardTotalsMessage, SalesCounters } from '@flashdrop/contracts';
 import type { DashboardCheck } from '@flashdrop/db';
 import { describe, expect, it } from 'vitest';
-import { judgeReplay, totalsDifferences } from './dashboard-rebuild';
+import { judgeReplay, ordersMissing, totalsDifferences } from './dashboard-rebuild';
 
 const A = '0192a3b4-0000-4000-8000-00000000d001';
 const B = '0192a3b4-0000-4000-8000-00000000d002';
@@ -24,12 +24,13 @@ const totals = (version: number, paid: number): DashboardTotalsMessage => ({
   totals: { ...counters(paid), lastEventAt: null },
 });
 
-const check = (projected: number, orders: number, eventlessPastRetention = 0): DashboardCheck => ({
+/** `projected` orders on the dashboard; `orders` with their events in the outbox, `pastRetention` without. */
+const check = (projected: number, orders: number, pastRetention = 0): DashboardCheck => ({
   totals: counters(projected),
   minutes: counters(projected),
   truth: counters(orders),
-  eventless: eventlessPastRetention,
-  eventlessPastRetention,
+  eventless: pastRetention,
+  eventlessPastRetention: pastRetention,
 });
 
 describe('totalsDifferences', () => {
@@ -63,25 +64,64 @@ describe('judgeReplay', () => {
   it('accepts a drop that changed across the rebuild when its replay equals its orders', () => {
     expect(judgeReplay(new Map([[A, check(5, 5)]]))).toEqual({
       agree: [A],
+      lost: new Map(),
       disagree: new Map(),
       skipped: new Map(),
     });
   });
 
-  it('rejects a replay that disagrees with the orders, and reports a drop INV-5 cannot judge', () => {
+  it('rejects a replay that counts every order but not as its orders say', () => {
+    const wrong: DashboardCheck = { ...check(5, 5), totals: { ...counters(5), paid: 4, failed: 1 } };
+    const judgement = judgeReplay(new Map([[A, wrong]]));
+
+    expect(judgement.lost).toEqual(new Map());
+    expect(judgement.disagree.get(A)).toContain('dashboard paid 4 != 5 from its orders');
+  });
+
+  // The review's regression: a topic recreated after the seed published its sales replays without them,
+  // and the projection came back identical (zero), so the rebuild reported every drop identical while the
+  // sold-out drop's dashboard showed no orders at all. Its orders are past the outbox's retention, where
+  // INV-5 cannot compare, but they are still orders the dashboard must count.
+  it('reports a dashboard short of orders the topic no longer holds, even where INV-5 cannot compare', () => {
     const judgement = judgeReplay(
       new Map([
-        [A, check(4, 5)],
-        [B, check(5, 5)],
-        [C, check(1, 2, 3)],
+        [A, check(0, 0, 5)],
+        [B, check(3, 5)],
       ]),
     );
 
-    expect(judgement.agree).toEqual([B]);
-    expect([...judgement.disagree.keys()]).toEqual([A]);
-    expect(judgement.disagree.get(A)).toContain('dashboard paid 4 != 5 from its orders');
-    expect(judgement.skipped).toEqual(
-      new Map([[C, "3 orders older than the outbox's retention have no events left"]]),
+    expect(judgement.lost).toEqual(
+      new Map([
+        [A, 5],
+        [B, 2],
+      ]),
     );
+    expect(judgement.agree).toEqual([]);
+    expect(judgement.disagree).toEqual(new Map());
+  });
+
+  it('accepts a drop past retention that counts every order, but cannot compare it counter by counter', () => {
+    const counted: DashboardCheck = { ...check(5, 0, 5), totals: counters(5) };
+    const judgement = judgeReplay(new Map([[C, counted]]));
+
+    expect(judgement.lost).toEqual(new Map());
+    expect(judgement.skipped).toEqual(
+      new Map([[C, "5 orders older than the outbox's retention have no events left"]]),
+    );
+  });
+});
+
+describe('ordersMissing', () => {
+  // 3 reserved and 2 rejected orders with their events, and 1 past retention: 6 orders.
+  const sixOrders: DashboardCheck = { ...check(0, 3, 1), truth: { ...counters(3), rejected: 2 } };
+
+  it('counts every order once, reserved or rejected, with its events or without', () => {
+    expect(ordersMissing({ ...sixOrders, totals: { ...counters(4), rejected: 2 } })).toBe(0);
+    expect(ordersMissing({ ...sixOrders, totals: { ...counters(3), rejected: 2 } })).toBe(1);
+    expect(ordersMissing(sixOrders)).toBe(6);
+  });
+
+  it('never goes below zero: orders placed after the read are counted already', () => {
+    expect(ordersMissing(check(6, 5))).toBe(0);
   });
 });

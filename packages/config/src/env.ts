@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { z } from 'zod';
@@ -63,6 +64,38 @@ const positiveWhole = z
   .transform(Number)
   .pipe(z.int().positive('must be positive'));
 
+/** A TCP port, `fallback` when unset. */
+export const port = (fallback: number) =>
+  z
+    .string()
+    .regex(/^\d+$/, 'must be a port number')
+    .transform(Number)
+    .pipe(z.int().min(1, 'must be a port number').max(65_535, 'must be a port number'))
+    .default(fallback);
+
+/**
+ * Where an HTTP server listens. Loopback by default, because in dev everything runs on 127.0.0.1 (design
+ * §15); Compose sets `HOST=0.0.0.0` so that the other services reach it over the Compose network.
+ */
+export const listenEnv = (defaultPort: number) =>
+  z.object({ HOST: z.string().min(1).default('127.0.0.1'), PORT: port(defaultPort) });
+
+/** Hosts a browser reaches only on this machine: the passwordless dev login may serve these alone. */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+/** proxy-addr's named ranges, which Fastify's `trustProxy` accepts beside addresses and CIDRs. */
+const PROXY_RANGES: ReadonlySet<string> = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+/** `loopback`, `172.30.0.10`, `172.30.0.0/24` or `fd00::/8`. */
+const proxyAddress = z.string().refine((entry) => {
+  if (PROXY_RANGES.has(entry)) return true;
+  const [address = '', prefix, ...rest] = entry.split('/');
+  const family = isIP(address);
+  if (family === 0 || rest.length > 0) return false;
+  if (prefix === undefined) return true;
+  return /^\d{1,3}$/.test(prefix) && Number(prefix) <= (family === 4 ? 32 : 128);
+}, 'must be an IP address, a CIDR range, or one of loopback, linklocal, uniquelocal');
+
 /** `100-800` (uniformly random latency within the range) or a fixed `50`. */
 const latencyRange = z
   .string()
@@ -103,17 +136,55 @@ export const RevalidateEnv = z.object({
   REVALIDATE_SECRET: secret(32),
 });
 
-export const ApiEnv = z.object({
-  API_ROLES: list(oneOf(API_ROLES)).prefault('http,ws'),
-  WS_ALLOWED_ORIGINS: list(origin).prefault('http://127.0.0.1:3000,http://127.0.0.1:8080'),
-  RATE_LIMIT_IP_PER_SEC: positiveWhole.default(100),
-  RATE_LIMIT_USER_PER_SEC: positiveWhole.default(10),
-  /**
-   * Open WebSockets per client address on one api instance (§11). The default stays above one k6 host at the
-   * laptop profile (2,000 sockets over two instances); behind a real edge, lower it.
-   */
-  WS_MAX_SOCKETS_PER_IP: positiveWhole.default(2_000),
-});
+export const ApiEnv = z
+  .object({
+    API_ROLES: list(oneOf(API_ROLES)).prefault('http,ws'),
+    WS_ALLOWED_ORIGINS: list(origin).prefault('http://127.0.0.1:3000,http://127.0.0.1:8080'),
+    RATE_LIMIT_IP_PER_SEC: positiveWhole.default(100),
+    RATE_LIMIT_USER_PER_SEC: positiveWhole.default(10),
+    /**
+     * Open WebSockets per client address on one api instance (§11). The default stays above one k6 host at
+     * the laptop profile (2,000 sockets over two instances); behind a real edge, lower it.
+     */
+    WS_MAX_SOCKETS_PER_IP: positiveWhole.default(2_000),
+    /**
+     * Mounts the passwordless dev login, `/auth/dev-users` and `/auth/dev-login` (§5.1, §11). Off unless set:
+     * anyone who reaches the api could otherwise sign in as the seeded admin. Refused with any allowed origin
+     * that is not this machine's, so a public deployment cannot serve it.
+     */
+    ENABLE_DEV_LOGIN: flag.default(false),
+    /**
+     * The peers whose `X-Forwarded-For` and `X-Forwarded-Proto` the api believes (§11): the edge's address
+     * in Compose, loopback for `pnpm dev`. Any other peer is the client itself, so a container on the network
+     * cannot pick its own address for the per-IP limits.
+     */
+    TRUST_PROXY: list(proxyAddress).prefault('loopback'),
+    /**
+     * Marks `fd_session` Secure. Unset: Secure in production when every allowed origin is https, so the
+     * plain-http local edge keeps working and a TLS deployment needs nothing more.
+     */
+    COOKIE_SECURE: flag.optional(),
+    NODE_ENV: z.string().optional(),
+  })
+  .superRefine((env, ctx) => {
+    if (!env.ENABLE_DEV_LOGIN) return;
+    const remote = env.WS_ALLOWED_ORIGINS.some((value) => !LOOPBACK_HOSTS.has(new URL(value).hostname));
+    if (remote) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ENABLE_DEV_LOGIN'],
+        message:
+          'must be false when WS_ALLOWED_ORIGINS has an origin other than 127.0.0.1, localhost or [::1]',
+      });
+    }
+  })
+  // NODE_ENV belongs to CoreEnv; a raw copy here would overwrite its default when unset.
+  .transform(({ NODE_ENV, COOKIE_SECURE, ...env }) => ({
+    ...env,
+    COOKIE_SECURE:
+      COOKIE_SECURE ??
+      (NODE_ENV === 'production' && env.WS_ALLOWED_ORIGINS.every((value) => value.startsWith('https:'))),
+  }));
 
 export const WorkerEnv = z.object({
   WORKER_ROLES: list(oneOf(WORKER_ROLES)),
@@ -132,10 +203,33 @@ export const WebEnv = z.object({
   NEXT_PUBLIC_WS_URL: z.url({ protocol: /^wss?$/, error: 'must be a ws:// URL' }).optional(),
 });
 
+/**
+ * The storefront's public origin, for the absolute URLs in metadata and JSON-LD (§8.1, §11): configuration,
+ * never the request's Host, which a client chooses. Unset: the edge (`http://127.0.0.1:8080`), or web's own
+ * port under `pnpm dev`. Its own group, so a bad value breaks those links only, not the api calls.
+ */
+export const PublicOriginEnv = z.object({
+  PUBLIC_ORIGIN: httpUrl
+    .refine(
+      (value) => new URL(value).origin === value,
+      'must be an origin such as http://127.0.0.1:8080 (no path or trailing slash)',
+    )
+    .optional(),
+});
+
 export const PspEnv = z.object({
   PSP_LATENCY_MS: latencyRange.prefault('100-800'),
   PSP_ERROR_RATE: ratio.default(0.02),
   PSP_TIMEOUT_AFTER_SUCCESS_RATE: ratio.default(0.01),
+});
+
+/**
+ * The PSP's API key (§6.5), as a real PSP issues one: payment-mock refuses every `/v1/*` call without
+ * `Authorization: Bearer <key>`, and only the payment consumer and `dlq:replay` are given it. Any other
+ * process on the network, the listing worker that parses uploads included, can neither charge nor refund.
+ */
+export const PspAuthEnv = z.object({
+  PSP_API_KEY: secret(32),
 });
 
 /**
@@ -155,6 +249,15 @@ export const PspDatabaseEnv = z.object({
  */
 export const PspRoleEnv = z.object({
   PSP_DB_PASSWORD: secret(16).optional(),
+});
+
+/**
+ * Read by `db:migrate`, like `PSP_DB_PASSWORD`: when set, the application role `flashdrop_app` (migration
+ * 0013) may log in with this password. api and the workers connect as it; only the migrate job keeps the
+ * owner, which is a superuser on the Compose server.
+ */
+export const AppRoleEnv = z.object({
+  APP_DB_PASSWORD: secret(16).optional(),
 });
 
 /**

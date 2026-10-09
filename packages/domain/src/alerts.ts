@@ -15,6 +15,8 @@ export type AlertName =
   | 'slow_rebuild'
   /** A drop RECONCILING for more than 30 s while the reconciler holds its lock and its rebuild fails (§4.7). */
   | 'rebuild_failed'
+  /** Redis optimistic (an INV-7 breach) on two consecutive stable samples: the drop is rebuilt (§4.7). */
+  | 'redis_drift'
   // relay and consumers (packages/messaging)
   /** Any write to the dead-letter topic (§6.4). */
   | 'dlq_write'

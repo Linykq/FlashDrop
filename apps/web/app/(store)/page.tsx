@@ -5,20 +5,21 @@ import { Suspense } from 'react';
 import { DropHero, DropHeroSkeleton, EmptyHero } from '../../components/commerce/drop-hero';
 import { ProductTile, ProductTileSkeleton } from '../../components/commerce/product-tile';
 import { SkeletonText } from '../../components/ui/skeleton';
+import { cx } from '../../lib/cx';
 import { productHref } from '../../lib/routes';
 import { getDrops, getProduct } from '../../lib/server/catalog';
-import { requestOrigin } from '../../lib/server/request';
+import { publicOrigin } from '../../lib/server/origin';
 import { SITE_DESCRIPTION, SITE_NAME } from '../../lib/site';
 import { toStockState } from '../../lib/stock';
 import { introSentence } from '../../lib/text';
 
 const TITLE = 'Drops';
 
-/** The canonical URL and the share card; absolute URLs need the request's origin (as on the product page). */
+/** The canonical URL and the share card, absolute against the public origin (as on the product page). */
 export async function generateMetadata(): Promise<Metadata> {
   return {
     title: TITLE,
-    metadataBase: new URL(await requestOrigin()),
+    metadataBase: new URL(await publicOrigin()),
     alternates: { canonical: '/' },
     openGraph: {
       type: 'website',
@@ -61,7 +62,13 @@ async function Home() {
     <>
       {hero ? <DropHero drop={hero} intro={intro} serverNow={serverNow} /> : <EmptyHero />}
       {upcoming.length > 0 && (
-        <DropSection id="upcoming" title="Upcoming drops" drops={upcoming} serverNow={serverNow} />
+        <DropSection
+          id="upcoming"
+          // Other drops selling now lead the list, and "Upcoming" would misname them.
+          title={upcoming.some(({ status }) => status !== 'SCHEDULED') ? 'More drops' : 'Upcoming drops'}
+          drops={upcoming}
+          serverNow={serverNow}
+        />
       )}
     </>
   );
@@ -88,14 +95,27 @@ type DropSectionProps = {
   serverNow: number;
 };
 
+/** Two tiles of the narrower `page-content` (980 px) side by side from 1069 px (§11.4). */
+const PAIR_SIZES = '(min-width: 1069px) 478px, (min-width: 735px) calc(50vw - 42px), calc(100vw - 40px)';
+
+/**
+ * The tiles under the hero (§10.1): three to a row from 1069 px. With fewer than three, two to a row in the
+ * narrower `page-content`, so a short list reads as a pair rather than a row with an empty third.
+ */
 function DropSection({ id, title, drops, serverNow }: DropSectionProps) {
+  const pair = drops.length < 3;
   return (
     <section aria-labelledby={id}>
-      <div className="page-wide py-(--section-space)">
+      <div className={cx(pair ? 'page-content' : 'page-wide', 'py-(--section-space)')}>
         <h2 id={id} className="text-title-1">
           {title}
         </h2>
-        <ul className="mt-6 grid gap-x-(--grid-gap) gap-y-12 sm:mt-8 sm:grid-cols-2 md:grid-cols-3">
+        <ul
+          className={cx(
+            'mt-6 grid gap-x-(--grid-gap) gap-y-12 sm:mt-8 sm:grid-cols-2',
+            !pair && 'md:grid-cols-3',
+          )}
+        >
           {drops.map((drop) => (
             <li key={drop.id}>
               <ProductTile
@@ -107,6 +127,7 @@ function DropSection({ id, title, drops, serverNow }: DropSectionProps) {
                 stock={toStockState(drop.stock, drop.status)}
                 startsAt={drop.startsAt}
                 serverNow={serverNow}
+                sizes={pair ? PAIR_SIZES : undefined}
               />
             </li>
           ))}

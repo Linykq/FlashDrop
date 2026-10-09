@@ -1,7 +1,7 @@
 import type { Logger } from '@flashdrop/config';
 import type { Db } from '@flashdrop/db';
 import type { DropLockDeps, FlashdropRedis, SyncNudger } from '@flashdrop/inventory';
-import type { TagRevalidator } from '@flashdrop/messaging';
+import type { TagRevalidator } from './revalidate';
 
 /** What the worker's roles share: one of each per process (design §2). */
 export interface WorkerDeps {

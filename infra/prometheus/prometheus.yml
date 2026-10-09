@@ -1,0 +1,44 @@
+# Prometheus for the local stack (design §12, the `tools` profile in compose.yaml). It scrapes every
+# service's /metrics over the Compose network: those ports are never published, and Caddy answers 404 for
+# /metrics at the edge. Start it beside a running stack:
+#   docker compose --profile tools up -d prometheus grafana
+#
+# Five seconds, because a flash sale sells out in seconds to minutes: a 15 s or 1 min interval would
+# average a burst away. The replicated services (consumers, dashboard-consumers) are found through
+# Docker's DNS, which answers a service name with every replica's address.
+global:
+  scrape_interval: 5s
+  scrape_timeout: 4s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: api
+    static_configs:
+      - targets: [api-1:4000, api-2:4000]
+
+  # The singleton loops: relay, sweeper, reconciler.
+  - job_name: worker
+    static_configs:
+      - targets: [worker:4200]
+
+  - job_name: listing
+    static_configs:
+      - targets: [listing:4200]
+
+  - job_name: consumers
+    dns_sd_configs:
+      - names: [consumers]
+        type: A
+        port: 4200
+        refresh_interval: 10s
+
+  - job_name: dashboard-consumers
+    dns_sd_configs:
+      - names: [dashboard-consumers]
+        type: A
+        port: 4200
+        refresh_interval: 10s
+
+  - job_name: payment-mock
+    static_configs:
+      - targets: [payment-mock:4100]

@@ -4,10 +4,10 @@ import {
   checkout,
   connectStores,
   createBuyers,
-  createTestDrop,
   killService,
   orderOf,
   paymentRows,
+  postTestDrop,
   problemsIn,
   pspCharges,
   recreatePaymentMock,
@@ -42,7 +42,7 @@ describe('payments on the running stack', () => {
   it('timeout after success on every charge: each order is charged exactly once and PAID', async () => {
     await recreatePaymentMock(WITHHOLD_EVERY_ANSWER);
     const buyers = await createBuyers(6);
-    const drop = await createTestDrop({ stock: buyers.length, perUserLimit: 1, priceCents: PRICE_CENTS });
+    const drop = await postTestDrop({ stock: buyers.length, perUserLimit: 1, priceCents: PRICE_CENTS });
     const orders = await Promise.all(buyers.map((buyer) => reserve(buyer, drop.dropId)));
     for (const [i, buyer] of buyers.entries()) expect(await checkout(buyer, orders[i] ?? '')).toBe(202);
 
@@ -78,7 +78,7 @@ describe('payments on the running stack', () => {
   it('a payment that lands after the order expired is refunded: a REFUNDED row and PSP net 0', async () => {
     await recreatePaymentMock(WITHHOLD_EVERY_ANSWER);
     const [buyer] = (await createBuyers(1)) as [Buyer];
-    const drop = await createTestDrop({
+    const drop = await postTestDrop({
       stock: 1,
       perUserLimit: 1,
       paymentSeconds: 10,

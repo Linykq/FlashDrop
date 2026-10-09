@@ -1,6 +1,7 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
-import type { Logger } from '@flashdrop/config';
+import { type DependencyCheck, failedChecks, type Logger } from '@flashdrop/config';
 import {
   HealthResponse,
   PSP_IDEMPOTENCY_KEY_HEADER,
@@ -19,6 +20,7 @@ import Fastify, {
   type FastifyReply,
   type FastifyRequest,
   LogController,
+  type onRequestAsyncHookHandler,
   type RawServerDefault,
 } from 'fastify';
 import {
@@ -30,13 +32,13 @@ import {
   type ZodTypeProvider,
 } from './http';
 import type { Ledger } from './ledger';
+import { METRICS_PATH, metricsRoute } from './metrics';
 import { planCharge, planClose, type Simulation } from './simulation';
-
-/** A dependency check for the readiness probe: resolves when the dependency answers. */
-export type DependencyCheck = () => Promise<void>;
 
 export interface AppOptions {
   readonly logger: Logger;
+  /** `PSP_API_KEY`: every `/v1/*` call must carry `Authorization: Bearer <key>`. */
+  readonly apiKey: string;
   readonly ledger: Ledger;
   readonly simulation: Simulation;
   /** Checked by `GET /health`, by name. */
@@ -51,7 +53,8 @@ export type PspApp = FastifyInstance<
   ZodTypeProvider
 >;
 
-const PROBE_ROUTES = new Set(['/health', '/health/live']);
+/** Polled by machines every few seconds (Compose's probes, Prometheus), so their requests are not logged. */
+const QUIET_ROUTES = new Set(['/health', '/health/live', METRICS_PATH]);
 
 /** Request bodies are a few dozen bytes. */
 const BODY_LIMIT_BYTES = 16 * 1024;
@@ -61,11 +64,11 @@ const BODY_LIMIT_BYTES = 16 * 1024;
  * charge and close first waits its simulated latency outside any transaction, so slowness holds neither a
  * Postgres connection nor a reference lock; the ledger then decides inside one short transaction.
  */
-export async function buildApp({ logger, ledger, simulation, checks }: AppOptions): Promise<PspApp> {
+export async function buildApp({ logger, apiKey, ledger, simulation, checks }: AppOptions): Promise<PspApp> {
   const app: PspApp = Fastify<RawServerDefault, IncomingMessage, ServerResponse, FastifyBaseLogger>({
     loggerInstance: logger,
     logController: new LogController({
-      disableRequestLogging: (request) => PROBE_ROUTES.has(request.routeOptions.url ?? ''),
+      disableRequestLogging: (request) => QUIET_ROUTES.has(request.routeOptions.url ?? ''),
     }),
     bodyLimit: BODY_LIMIT_BYTES,
   }).withTypeProvider<ZodTypeProvider>();
@@ -80,6 +83,55 @@ export async function buildApp({ logger, ledger, simulation, checks }: AppOption
   // Before the server waits for in-flight requests, which a withheld answer would hold up for hangMs.
   app.addHook('preClose', async () => withheld.destroyAll());
 
+  // The API proper sits behind the key; the probes and /metrics stay open to the Compose network.
+  await app.register(async (api: PspApp) => {
+    api.addHook('onRequest', bearerGuard(apiKey));
+    v1Routes(api, { ledger, simulation, withheld });
+  });
+
+  app.get('/health/live', { schema: { response: { 200: HealthResponse } } }, async () => ({
+    status: 'ok' as const,
+    checks: {},
+  }));
+
+  app.get('/health', { schema: { response: { 200: HealthResponse } } }, async (request) => {
+    const failed = await failedChecks(checks, request.log);
+    if (failed.length > 0) throw new PspError(503, 'unavailable', `${failed.join(', ')} unavailable`);
+    return {
+      status: 'ok' as const,
+      checks: Object.fromEntries(Object.keys(checks).map((name) => [name, 'ok' as const])),
+    };
+  });
+
+  metricsRoute(app);
+
+  return app;
+}
+
+const digest = (value: string) => createHash('sha256').update(value).digest();
+
+/**
+ * 401 `unauthorized` unless the request carries `Authorization: Bearer <apiKey>`. Compared in constant
+ * time over equal-length digests, so the answer's timing says nothing about how much of a guess matched.
+ */
+function bearerGuard(apiKey: string): onRequestAsyncHookHandler {
+  const expected = digest(`Bearer ${apiKey}`);
+  return async (request) => {
+    const given = request.headers.authorization;
+    if (given === undefined || !timingSafeEqual(digest(given), expected)) {
+      throw new PspError(401, 'unauthorized', 'A valid API key is required');
+    }
+  };
+}
+
+interface V1Deps {
+  readonly ledger: Ledger;
+  readonly simulation: Simulation;
+  readonly withheld: WithheldAnswers;
+}
+
+/** Charges, closes and the ledger reads: the PSP's API, every route behind the key. */
+function v1Routes(app: PspApp, { ledger, simulation, withheld }: V1Deps): void {
   app.post(
     '/v1/charges',
     {
@@ -155,25 +207,6 @@ export async function buildApp({ logger, ledger, simulation, checks }: AppOption
   );
 
   app.get('/v1/admin/ledger', { schema: { response: { 200: PspLedgerResponse } } }, () => ledger.summary());
-
-  app.get('/health/live', { schema: { response: { 200: HealthResponse } } }, async () => ({
-    status: 'ok' as const,
-    checks: {},
-  }));
-
-  app.get('/health', { schema: { response: { 200: HealthResponse } } }, async (request) => {
-    const names = Object.keys(checks);
-    const results = await Promise.allSettled(Object.values(checks).map((check) => check()));
-    const failures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-    if (failures.length > 0) {
-      const failed = names.filter((_, index) => results[index]?.status === 'rejected');
-      request.log.warn({ err: new AggregateError(failures), failed }, 'readiness check failed');
-      throw new PspError(503, 'unavailable', `${failed.join(', ')} unavailable`);
-    }
-    return { status: 'ok' as const, checks: Object.fromEntries(names.map((name) => [name, 'ok' as const])) };
-  });
-
-  return app;
 }
 
 function simulatedOutage(log: FastifyBaseLogger): PspError {
@@ -185,7 +218,12 @@ function simulatedOutage(log: FastifyBaseLogger): PspError {
  * Answers withheld after their charge committed. The connection stays open and silent until the caller
  * gives up (its timeout: the unknown outcome under test) or `hangMs` passes, when the socket is destroyed.
  */
-function withheldAnswers(hangMs: number) {
+interface WithheldAnswers {
+  add(request: FastifyRequest, reply: FastifyReply): FastifyReply;
+  destroyAll(): void;
+}
+
+function withheldAnswers(hangMs: number): WithheldAnswers {
   const sockets = new Set<Socket>();
   return {
     add(request: FastifyRequest, reply: FastifyReply): FastifyReply {

@@ -4,7 +4,6 @@ import {
   checkout,
   connectStores,
   createBuyers,
-  createTestDrop,
   deadLetter,
   killService,
   logEnds,
@@ -12,6 +11,7 @@ import {
   outboxOf,
   partitionOf,
   paymentRows,
+  postTestDrop,
   problemsIn,
   pspCharges,
   readPartition,
@@ -55,7 +55,7 @@ describe('dlq:replay on the running stack', () => {
   it('replays a dead-lettered payment event inside the network: the late charge is refunded', async () => {
     await recreatePaymentMock(WITHHOLD_EVERY_ANSWER);
     const [buyer] = (await createBuyers(1)) as [Buyer];
-    const drop = await createTestDrop({
+    const drop = await postTestDrop({
       stock: 1,
       perUserLimit: 1,
       paymentSeconds: 10,

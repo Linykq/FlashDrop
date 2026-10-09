@@ -1,9 +1,10 @@
 import type { AddressInfo } from 'node:net';
-import { createLogger } from '@flashdrop/config';
+import { createLogger, type DependencyCheck } from '@flashdrop/config';
 import { PspErrorBody } from '@flashdrop/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildApp, type DependencyCheck, type PspApp } from './app';
+import { buildApp, type PspApp } from './app';
 import type { ChargeResult, Ledger, Refund } from './ledger';
+import { collectProcessMetrics, registry } from './metrics';
 import { createSimulation, type SimulationConfig, SLOW_METHOD_DELAY_MS } from './simulation';
 
 /*
@@ -12,7 +13,9 @@ import { createSimulation, type SimulationConfig, SLOW_METHOD_DELAY_MS } from '.
  */
 
 const logger = createLogger({ name: 'payment-mock-test', level: 'silent' });
-const KEY = { 'idempotency-key': 'charge:order-1' };
+const API_KEY = 'test-psp-api-key-at-least-32-chars';
+const AUTH = { authorization: `Bearer ${API_KEY}` };
+const KEY = { ...AUTH, 'idempotency-key': 'charge:order-1' };
 const BODY = { reference: 'order-1', amountCents: 1_999, paymentMethod: 'pm_ok' };
 const SUCCEEDED: ChargeResult = { kind: 'created', response: { status: 'succeeded', id: 'ch_1' } };
 
@@ -47,6 +50,7 @@ async function setup({ ledger = {}, simulation = {}, hangMs = 60_000, checks = {
   const sleep = vi.fn(async () => undefined);
   const app = await buildApp({
     logger,
+    apiKey: API_KEY,
     ledger: stub,
     simulation: createSimulation(
       { latency: { minMs: 0, maxMs: 0 }, errorRate: 0, timeoutAfterSuccessRate: 0, ...simulation },
@@ -107,7 +111,7 @@ describe('POST /v1/charges', () => {
   });
 
   it.each([
-    ['no Idempotency-Key', BODY, {}],
+    ['no Idempotency-Key', BODY, AUTH],
     ['an unknown payment method', { ...BODY, paymentMethod: 'pm_visa' }, KEY],
     ['a zero amount', { ...BODY, amountCents: 0 }, KEY],
     ['an amount beyond int4', { ...BODY, amountCents: 2 ** 31 }, KEY],
@@ -198,8 +202,10 @@ describe('timeout after success', () => {
 });
 
 describe('POST /v1/references/:reference/close', () => {
-  const close = (app: PspApp, headers: Record<string, string> = { 'idempotency-key': 'close:order-1' }) =>
-    app.inject({ method: 'POST', url: '/v1/references/order-1/close', headers });
+  const close = (
+    app: PspApp,
+    headers: Record<string, string> = { ...AUTH, 'idempotency-key': 'close:order-1' },
+  ) => app.inject({ method: 'POST', url: '/v1/references/order-1/close', headers });
 
   it('answers the refund, or nothing when nothing was captured', async () => {
     const refund = { chargeId: 'ch_1', amountCents: 1_999 };
@@ -216,6 +222,7 @@ describe('POST /v1/references/:reference/close', () => {
   it('accepts an empty body sent as JSON', async () => {
     const { app } = await setup();
     const response = await close(app, {
+      ...AUTH,
       'idempotency-key': 'close:order-1',
       'content-type': 'application/json',
     });
@@ -224,7 +231,7 @@ describe('POST /v1/references/:reference/close', () => {
 
   it('requires an Idempotency-Key and fails a simulated error before the ledger', async () => {
     const missing = await setup();
-    expect((await close(missing.app, {})).statusCode).toBe(400);
+    expect((await close(missing.app, AUTH)).statusCode).toBe(400);
 
     const failing = await setup({ simulation: { errorRate: 1 } });
     expect((await close(failing.app)).statusCode).toBe(503);
@@ -235,15 +242,15 @@ describe('POST /v1/references/:reference/close', () => {
 describe('audit routes', () => {
   it('lists the charges of a reference, which is required', async () => {
     const { app, ledger } = await setup();
-    expect((await app.inject({ url: '/v1/charges' })).statusCode).toBe(400);
-    const response = await app.inject({ url: '/v1/charges?reference=order-1' });
+    expect((await app.inject({ url: '/v1/charges', headers: AUTH })).statusCode).toBe(400);
+    const response = await app.inject({ url: '/v1/charges?reference=order-1', headers: AUTH });
     expect(response.json()).toEqual({ charges: [] });
     expect(ledger.chargesFor).toHaveBeenCalledWith('order-1');
   });
 
   it('serves the ledger summary', async () => {
     const { app } = await setup();
-    const response = await app.inject({ url: '/v1/admin/ledger' });
+    const response = await app.inject({ url: '/v1/admin/ledger', headers: AUTH });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ capturedCents: 0, doubleCaptured: [] });
   });
@@ -253,6 +260,42 @@ describe('audit routes', () => {
     const response = await app.inject({ url: '/v1/refunds' });
     expect(response.statusCode).toBe(404);
     expect(PspErrorBody.parse(response.json()).error.code).toBe('not_found');
+  });
+});
+
+describe('the API key', () => {
+  const routes = [
+    ['POST', '/v1/charges'],
+    ['POST', '/v1/references/order-1/close'],
+    ['GET', '/v1/charges?reference=order-1'],
+    ['GET', '/v1/admin/ledger'],
+  ] as const;
+
+  it.each([
+    ['no Authorization header', {}],
+    ['a wrong key', { authorization: `Bearer ${'x'.repeat(32)}` }],
+    ['the key without the Bearer scheme', { authorization: API_KEY }],
+  ])('refuses every /v1 route with %s, before the ledger or the latency', async (_case, auth) => {
+    const { app, ledger, sleep } = await setup();
+    for (const [method, url] of routes) {
+      const response = await app.inject({
+        method,
+        url,
+        headers: { ...auth, 'idempotency-key': 'k:order-1' },
+        ...(method === 'POST' ? { payload: BODY } : {}),
+      });
+      expect(response.statusCode, `${method} ${url}`).toBe(401);
+      expect(PspErrorBody.parse(response.json()).error.code).toBe('unauthorized');
+    }
+    expect(sleep).not.toHaveBeenCalled();
+    for (const call of Object.values(ledger)) expect(call).not.toHaveBeenCalled();
+  });
+
+  it('leaves the probes and /metrics open to the network', async () => {
+    const { app } = await setup();
+    for (const url of ['/health', '/health/live', '/metrics']) {
+      expect((await app.inject({ url })).statusCode, url).toBe(200);
+    }
   });
 });
 
@@ -271,5 +314,17 @@ describe('health', () => {
       error: { code: 'unavailable', message: 'postgres unavailable' },
     });
     expect((await down.app.inject({ url: '/health/live' })).statusCode).toBe(200);
+  });
+});
+
+describe('GET /metrics', () => {
+  it('serves the process series in the Prometheus text format', async () => {
+    collectProcessMetrics();
+    const { app } = await setup();
+    const response = await app.inject({ url: '/metrics' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe(registry.contentType);
+    expect(response.body).toContain('# TYPE process_cpu_user_seconds_total counter');
+    expect(response.body).toContain('# TYPE nodejs_eventloop_lag_seconds gauge');
   });
 });

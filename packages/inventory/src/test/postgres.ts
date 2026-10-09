@@ -1,17 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import {
+  cancelOrder,
   createDb,
   createPool,
   type Db,
   dropInventory,
   drops,
   expireDueOrders,
+  getOrder,
   insertRejectedTombstone,
+  markPaid,
   POOL_PROFILES,
   products,
   type ReservationOutcome,
   recordReservation,
   sql,
+  submitCheckout,
   transaction,
   users,
 } from '@flashdrop/db';
@@ -28,7 +32,9 @@ import type { ReserveInput } from '../functions';
  * is the shared one; drops have fresh ids and tests delete their keys.
  *
  * The guarantee-carrying statements are the production ones (`recordReservation`,
- * `insertRejectedTombstone`, `expireDueOrders`), so these tests verify the code that runs, not copies of it.
+ * `insertRejectedTombstone`, `submitCheckout`, `markPaid`, `cancelOrder`, `expireDueOrders`), so these
+ * tests rebuild Redis from exactly the rows production writes (the payments row, the outbox events), and
+ * verify the code that runs, not copies of it.
  */
 
 const quiet = { warn: () => undefined };
@@ -133,53 +139,58 @@ export function rejectHold(db: Db, hold: ReserveInput, reason: RejectReason = 'S
 }
 
 /**
- * An order's terminal transition with its counters. EXPIRED is the sweeper's own `expireDueOrders`, run
- * after the order's deadline is moved into the past (the throwaway database holds only this file's orders).
+ * An order's terminal transition, through the production statements: PAID is the buyer's checkout submit
+ * and then the payment consumer's CAS; CANCELLED the buyer's cancel (`fd_cancel_order`); EXPIRED the
+ * sweeper's own `expireDueOrders`, run after the order's deadline is moved into the past (the throwaway
+ * database holds only this file's orders).
  */
 export async function closeOrder(
   db: Db,
   rid: string,
   outcome: 'EXPIRED' | 'PAID' | 'CANCELLED',
 ): Promise<void> {
-  if (outcome === 'EXPIRED') {
-    await db.execute(sql`UPDATE orders SET expires_at = now() - interval '1 second' WHERE id = ${rid}`);
-    const tick = await expireDueOrders(db);
-    if (tick.kind === 'busy' || !tick.expired.some((order) => order.id === rid)) {
-      throw new Error(`order ${rid} did not expire: ${JSON.stringify(tick)}`);
-    }
-    return;
-  }
-  await transaction(db, async (tx) => {
-    if (outcome === 'PAID') {
-      // TODO(M4): the payment consumer's PENDING_PAYMENT -> PAID CAS replaces this.
-      await tx.execute(
-        sql`UPDATE orders SET status = 'PENDING_PAYMENT', version = version + 1 WHERE id = ${rid}`,
-      );
-      const { rows } = await tx.execute<{ drop_id: string; qty: number }>(sql`
-        UPDATE orders SET status = 'PAID', paid_at = now(), version = version + 1, updated_at = now()
-        WHERE id = ${rid} AND status = 'PENDING_PAYMENT' RETURNING drop_id, qty`);
-      const [order] = rows;
-      if (order === undefined) throw new Error(`order ${rid} is not payable`);
-      await tx.execute(sql`
-        UPDATE drop_inventory SET reserved = reserved - ${order.qty}, sold = sold + ${order.qty}
-        WHERE drop_id = ${order.drop_id}`);
+  const order = await getOrder(db, rid);
+  if (order === undefined) throw new Error(`no order ${rid}`);
+  const { userId } = order;
+  switch (outcome) {
+    case 'EXPIRED': {
+      await db.execute(sql`UPDATE orders SET expires_at = now() - interval '1 second' WHERE id = ${rid}`);
+      const tick = await expireDueOrders(db);
+      if (tick.kind === 'busy' || !tick.expired.some((expired) => expired.id === rid)) {
+        throw new Error(`order ${rid} did not expire: ${JSON.stringify(tick)}`);
+      }
       return;
     }
-    // TODO(M3): the api's cancel CAS replaces this.
-    const { rows } = await tx.execute<{ drop_id: string; user_id: string; qty: number }>(sql`
-      UPDATE orders SET status = 'CANCELLED', close_reason = 'USER', closed_at = now(),
-                        version = version + 1, updated_at = now()
-      WHERE id = ${rid} AND status IN ('RESERVED', 'PENDING_PAYMENT') RETURNING drop_id, user_id, qty`);
-    const [order] = rows;
-    if (order === undefined) throw new Error(`order ${rid} is not live`);
-    await tx.execute(sql`
-      UPDATE user_drop_quota SET claimed = claimed - ${order.qty}
-      WHERE user_id = ${order.user_id} AND drop_id = ${order.drop_id}`);
-    await tx.execute(
-      sql`UPDATE drop_inventory SET reserved = reserved - ${order.qty} WHERE drop_id = ${order.drop_id}`,
-    );
-  });
+    case 'PAID': {
+      const submitted = await submitCheckout(db, {
+        orderId: rid,
+        userId,
+        checkoutKey: randomUUID(),
+        shipping: SHIPPING,
+        paymentMethod: 'pm_ok',
+      });
+      if (submitted.kind !== 'submitted')
+        throw new Error(`order ${rid} was not submitted: ${submitted.kind}`);
+      const paid = await markPaid(db, { orderId: rid, pspChargeId: `ch_${rid}` });
+      if (paid.kind !== 'won') throw new Error(`order ${rid} was not paid: ${paid.order.status}`);
+      return;
+    }
+    case 'CANCELLED': {
+      const cancelled = await cancelOrder(db, { orderId: rid, userId });
+      if (cancelled.kind !== 'cancelled')
+        throw new Error(`order ${rid} was not cancelled: ${cancelled.kind}`);
+      return;
+    }
+  }
 }
+
+const SHIPPING = {
+  name: 'Inventory Test',
+  line1: '1 Market Street',
+  city: 'San Francisco',
+  postalCode: '94105',
+  country: 'US',
+} as const;
 
 /** Postgres's stock of record for a drop. */
 export async function inventoryOf(db: Db, dropId: string) {

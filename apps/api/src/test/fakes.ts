@@ -20,13 +20,17 @@ import {
   type PostgresRefusal,
 } from '@flashdrop/domain';
 import { checkoutFingerprint } from '@flashdrop/domain/identity';
-import type { ReserveInput, ReserveResult } from '@flashdrop/inventory';
+import {
+  createReservationService,
+  type ReserveInput,
+  type ReservePorts,
+  type ReserveResult,
+} from '@flashdrop/inventory';
 import { type AppOptions, type AppServices, buildApp } from '../app';
 import type { Api } from '../http/api';
 import { createSessionCodec } from '../http/session';
 import type { DropListing } from '../services/catalog';
 import { createOrderService, type OrderPorts } from '../services/orders';
-import { createReservationService, type ReservePorts } from '../services/reserve';
 import { createFakeAdminCatalog } from './catalog-fake';
 import { createFakeListings } from './listings-fake';
 
@@ -117,6 +121,7 @@ export const ADMIN_DROP: AdminDrop = {
   status: 'DRAFT',
   startsAt: '2026-10-03T12:00:00.000Z',
   endsAt: '2026-10-03T13:00:00.000Z',
+  endedAt: null,
   priceCents: 2_500,
   currency: 'USD',
   perUserLimit: 2,
@@ -178,6 +183,7 @@ export const DASHBOARD: AdminDashboardResponse = {
     status: 'LIVE',
     startsAt: LIVE_DROP.startsAt,
     endsAt: LIVE_DROP.endsAt,
+    endedAt: null,
     priceCents: LIVE_DROP.priceCents,
     currency: LIVE_DROP.currency,
     total: 250,
@@ -292,7 +298,7 @@ export function fakeOrder(reservation: NewReservation, overrides: Partial<OrderR
   };
 }
 
-function fakeReservePorts(state: FakeState): ReservePorts {
+export function fakeReservePorts(state: FakeState): ReservePorts {
   const { reserve } = state;
   const withProduct = (order: OrderRecord) => ({ order, product: LIVE_DROP.product });
   return {
@@ -483,6 +489,9 @@ export async function buildTestApp(overrides: Partial<AppOptions> = {}, state = 
     roles: ['http', 'ws'],
     allowedOrigins: [ORIGIN],
     sessionSecret: SECRET,
+    cookieSecure: false,
+    devLogin: true,
+    trustProxy: ['loopback'],
     uploadDir: 'unused',
     services: fakeServices(state),
     rateLimits: { userPerSecond: 10, ipPerSecond: 100 },

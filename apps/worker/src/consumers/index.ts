@@ -1,4 +1,5 @@
 import { CONSUMER_GROUPS, type WorkerRole } from '@flashdrop/config';
+import { BugError } from '@flashdrop/domain';
 import {
   type ConsumerRunner,
   type ConsumerRunnerOptions,
@@ -8,14 +9,16 @@ import {
 } from '@flashdrop/messaging';
 import type { WorkerDeps } from '../deps';
 import { isTransientError } from '../loop';
+import { countingDeadLetters } from '../metrics';
 import { dashboardHandlers } from './dashboard';
 import { paymentHandlers } from './payment';
 import type { PspClient } from './psp-client';
 import { settlementHandlers } from './settlement';
 
 /*
- * The consumer-group roles (design §6.3), run by the `consumers` service: one runner (one Kafka consumer
- * instance) per group, so one group's slow batch never stalls another's (M0 delta 5).
+ * The consumer-group roles (design §6.3): payment and settlement run in the `consumers` service, dashboard
+ * in `dashboard-consumers`. One runner (one Kafka consumer instance) per group, so one group's slow batch
+ * never stalls another's (M0 delta 5).
  */
 
 export type ConsumerName = 'payment' | 'settlement' | 'dashboard';
@@ -62,16 +65,35 @@ function isConsumerName(role: WorkerRole): role is ConsumerName {
   return Object.hasOwn(CONSUMERS, role);
 }
 
-/** What the handlers use: Postgres, the Redis command client, the sync nudger and the PSP. */
+/**
+ * What the handlers use: Postgres, the Redis command client and the sync nudger, and for the payment group
+ * the PSP, which only a process holding `PSP_API_KEY` can reach.
+ */
 export interface ConsumerDeps extends Pick<WorkerDeps, 'db' | 'redis' | 'nudger' | 'logger'> {
-  readonly psp: PspClient;
+  readonly psp?: PspClient;
+}
+
+function handlersFor(name: ConsumerName, deps: ConsumerDeps): OrderEventHandlers {
+  switch (name) {
+    case 'payment': {
+      const { psp } = deps;
+      if (psp === undefined) throw new BugError('the payment consumer was started without a PSP client');
+      return paymentHandlers({ ...deps, psp });
+    }
+    case 'settlement':
+      return settlementHandlers(deps);
+    case 'dashboard':
+      return dashboardHandlers(deps);
+  }
 }
 
 /**
  * Every consumer's handlers by the name its runner writes into `x-consumer` on a dead letter, so
  * `dlq:replay` runs exactly the handler, and the idempotency checks, of the first delivery (§6.4).
  */
-export function consumerRegistry(deps: ConsumerDeps): Readonly<Record<ConsumerName, OrderEventHandlers>> {
+export function consumerRegistry(
+  deps: ConsumerDeps & { readonly psp: PspClient },
+): Readonly<Record<ConsumerName, OrderEventHandlers>> {
   return {
     payment: paymentHandlers(deps),
     settlement: settlementHandlers(deps),
@@ -105,8 +127,8 @@ export async function startConsumer(
     kafka: options.kafka,
     name,
     groupId: options.groupId ?? spec.groupId,
-    handlers: consumerRegistry({ ...deps, logger })[name],
-    dlq: options.dlq,
+    handlers: handlersFor(name, { ...deps, logger }),
+    dlq: countingDeadLetters(options.dlq, name),
     logger,
     concurrency: spec.concurrency,
     maxBatchSize: spec.maxBatchSize,

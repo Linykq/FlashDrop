@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { type FormEvent, useState, useTransition } from 'react';
 import { signIn } from '../../lib/auth-client';
 import { cx } from '../../lib/cx';
+import { markReturnFocus } from '../../lib/return-focus';
 import { initials } from '../../lib/text';
 import { Avatar } from '../ui/avatar';
 import { Banner } from '../ui/banner';
@@ -21,15 +22,18 @@ type LoginFormProps = {
 
 /**
  * The dev sign-in (design-system §10.6): the seeded accounts as one grouped list of radio rows, a native
- * radio group, so the arrow keys move the choice, and one button. Signed out it says "Continue". Signed in,
- * the current account is chosen and there is nothing to do yet, so the button only fades in, naming the
- * account it switches to, once another one is chosen; its slot is kept, so nothing below it moves. api sets
- * the session cookie; the router then refreshes, so every Server Component, the navigation bar included,
- * reads the new session on the way to `returnTo`.
+ * radio group, so the arrow keys move the choice, and one button. Signed out it says "Continue", with the
+ * first buyer chosen: whoever arrives from "Sign in to buy" came to buy, and the admin is one press away.
+ * Signed in, the current account is chosen and there is nothing to do yet, so the button appears, fading in
+ * and naming the account it switches to, only once another one is chosen. api sets the session cookie; the
+ * router then refreshes, so every Server Component, the navigation bar included, reads the new session on the
+ * way to `returnTo`, where focus goes to the purchase action (`return-focus.ts`).
  */
 export function LoginForm({ users, currentUserId, returnTo, className }: LoginFormProps) {
   const router = useRouter();
-  const [selected, setSelected] = useState(currentUserId ?? users[0]?.id ?? '');
+  const [selected, setSelected] = useState(
+    currentUserId ?? users.find((user) => user.role === 'buyer')?.id ?? users[0]?.id ?? '',
+  );
   const [failed, setFailed] = useState(false);
   const [pending, startTransition] = useTransition();
   const switching = currentUserId !== null;
@@ -45,6 +49,7 @@ export function LoginForm({ users, currentUserId, returnTo, className }: LoginFo
         setFailed(true);
         return;
       }
+      markReturnFocus(returnTo);
       router.replace(returnTo);
       router.refresh();
     });
@@ -78,18 +83,16 @@ export function LoginForm({ users, currentUserId, returnTo, className }: LoginFo
           ))}
         </div>
       </fieldset>
-      {/* The wrapper fades, so the button's own colour transition is left alone; `invisible` also takes the
-          button out of the tab order and the accessibility tree while it is idle. */}
-      <div
-        className={cx(
-          'mt-6 transition-[opacity,visibility] duration-200',
-          idle ? 'invisible opacity-0 ease-in' : 'visible opacity-100 ease-out',
-        )}
-      >
-        <Button type="submit" size="lg" shape="rounded" fullWidth disabled={idle} loading={pending}>
-          {pending ? busy : rest}
-        </Button>
-      </div>
+      {/* Idle, the slot takes no room: an empty band under the list would read as a missing button. Choosing
+          another account brings it in, fading (opacity only, §6.1); the content below moving then is the
+          answer to that choice. */}
+      {!idle && (
+        <div className={cx('mt-6', switching && 'animate-fade-in')}>
+          <Button type="submit" size="lg" shape="rounded" fullWidth loading={pending}>
+            {pending ? busy : rest}
+          </Button>
+        </div>
+      )}
     </form>
   );
 }

@@ -15,6 +15,7 @@ import {
 } from '@flashdrop/contracts';
 import { type APIRequestContext, type BrowserContext, test as base, expect } from '@playwright/test';
 import type { z } from 'zod';
+import { stackSecret } from '../../../tools/env-file';
 
 /*
  * Isolation (design §13): every spec that touches stock gets its own product and drop from
@@ -27,8 +28,15 @@ import type { z } from 'zod';
  *   test('...', async ({ page, drop, buyer }) => { await page.goto(`/p/${drop.productSlug}`); ... });
  */
 
-/** The stack's `TEST_ROUTES_SECRET`: compose.yaml's dev-only default unless the run sets another. */
-const TEST_SECRET = process.env.TEST_ROUTES_SECRET || 'dev-only-test-routes-secret';
+/**
+ * The stack's `TEST_ROUTES_SECRET` as Compose gave it to the api: the shell's, else the one `pnpm stack:up`
+ * wrote to .env. Read on first use, so specs that never call a test route run without one.
+ */
+let testSecret: string | undefined;
+const testRoutesSecret = (): string => {
+  testSecret ??= stackSecret('TEST_ROUTES_SECRET');
+  return testSecret;
+};
 /** api's session cookie (§11), which `POST /test/sessions` signs a value for. */
 const SESSION_COOKIE = 'fd_session';
 
@@ -72,7 +80,7 @@ async function postTestRoute<T extends z.ZodType>(
 ): Promise<z.output<T>> {
   const response = await request.post(path, {
     data: body,
-    headers: { origin: origin(baseURL), [TEST_SECRET_HEADER]: TEST_SECRET },
+    headers: { origin: origin(baseURL), [TEST_SECRET_HEADER]: testRoutesSecret() },
   });
   if (response.status() === 404) {
     throw new Error(
@@ -238,6 +246,9 @@ export async function checkoutViaApi(
   return OrderResponse.parse(await response.json()).order;
 }
 
+/** The page-side name of the binding `cspViolations` reports through. */
+const CSP_BINDING = '__fdCspViolation';
+
 export const test = base.extend<{
   /** The settings of the spec's drop; override with `test.use({ dropSettings: {...} })`. */
   dropSettings: DropSettings;
@@ -245,7 +256,34 @@ export const test = base.extend<{
   drop: TestDrop;
   /** A fresh buyer, signed in to the spec's browser context (and so to `page.request`). */
   buyer: Buyer;
+  /** What the edge's Content-Security-Policy blocked in the spec's context so far; must stay empty. */
+  cspViolations: readonly string[];
 }>({
+  /*
+   * Every spec runs under the policy Caddy sends (infra/caddy/Caddyfile), and fails when a page it visited
+   * broke it: a blocked script, stream, socket or image is a page that silently lost a feature. Contexts a
+   * spec opens itself (`browser.newContext()`) are not watched.
+   */
+  cspViolations: [
+    async ({ context }, use) => {
+      const violations: string[] = [];
+      await context.exposeBinding(CSP_BINDING, (_source, report: unknown) => {
+        violations.push(String(report));
+      });
+      await context.addInitScript((binding: string) => {
+        document.addEventListener('securitypolicyviolation', (event) => {
+          const report = window[binding as keyof Window];
+          if (typeof report !== 'function') return;
+          report(
+            `${event.effectiveDirective} blocked ${event.blockedURI || 'inline code'} on ${location.pathname}`,
+          );
+        });
+      }, CSP_BINDING);
+      await use(violations);
+      expect(violations, 'Content-Security-Policy violations').toEqual([]);
+    },
+    { auto: true },
+  ],
   dropSettings: [{}, { option: true }],
   drop: async ({ request, baseURL, dropSettings }, use) => {
     await use(await createDrop(request, baseURL, dropSettings));

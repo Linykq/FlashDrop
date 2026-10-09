@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  // k6 runs these files itself (design §13), with its own globals and modules (@types/k6), not Node's; the
+  // scripts import each other with their .ts extension, as k6 resolves them.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["k6"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["**/*.ts"]
+}

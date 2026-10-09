@@ -2,6 +2,7 @@ import { createDb, createPool, OUTBOX_CHANNEL, POOL_PROFILES } from '@flashdrop/
 import { createRelay, outboxRelayStore, type Publisher, type RelayHealth } from '@flashdrop/messaging';
 import type { WorkerDeps } from '../deps';
 import { listen } from '../listen';
+import { publishEveryBatchTwice } from './duplicate';
 
 /*
  * The `relay` role (design §5.4): publishes the outbox to Kafka. It polls every 250 ms and at once on
@@ -20,6 +21,8 @@ export interface RelayRoleOptions {
   /** The relay's own pool and its LISTEN connection. */
   readonly databaseUrl: string;
   readonly publisher: Publisher;
+  /** `FD_CHAOS_DUP_DELIVERY`: publish every batch twice (chaos test mode, see ./duplicate.ts). */
+  readonly duplicateBatches?: boolean;
 }
 
 export interface RelayRole {
@@ -39,9 +42,13 @@ export function startRelay(deps: Pick<WorkerDeps, 'logger'>, options: RelayRoleO
     applicationName: 'worker:relay',
     max: RELAY_POOL_MAX,
   });
+  if (options.duplicateBatches === true) {
+    logger.warn('FD_CHAOS_DUP_DELIVERY is on: every outbox batch is published twice (chaos test mode)');
+  }
   const relay = createRelay({
     store: outboxRelayStore(createDb(pool)),
-    publisher: options.publisher,
+    publisher:
+      options.duplicateBatches === true ? publishEveryBatchTwice(options.publisher) : options.publisher,
     logger,
   });
   const listener = listen({

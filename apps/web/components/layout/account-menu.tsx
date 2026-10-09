@@ -69,11 +69,11 @@ export function AccountMenu({ account }: { account: NavAccount }) {
           <span className="flex-1 text-start">{pending ? 'Signing out…' : 'Sign out'}</span>
           {pending ? <Spinner /> : <LogOut size={16} />}
         </button>
-        {failed && (
-          <p role="alert" className="px-3 pt-1 pb-2 text-footnote">
-            Couldn't sign out. Try again.
-          </p>
-        )}
+        {/* Always in the DOM and polite (§13.3 rule 1): a region inserted with its text is skipped by some
+            screen readers, and an alert would talk over the menu the buyer is still in. */}
+        <p role="status" className={cx('text-footnote', failed && 'px-3 pt-1 pb-2')}>
+          {failed ? "Couldn't sign out. Try again." : ''}
+        </p>
       </div>
     </>
   );

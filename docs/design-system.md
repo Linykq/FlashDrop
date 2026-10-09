@@ -543,8 +543,10 @@ apps/web/
     layout/              nav-bar, large-title, footer, admin-sidebar, skip-link, route-state
     commerce/            product-tile, product-gallery, price, stock-meter, live-stock, countdown,
                          live-badge, viewer-count, drop-card, buy-button, local-time, order-list
-    live/                player (the 'use client' dynamic wrapper, §8.7), player-view, player-controls
-    checkout/            hold-timer, error-summary, leave-dialog, payment-methods (SD §14)
+    live/                player and player-hooks (hls.js through a dynamic import(), §8.7), live-room,
+                         room-cards, room-drop-card, docked-drop-card, show-rail
+    checkout/            checkout-view, checkout-form, hold-card, extension-offer, leave-checkout,
+                         order-summary, outcome-card (the error summary is ui/error-summary)
     admin/               stat-tile, chart-frame (the 'use client' dynamic wrapper, §8.7), chart-view,
                          data-table, listing-review, upload-dropzone
     theme/               theme-script, theme-switcher
@@ -1259,7 +1261,7 @@ export function cx(...parts: Array<string | false | null | undefined>): string {
 
 - A primitive's `className` prop is for layout only (margin, width, grid placement). Colour, type and shape come from its props.
 - Server Components by default. `'use client'` only for islands that need state, effects or browser APIs: `LiveStock`, `BuyButton`, `Countdown`, `LocalTime`, `Player`, `ThemeSwitcher`, the checkout form, the listing review and admin charts.
-- Recharts and hls.js load through `next/dynamic` with `ssr: false`, so storefront bundles never include them. `ssr: false` is an error in a Server Component, so each dynamic import lives in a small `'use client'` wrapper: `components/admin/chart-frame.tsx` loads `chart-view.tsx`, and `components/live/player.tsx` loads `player-view.tsx`. Their `loading` skeletons have the final size.
+- Recharts and hls.js load only in the browser, so storefront bundles never include them. Recharts goes through `next/dynamic` with `ssr: false`, which is an error in a Server Component, so it lives in a small `'use client'` wrapper: `components/admin/chart-frame.tsx` loads `chart-view.tsx`, and its `loading` skeleton has the final size. **(As built)** the player imports hls.js with a plain `import()` inside an effect (`components/live/player-hooks.ts`), and only where the browser has no native HLS.
 - All countdowns read one shared clock (`lib/clock.ts`): one `setTimeout` chain aligned to second boundaries, running while at least one countdown is mounted, paused while the tab is hidden and resynced on `visibilitychange`.
 - No hex colours or pixel font sizes in `.tsx` files. Reviewers grep for `#[0-9a-fA-F]{3,8}\b` and `text-\[`.
 
@@ -1304,7 +1306,7 @@ Anatomy: optional leading icon, label, optional trailing icon. The spinner takes
 
 Two tones change the colours of a variant:
 
-- **Destructive** swaps the text to `danger`; on tinted, the background becomes `danger-tint` and hover and pressed `danger-tint-hover`. It is used for "Leave" and "End drop".
+- **Destructive** swaps the text to `danger`; on tinted, the background becomes `danger-tint` and hover and pressed `danger-tint-hover`. It is used for "Leave", "End drop" and "Cancel drop".
 - **Neutral** swaps a plain button's text from `accent-label` to `label`. Plain buttons on `material-bar` and `material-thick` **must** use it (§2.5), for example "Leave checkout" in the reduced navigation bar.
 
 | Size | Height | Horizontal padding | Label | Icon | Gap |
@@ -1505,7 +1507,7 @@ A filled lg button that runs the reserve flow of SD §8.2.
 
 - A native `<dialog>` opened with `showModal()`, with `role="alertdialog"`, `aria-labelledby` (title) and `aria-describedby` (body).
 - At most 400 px wide (`min(400px, 100% − 40px)`), `rounded-xl`, `surface`, `elevation-3`, 24 px padding. Title `text-title-3`, body `text-body text-label-secondary`, 24 px above the actions.
-- Actions are right-aligned in a row from 735 px; on phone they stack full width with the primary action first. In a destructive confirmation (Leave, End drop) the safe action is the filled button and has initial focus (`autoFocus`), and the destructive action is plain with `danger` text. In a non-destructive one (Arm drop, Reconcile) the confirming action is filled and "Cancel" is gray, and "Cancel" still takes initial focus, so Enter never commits by accident.
+- Actions are right-aligned in a row from 735 px; on phone they stack full width with the primary action first. In a destructive confirmation (Leave, End drop, Cancel drop) the safe action is the filled button and has initial focus (`autoFocus`), and the destructive action is gray with `danger` text, so it still reads as a button beside the filled one. In a non-destructive one (Arm drop, Reconcile) the confirming action is filled and "Cancel" is gray, and "Cancel" still takes initial focus, so Enter never commits by accident.
 - Esc chooses the safe action. Clicking the backdrop does nothing. Focus returns to the opener on close (native behaviour; `checkout-keyboard.spec` asserts it).
 
 **Sheet** (bigger content, such as the admin "New drop" form):
@@ -1815,7 +1817,7 @@ tablet: the player spans page-wide; the drop card sits below it, max-w-form.
 - **Overlay:** the LIVE badge (pulsing, §9.11) and the viewer-count pill sit at the top-left with a 16 px inset. That is all; the room has no chat.
 - **Controls:** two `material-overlay` capsules, `rounded-full`, 4 px inner padding around 44 px overlay icon buttons (§9.2), so 52 px tall, each 16 px from its bottom corner. No gradient scrim: text and icons sit on the capsule, which keeps white at 6.72:1 over a white frame, and the white focus ring sits on it too. The left capsule holds play/pause and mute (`aria-pressed`); the right holds "Live" (a text button in `text-footnote font-medium`, shown only when the viewer is behind the live edge, with `bg-label/16` on hover and press), captions (`aria-pressed`) and fullscreen. The capsules fade out (200 ms) after 3 s without pointer movement while playing, never while focus is inside the player, and always show while paused. With the badge and the viewer pill they cover under 20% of the video at 390 px wide (§14).
 - **Keyboard:** single-key shortcuts fire only while the player container itself has focus (WCAG 2.1.4): Space or K play and pause, M mutes, C toggles captions, F toggles fullscreen. On a focused control inside the player, Space and Enter activate that control and nothing else.
-- **Autoplay** is muted and inline (`playsInline muted autoPlay`), with a "Tap to unmute" overlay pill (`VolumeX`) until the first unmute. Captions are off by default; the choice is remembered in `localStorage`. `::cue` sets only `background-color: rgb(0 0 0 / 0.72)` and the sans font family; the browser sizes cues relative to the video (about 5% of its height), so they grow in fullscreen.
+- **Autoplay** is muted and inline (`playsInline muted autoPlay`), with a "Tap to unmute" overlay pill (`VolumeX`; "Unmute" where the pointer is a mouse, `pointer-fine`) until the first unmute. Captions are off by default; the choice is remembered in `localStorage`. `::cue` sets only `background-color: rgb(0 0 0 / 0.72)` and the sans font family; the browser sizes cues relative to the video (about 5% of its height), so they grow in fullscreen.
 - **Fullscreen** requests fullscreen on the player container, so the badges, the capsules and the docked drop card (§9.12) stay visible. Where element fullscreen isn't available (iPhone Safari), the native video fullscreen is used without the overlay.
 - **No stream:** the poster with a centred `material-overlay` message (`VideoOff` 20 and `text-callout`), "The stream starts soon." before the drop and "The stream has ended." after it.
 - **Playback error** (a fatal hls.js error, or a native `error` event after one automatic retry): the same overlay message reading "The stream can't play right now." with a filled md "Retry" button under it, which reloads the source. The drop card keeps working, because buying doesn't depend on the video.
@@ -1874,7 +1876,7 @@ Checkout                                                           title-1, h1, 
 | Network error or 5xx | Danger banner above Pay: "Couldn't place your order. Check your connection and try again." Pay retries with the same key |
 
 - **Expired panel:** at expiry (or a 410) the hold card and the form are replaced by one card: `Hourglass` 40 in a 72 px `fill-tertiary` circle, "Reservation expired" (`text-title-2`, focused, `aria-describedby` on the sentence below it), "Your item went back on sale." and a filled lg "Try again" link to `/p/[slug]` (SD §8.3). Focus moving there reads the heading with its sentence once; there is no alert role, which, inserted with its text and focused at the same time, would read it twice (§13.3). "Leave checkout" leaves the bar at the same moment (§9.18).
-- **Leave checkout:** the alert dialog (§9.14) with "Leave checkout?", "Your reservation will be released.", **Stay** (filled, initial focus) and **Leave** (plain, destructive tone), which calls `POST /orders/:orderId/cancel?from=RESERVED` and then navigates to `/p/[slug]`. Leave cancels a hold, never an order being paid: the precondition makes api answer 409 when the order was placed in the meantime (a submit whose answer was lost, another tab or device) or expired, and then the dialog closes and the page navigates to `/orders/[orderId]`, which shows the payment. The bar's button is disabled while Pay's submit is in flight (§9.18).
+- **Leave checkout:** the alert dialog (§9.14) with "Leave checkout?", "Your reservation will be released.", **Stay** (filled, initial focus) and **Leave** (gray, destructive tone), which calls `POST /orders/:orderId/cancel?from=RESERVED` and then navigates to `/p/[slug]`. Leave cancels a hold, never an order being paid: the precondition makes api answer 409 when the order was placed in the meantime (a submit whose answer was lost, another tab or device) or expired, and then the dialog closes and the page navigates to `/orders/[orderId]`, which shows the payment. The bar's button is disabled while Pay's submit is in flight (§9.18).
 - `noindex`.
 
 ### 10.5 Order status `/orders/[orderId]`
@@ -1973,13 +1975,15 @@ canvas, centred card (surface, rounded-xl, elevation-1, padding 24 / 32, page-fo
 | Status | Actions |
 |---|---|
 | `DRAFT` | Filled "Arm drop", gray "Edit" |
-| `SCHEDULED` | Gray "Reconcile" |
+| `SCHEDULED` | Gray "Pause", gray "Reconcile", destructive tinted "Cancel drop" |
 | `LIVE` | Gray "Pause", gray "Reconcile", destructive tinted "End drop" |
 | `PAUSED` | Filled "Resume", gray "Reconcile", destructive tinted "End drop" |
-| `ENDED` | Gray "Reconcile" while the drop is still tracked |
+| `ENDED` | Gray "Run again", gray "Reconcile" while the drop is still tracked |
 
-- "Arm drop", "End drop" and "Reconcile" confirm in an alert dialog (§12.2). Arming fixes the stock, limit, windows and schedule for good (SD §4.7), so its dialog says so: "Arm this drop?" / "You can't edit it after arming. It opens {LocalTime}." ("It opens Tue, Oct 6 at 7:00 PM.") / filled "Arm drop", gray "Cancel". 409 `DROP_ARMED` and `DROP_BUSY` show a warning banner (§12.2).
+- The table follows `DROP_ACTION_FROM` (`packages/domain/src/drops.ts`): `pause` from SCHEDULED or LIVE, `resume` from PAUSED, `end` from SCHEDULED, LIVE or PAUSED. An armed drop is never stuck: before it opens it can be paused (Resume lands on SCHEDULED again while `starts_at` is ahead) or cancelled. "Cancel drop" is the `end` action under the name that fits a drop that never opened; the drop becomes ENDED with nothing sold.
+- "Arm drop", "End drop", "Cancel drop" and "Reconcile" confirm in an alert dialog (§12.2); "Pause" and "Resume" act at once. "Cancel drop"'s safe action is filled "Keep drop", not "Cancel", so the dialog never offers two buttons that both say cancel. Each action confirms with a toast: "Drop armed.", "Drop paused.", "Drop resumed.", "Drop ended.", "Drop cancelled.", "Live stock rebuilt." Arming fixes the stock, limit, windows and schedule for good (SD §4.7), so its dialog says so: "Arm this drop?" / "You can't edit it after arming. It opens {LocalTime}." ("It opens Tue, Oct 6 at 7:00 PM.") / filled "Arm drop", gray "Cancel". 409 `DROP_ARMED` and `DROP_BUSY` show a warning banner (§12.2).
 - "Edit" (DRAFT only) opens the New drop sheet prefilled with the drop's values, titled "Edit drop", with a filled "Save changes" (`PATCH /admin/drops/:id`).
+- "Run again" (ENDED only) opens the New drop sheet with the ended drop's settings (product, room, price, units, limit, hold and payment seconds) and a window of the same length that starts on the hour, one to two hours from now (like a new drop's default); "Create draft" makes a new DRAFT, and the ended drop is unchanged.
 - Body at desktop, 8 + 4. Left: a Live stock card (lg meter with a legend: Available, In carts, Sold, Total, all `tabular-nums`) and a Settings card (a key-value list, §9.30). Right: a Links card: "View product page" and "Open live room" ending in `ArrowUpRight`, "Open dashboard" ending in `ChevronRight` (§7).
 
 ### 10.9 Listing generator `/admin/listings/new` and `/admin/listings/[jobId]`
@@ -2071,6 +2075,7 @@ Totals are a projection of orders.v1, version 1,204.                     footnot
 ```
 
 - The first state is server-rendered (SD §9); then the page follows `dash:<dropId>` and `stock:<dropId>`. Numbers swap in place and charts redraw without animation. Nothing is announced.
+- The title row also carries the drop's sale actions from §10.8, limited to Pause, Resume and End drop (Cancel drop while SCHEDULED), with the same dialogs and banners, so an operator can stop a sale without leaving the dashboard. Arm, Edit, Run again and Reconcile stay on the drop's detail page.
 - "Pause updates" freezes the view (WCAG 2.2.2) and shows "Paused at 7:04:12 PM"; Resume catches up to the latest version. The connection indicator shows a `success` dot and "Live updates", or `WifiOff` and "Updates paused" after 5 s disconnected.
 - Each chart has a visually hidden data table (SD §9). Recharts loads dynamically with fixed-height skeletons.
 
@@ -2210,7 +2215,7 @@ Totals are a projection of orders.v1, version 1,204.                     footnot
 | Not found | Page not found / This link may be old or mistyped. / Go to drops |
 | Error | Something went wrong / Try again in a moment. / Try again |
 | Live room, nothing pinned | Nothing on sale right now / The next drop appears here when it's pinned. |
-| Player | Tap to unmute · The stream starts soon. · The stream has ended. · The stream can't play right now. · Retry · Live |
+| Player | Tap to unmute (Unmute with a mouse) · The stream starts soon. · The stream has ended. · The stream can't play right now. · Retry · Live |
 
 **Empty states**
 
@@ -2228,6 +2233,7 @@ Totals are a projection of orders.v1, version 1,204.                     footnot
 | Arm drop | Arm this drop? / You can't edit it after arming. It opens Tue, Oct 6 at 7:00 PM. / Arm drop · Cancel |
 | Edit drop | Edit drop · Save changes |
 | End drop | End this drop now? / Buyers can't reserve after it ends. Reservations already made can still check out. / End drop · Cancel |
+| Cancel drop (SCHEDULED) | Cancel this drop? / It won't open, and you can't undo this. / Cancel drop · Keep drop |
 | Reconcile | Rebuild live stock? / We'll rebuild this drop's live stock from the database. Buyers may be asked to try again for 1–3 seconds. / Rebuild · Cancel |
 | `DROP_ARMED` | This drop is already armed. Refresh to see its current state. |
 | `DROP_BUSY` | Another change to this drop is running. Try again in a moment. |

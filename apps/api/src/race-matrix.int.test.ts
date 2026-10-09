@@ -1,15 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { createLogger } from '@flashdrop/config';
+import { createLogger, postgresCheck } from '@flashdrop/config';
 import { SESSION_COOKIE } from '@flashdrop/config/constants';
 import { OrderResponse, TestDropResponse, TestSessionsResponse } from '@flashdrop/contracts';
 import { createDb, sql } from '@flashdrop/db';
 import { RetryError } from '@flashdrop/domain';
-import { createSyncNudger, readDropState, readStock, redisDropViolations } from '@flashdrop/inventory';
+import {
+  createReservationService,
+  createReservePorts,
+  createSyncNudger,
+  type ReservePorts,
+  readDropState,
+  readStock,
+  redisDropViolations,
+} from '@flashdrop/inventory';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Api } from './http/api';
-import { postgresCheck } from './services/health';
 import { createPgBreaker } from './services/pg-breaker';
-import { createReservationService, createReservePorts, type ReservePorts } from './services/reserve';
 import { ADMIN, ORIGIN, sessionToken } from './test/fakes';
 import { createTestStack, TEST_ROUTES_SECRET, type TestStack } from './test/stack';
 

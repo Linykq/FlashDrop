@@ -21,6 +21,7 @@ export function LiveBadge({ size = 'md', pulse = false }: LiveBadgeProps) {
     >
       <span
         aria-hidden="true"
+        data-live-dot
         className={cx('size-1.5 rounded-full bg-label-on-color', pulse && 'motion-safe:animate-live-pulse')}
       />
       Live

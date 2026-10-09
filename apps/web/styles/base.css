@@ -239,4 +239,23 @@
     color: GrayText;
     border-color: GrayText;
   }
+
+  /* Forced colours drop box-shadows, which is all elevation and rings are, so the signals they carry need
+     another way through (§13.1): cards keep an edge, so groups don't merge; the current gallery thumbnail
+     and the show tile on screen, marked by a ring, get an outline in the system's highlight. */
+  [class*="elevation-"] {
+    border: 1px solid CanvasText;
+  }
+
+  [aria-current="true"] {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  /* The LIVE dot is a filled circle, which forced colours paint as the background: it keeps its shape in the
+     text colour, so the badge still carries its icon beside the word (§13.1). */
+  [data-live-dot] {
+    forced-color-adjust: none;
+    background-color: CanvasText;
+  }
 }

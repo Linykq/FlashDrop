@@ -1,0 +1,10 @@
+# The dup-delivery chaos case (design §13; tests/chaos/scenarios/dup-delivery.ts): the worker's relay
+# publishes every outbox batch twice (FD_CHAOS_DUP_DELIVERY, apps/worker/src/relay/duplicate.ts). Layered
+# over the stack's own files only for the one `up` that re-creates the worker in this mode; the scenario then
+# re-creates it without this file. compose.yaml never passes either variable to a container, so nothing
+# else can turn the mode on; the worker refuses the flag without FD_SYSTEM_TESTS=1 (apps/worker/src/env.ts).
+services:
+  worker:
+    environment:
+      FD_CHAOS_DUP_DELIVERY: 'true'
+      FD_SYSTEM_TESTS: '1'

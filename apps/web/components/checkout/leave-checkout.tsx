@@ -116,12 +116,16 @@ export function LeaveCheckout({ orderId, hold: rendered, productHref, orderPageH
         description={
           <>
             <p>Your reservation will be released.</p>
-            {failed && (
-              <p role="alert" className="mt-3 flex items-start gap-1.5 text-callout text-danger">
-                <CircleAlert size={16} className="mt-0.5 shrink-0" />
-                Couldn't leave checkout. Check your connection and try again.
-              </p>
-            )}
+            {/* Always in the dialog and polite (§13.3 rule 1): a region inserted with its text is skipped by
+                some screen readers, and the Announcer's regions sit outside the modal, where it hides them. */}
+            <p role="status" className={failed ? 'mt-3 text-callout text-danger' : undefined}>
+              {failed && (
+                <span className="flex items-start gap-1.5">
+                  <CircleAlert size={16} className="mt-0.5 shrink-0" />
+                  Couldn't leave checkout. Check your connection and try again.
+                </span>
+              )}
+            </p>
           </>
         }
       >

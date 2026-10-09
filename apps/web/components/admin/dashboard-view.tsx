@@ -6,10 +6,13 @@ import {
   type DashboardTotals,
   type StockLevel,
 } from '@flashdrop/contracts';
-import { LayoutDashboard, WifiOff } from 'lucide-react';
+import { ChevronRight, LayoutDashboard, WifiOff } from 'lucide-react';
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { cx } from '../../lib/cx';
+import { focusPageStart } from '../../lib/focus';
 import { formatCount, formatMoney } from '../../lib/format';
+import { Banner } from '../ui/banner';
 import { Button } from '../ui/button';
 import { EmptyState } from '../ui/empty-state';
 import { Skeleton, SkeletonText } from '../ui/skeleton';
@@ -18,6 +21,7 @@ import { TitleText } from '../ui/title-text';
 import { DropWindow, useViewerZone, zonedTime } from './admin-time';
 import { ChartFrame } from './chart-frame';
 import { funnel, peakMinute, sellOutSeconds, unitsPerMinute, unsoldTile } from './dashboard-model';
+import { DropActions, SALE_ACTIONS } from './drop-actions';
 import {
   formatClockTime,
   formatLagSeconds,
@@ -35,12 +39,14 @@ import {
   type HealthLevel,
   type LagTracker,
   outboxHealth,
+  projectionBacklog,
   trackLag,
   worst,
 } from './health-model';
 import { HealthPill } from './health-pill';
 import { useLiveStock, useLiveTotals, useRealtimeStatus, type VersionedTotals } from './live';
 import { PageHeader } from './page-header';
+import type { ActionFailure } from './problem-copy';
 import { StatTile } from './stat-tile';
 import { StockSummary } from './stock-summary';
 import { usePoll } from './use-poll';
@@ -68,7 +74,10 @@ type Snapshot = {
  * `stock:<dropId>` (Redis levels) on the socket, and polls the same read every 5 s for the series and the
  * health tiles, sooner (at most every 2 s) when a frame shows the totals moved. "Pause updates" freezes
  * everything on screen (WCAG 2.2.2); resuming catches up to the latest. Numbers update in place; nothing is
- * announced (§13.3).
+ * announced (§13.3). The sale can be paused, resumed or ended from here, and the drop's own page is a link
+ * away. While the projection is replaying a backlog (`pnpm dash:rebuild`), the page says its totals are
+ * incomplete instead of showing zeros as a sale nobody bought from. An ended drop reads as finished: no live
+ * indicator, no pause, its stock final.
  */
 export function DashboardView({ initial }: { initial: AdminDashboardResponse }) {
   const dropId = initial.drop.id;
@@ -108,6 +117,10 @@ export function DashboardView({ initial }: { initial: AdminDashboardResponse }) 
 
   const live: Snapshot = { data, totals, stock: stock.level, lag, drift, at: readAt };
   const shown = frozen ?? live;
+  const [failure, setFailure] = useState<ActionFailure | null>(null);
+  const ended = shown.data.drop.status === 'ENDED';
+  // Redis's status leads the projection's 5 s read: a pause in another tab shows here within a frame.
+  const status = shown.stock?.status ?? shown.data.drop.status;
 
   function togglePause() {
     if (frozen === null) {
@@ -123,21 +136,58 @@ export function DashboardView({ initial }: { initial: AdminDashboardResponse }) 
       <PageHeader
         title={<TitleText text={shown.data.drop.product.title} />}
         actions={
-          <Button variant="plain" size="sm" aria-pressed={frozen !== null} onClick={togglePause}>
-            Pause updates
-          </Button>
+          <>
+            <DropActions drop={data.drop} only={SALE_ACTIONS} saleWording onFailure={setFailure} />
+            {!ended && (
+              <Button
+                variant="plain"
+                size="sm"
+                aria-pressed={frozen !== null}
+                onClick={togglePause}
+                // First on its row under the title on a phone (a draft has no sale actions before it), its
+                // padding would inset the label from the page margin; the margin takes it back.
+                className={cx(data.drop.status === 'DRAFT' && 'max-sm:-ml-3')}
+              >
+                Pause updates
+              </Button>
+            )}
+          </>
         }
       >
         <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-footnote text-label-secondary">
-          <DropStatusPill
-            status={shown.stock?.status === 'RECONCILING' ? 'RECONCILING' : shown.data.drop.status}
-          />
+          <DropStatusPill status={status} />
           <span aria-hidden="true">·</span>
           <DropWindow startsAt={shown.data.drop.startsAt} endsAt={shown.data.drop.endsAt} />
+          {!ended && (
+            <>
+              <span aria-hidden="true">·</span>
+              <UpdatesState pausedAt={frozen?.at ?? null} disconnected={realtime.paused} />
+            </>
+          )}
           <span aria-hidden="true">·</span>
-          <UpdatesState pausedAt={frozen?.at ?? null} disconnected={realtime.paused} />
+          <Link
+            href={`/admin/drops/${dropId}`}
+            className="-my-3 inline-flex min-h-11 items-center gap-1 text-accent-label"
+          >
+            Drop settings
+            <ChevronRight size={14} />
+          </Link>
         </div>
       </PageHeader>
+      {failure && (
+        // The admin's own action was refused and focus stays where it was, so this is an alert (§9.15).
+        <Banner
+          tone={['DROP_ARMED', 'DROP_BUSY', 'CONFLICT'].includes(failure.code) ? 'warning' : 'danger'}
+          alert
+          onDismiss={() => {
+            setFailure(null);
+            requestAnimationFrame(focusPageStart);
+          }}
+          className="mt-6 animate-fade-in"
+        >
+          {failure.message}
+        </Banner>
+      )}
       <DashboardBody snapshot={shown} live={frozen === null} />
     </>
   );
@@ -170,16 +220,26 @@ function DashboardBody({ snapshot, live }: { snapshot: Snapshot; live: boolean }
   const { drop } = data;
   const zone = useViewerZone();
   const current = totals.totals;
-  const units = unitsPerMinute(data.series, live && drop.status === 'LIVE' ? snapshot.at : null, (minute) =>
-    zonedTime(minute, zone),
-  );
+  // The plot runs to now while the drop sells, but never past its end: a drop the scheduler hasn't closed
+  // yet would otherwise draw a flat line beyond its window.
+  const until = live && drop.status === 'LIVE' ? Math.min(snapshot.at, Date.parse(drop.endsAt)) : null;
+  const units = unitsPerMinute(data.series, until, (minute) => zonedTime(minute, zone), drop.total);
   const peak = peakMinute(units);
   const level = stock ?? { avail: drop.total - current.unitsSold, held: 0, sold: current.unitsSold };
-  const quiet = current.reserved === 0 && data.series.length === 0;
+  const backlog = projectionBacklog(data.health.consumers);
+  const quiet = current.reserved === 0 && data.series.length === 0 && backlog === null;
+  const ended = drop.status === 'ENDED';
 
   return (
     <>
+      {backlog !== null && (
+        <Banner tone="warning" title="Replaying orders" className="mt-6">
+          {formatCount(backlog)} events to go. Totals are incomplete until the replay is through.
+        </Banner>
+      )}
       <Tiles
+        // Dimmed, not hidden: the numbers are real so far, only not complete (§10.10).
+        className={cx(backlog !== null && 'opacity-60')}
         drop={drop}
         totals={current}
         avail={level.avail}
@@ -190,11 +250,19 @@ function DashboardBody({ snapshot, live }: { snapshot: Snapshot; live: boolean }
       <div className="mt-(--grid-gap) grid gap-(--grid-gap) md:grid-cols-12">
         {quiet ? (
           <div className="rounded-lg bg-surface elevation-1 md:col-span-8">
-            <EmptyState
-              icon={LayoutDashboard}
-              title="No orders yet"
-              description="Numbers appear as soon as the first buyer reserves."
-            />
+            {ended ? (
+              <EmptyState
+                icon={LayoutDashboard}
+                title="No orders"
+                description={`This drop ended with ${formatCount(level.avail)} unsold.`}
+              />
+            ) : (
+              <EmptyState
+                icon={LayoutDashboard}
+                title="No orders yet"
+                description="Numbers appear as soon as the first buyer reserves."
+              />
+            )}
           </div>
         ) : (
           <ChartFrame
@@ -213,7 +281,7 @@ function DashboardBody({ snapshot, live }: { snapshot: Snapshot; live: boolean }
           className="rounded-lg bg-surface p-5 elevation-1 sm:p-6 md:col-span-4"
         >
           <h2 id="stock-now" className="text-headline">
-            Stock now
+            {ended ? 'Final stock' : 'Stock now'}
           </h2>
           <StockSummary
             avail={level.avail}
@@ -221,6 +289,7 @@ function DashboardBody({ snapshot, live }: { snapshot: Snapshot; live: boolean }
             sold={level.sold}
             total={drop.total}
             columns={2}
+            ended={ended}
           />
         </section>
       </div>
@@ -248,6 +317,7 @@ function Tiles({
   held,
   soldOutMinute,
   at,
+  className,
 }: {
   drop: AdminDashboardResponse['drop'];
   totals: DashboardTotals;
@@ -256,13 +326,14 @@ function Tiles({
   soldOutMinute: string | null;
   /** When the shown data was read: how long an unsold drop has been selling. */
   at: number;
+  className?: string;
 }) {
   const sellOut = sellOutSeconds(drop.startsAt, soldOutMinute);
   const unsold = unsoldTile(drop, at, { avail, held });
   const exactMoney = formatMoney(totals.revenueCents, drop.currency, 'exact');
   return (
     // Five tiles need room: they take five columns only where the content is wide enough for them.
-    <section aria-label="Totals" className="@container mt-8">
+    <section aria-label="Totals" className={cx('@container mt-8', className)}>
       <div className="grid grid-cols-2 gap-(--grid-gap) @form:grid-cols-3 @content:grid-cols-5">
         <StatTile
           label="Units sold"
@@ -341,10 +412,22 @@ function HealthTiles({ snapshot }: { snapshot: Snapshot }) {
           sub={drift === null ? 'Not comparable right now' : 'Redis minus Postgres'}
           status={<HealthPill level={driftLevel} />}
         />
+        {/* Dead letters aren't kept per drop: the count is the whole pipeline's, and Health has the rest. */}
         <StatTile
           label="Dead letters"
           value={health.deadLetters === null ? '—' : formatCount(health.deadLetters)}
-          sub={deadLetterLine(health.deadLettersRetained)}
+          sub={
+            <>
+              All drops · {deadLetterLine(health.deadLettersRetained)}
+              <Link
+                href="/admin/health#pipeline-dead-letters"
+                className="mt-1 flex min-h-6 w-fit items-center gap-1 text-accent-label"
+              >
+                See Health
+                <ChevronRight size={14} />
+              </Link>
+            </>
+          }
           status={<HealthPill level={countHealth(health.deadLetters)} />}
         />
       </div>

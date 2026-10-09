@@ -52,6 +52,7 @@ export function createAdminDashboard(deps: AdminDashboardDeps): AdminDashboardSe
       status: drop.status,
       startsAt: drop.startsAt.toISOString(),
       endsAt: drop.endsAt.toISOString(),
+      endedAt: drop.endedAt?.toISOString() ?? null,
       priceCents: drop.priceCents,
       currency: drop.currency,
       total,

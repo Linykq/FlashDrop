@@ -9,9 +9,11 @@ import {
   judgeReading,
   liveHold,
   liveHoldsFirst,
+  NO_CLAIM,
   offersExtension,
   rejectionText,
   showsExtensionRow,
+  viewerClaim,
 } from './hold';
 
 const created = '2026-10-02T19:00:00.000Z';
@@ -123,6 +125,34 @@ describe('liveHold', () => {
       expiresAt: '2026-10-02T19:02:30.000Z',
     });
     expect(liveHold([later, order({ id: 'sooner' })], 'drop-a')?.id).toBe('sooner');
+  });
+});
+
+describe('viewerClaim', () => {
+  it('counts the units being paid for and paid on the drop, and names the newest such order', () => {
+    const orders = [
+      order({ id: 'paid-new', status: 'PAID', qty: 1 }),
+      order({ id: 'other-drop', status: 'PAID', dropId: 'drop-b', qty: 3 }),
+      order({ id: 'paying', status: 'PENDING_PAYMENT', qty: 1 }),
+      order({ id: 'gone', status: 'EXPIRED', qty: 2 }),
+      order({ id: 'declined', status: 'PAYMENT_FAILED', qty: 2 }),
+      order({ id: 'left', status: 'CANCELLED', qty: 2 }),
+    ];
+    expect(viewerClaim(orders, 'drop-a')).toEqual({ held: null, placedQty: 2, lastPlacedId: 'paid-new' });
+  });
+
+  it('keeps the live hold apart from what was placed, since only the hold can end on screen', () => {
+    const claim = viewerClaim(
+      [order({ id: 'held', qty: 1 }), order({ id: 'paid', status: 'PAID' })],
+      'drop-a',
+    );
+    expect(claim.held?.id).toBe('held');
+    expect(claim.placedQty).toBe(1);
+    expect(claim.lastPlacedId).toBe('paid');
+  });
+
+  it('is nothing on a drop the viewer never bought', () => {
+    expect(viewerClaim([order({ id: 'b', dropId: 'drop-b', status: 'PAID' })], 'drop-a')).toEqual(NO_CLAIM);
   });
 });
 

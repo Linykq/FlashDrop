@@ -417,12 +417,14 @@ function openWatcher(url: string, topic: string, storm: Window): Watcher {
     opened.add(1);
     socket.send(JSON.stringify({ type: 'sub', topics: [topic] }));
   };
-  socket.onmessage = (event: FrameEvent) => onFrame(watcher, event, topic, storm);
-  socket.onerror = (event: { readonly error?: unknown }) => {
+  socket.onmessage = (event?: FrameEvent) => {
+    if (event !== undefined) onFrame(watcher, event, topic, storm);
+  };
+  socket.onerror = (event?: { readonly error?: unknown }) => {
     // k6 also reports the end of a socket the script is closing ("close sent"): not an error of the run.
     if (watcher.closing) return;
     if (!watcher.opened) connectErrors.add(1);
-    report('socket error', `${url}: ${String(event.error)}`);
+    report('socket error', `${url}: ${String(event?.error)}`);
   };
   socket.onclose = (event?: CloseEvent) => {
     watcher.closed = true;

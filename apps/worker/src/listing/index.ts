@@ -1,9 +1,10 @@
 import type { ListingEffort } from '@flashdrop/config';
+import { claimListingJob } from '@flashdrop/db';
 import { createListingModel, LISTING_PROMPT_VERSION, type ListingModelSettings } from '@flashdrop/llm';
 import type { WorkerDeps } from '../deps';
 import type { ComponentHealth } from '../health';
 import { createLoop } from '../loop';
-import { claimListingJob } from './jobs';
+import { countListingJob } from '../metrics';
 import { type ListingRunDeps, runListingJob } from './run';
 
 /*
@@ -56,7 +57,7 @@ export function startListingWorker(
           if (job === null) return;
           const run: Promise<void> = runListingJob(deps, job, abort.signal)
             .then(
-              () => undefined,
+              (outcome) => countListingJob(outcome),
               // The job keeps its lease and is resumed once it expires.
               (err: unknown) => deps.logger.error({ err, jobId: job.id }, 'listing run failed'),
             )

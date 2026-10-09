@@ -1,10 +1,16 @@
-import { SESSION_COOKIE } from '@flashdrop/config/constants';
+import {
+  SESSION_AUDIENCE,
+  SESSION_COOKIE,
+  SESSION_ISSUER,
+  SESSION_TTL_SECONDS,
+} from '@flashdrop/config/constants';
 import { DevUsersResponse, MeResponse, ProblemDetails } from '@flashdrop/contracts';
 import { SignJWT } from 'jose';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Api } from '../http/api';
-import { createSessionCodec, SESSION_TTL_SECONDS } from '../http/session';
+import { createSessionCodec } from '../http/session';
 import { ADMIN, BUYER, buildTestApp, type FakeState, fakeState, ORIGIN, SECRET } from '../test/fakes';
+import { DEV_LOGIN_PER_MINUTE } from './auth';
 
 let app: Api;
 let state: FakeState;
@@ -27,6 +33,27 @@ async function sessionCookie(userId: string): Promise<string> {
 
 const me = (token?: string) =>
   app.inject({ url: '/api/v1/me', cookies: token === undefined ? {} : { [SESSION_COOKIE]: token } });
+
+describe('without ENABLE_DEV_LOGIN', () => {
+  it('serves neither dev-login route, so no one can sign in without a password', async () => {
+    const closed = await buildTestApp({ devLogin: false }, state);
+    try {
+      expect((await closed.inject({ url: '/api/v1/auth/dev-users' })).statusCode).toBe(404);
+      const response = await closed.inject({
+        method: 'POST',
+        url: '/api/v1/auth/dev-login',
+        headers: { origin: ORIGIN },
+        payload: { userId: ADMIN.id },
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.cookies).toEqual([]);
+      // Signing out and the session's user stay: they need no dev login.
+      expect((await closed.inject({ url: '/api/v1/me' })).statusCode).toBe(401);
+    } finally {
+      await closed.close();
+    }
+  });
+});
 
 describe('GET /api/v1/auth/dev-users', () => {
   it('lists the seeded accounts', async () => {
@@ -59,9 +86,55 @@ describe('POST /api/v1/auth/dev-login', () => {
     });
   });
 
-  it('marks the cookie Secure behind an https edge', async () => {
-    const response = await login(BUYER.id, { origin: ORIGIN, 'x-forwarded-proto': 'https' });
-    expect(response.cookies[0]?.secure).toBe(true);
+  it('marks the cookie Secure by COOKIE_SECURE, never by a forwarded scheme the edge rewrites', async () => {
+    const forwarded = await login(BUYER.id, { origin: ORIGIN, 'x-forwarded-proto': 'https' });
+    expect(forwarded.cookies[0]?.secure).toBeUndefined();
+
+    const secure = await buildTestApp({ cookieSecure: true }, state);
+    try {
+      const response = await secure.inject({
+        method: 'POST',
+        url: '/api/v1/auth/dev-login',
+        headers: { origin: ORIGIN },
+        payload: { userId: BUYER.id },
+      });
+      expect(response.cookies[0]).toMatchObject({ name: SESSION_COOKIE, secure: true, httpOnly: true });
+      const logout = await secure.inject({
+        method: 'POST',
+        url: '/api/v1/auth/logout',
+        headers: { origin: ORIGIN },
+      });
+      expect(logout.cookies[0]).toMatchObject({ name: SESSION_COOKIE, secure: true, maxAge: 0 });
+    } finally {
+      await secure.close();
+    }
+  });
+
+  it(`allows ${DEV_LOGIN_PER_MINUTE} logins a minute per client address, then 429`, async () => {
+    for (let i = 0; i < DEV_LOGIN_PER_MINUTE; i++) expect((await login(BUYER.id)).statusCode).toBe(204);
+    const limited = await login(BUYER.id);
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ code: 'RATE_LIMITED' });
+    expect(limited.cookies).toEqual([]);
+  });
+
+  // Regression: every private-network peer was trusted to name the client in X-Forwarded-For, so any
+  // container could pick a fresh address per request and dodge the per-IP limits.
+  it('counts an untrusted peer as the client, whatever X-Forwarded-For it claims (TRUST_PROXY)', async () => {
+    const from = (remoteAddress: string, i: number) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/dev-login',
+        remoteAddress,
+        headers: { origin: ORIGIN, 'x-forwarded-for': `203.0.113.${i}` },
+        payload: { userId: BUYER.id },
+      });
+    const statuses = [];
+    for (let i = 0; i <= DEV_LOGIN_PER_MINUTE; i++) statuses.push((await from('10.0.0.5', i)).statusCode);
+    expect(statuses.at(-1)).toBe(429);
+
+    // The trusted edge (loopback here) does name the client: each forwarded address has its own window.
+    for (let i = 0; i <= DEV_LOGIN_PER_MINUTE; i++) expect((await from('127.0.0.1', i)).statusCode).toBe(204);
   });
 
   it('answers 404 for an account that is not a seeded dev user', async () => {
@@ -150,21 +223,62 @@ describe('GET /api/v1/me', () => {
       'base64url',
     );
     const foreign = await createSessionCodec('another-secret-that-is-32-chars-long').issue(BUYER);
-    const expired = await new SignJWT({ role: 'buyer', name: BUYER.displayName })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setSubject(BUYER.id)
-      .setIssuedAt(0)
-      .setExpirationTime(1)
-      .sign(new TextEncoder().encode(SECRET));
-    for (const bad of [`${header}.${forgedPayload}.${signature}`, foreign, expired, 'garbage']) {
-      expect((await me(bad)).statusCode).toBe(401);
-    }
+    const key = new TextEncoder().encode(SECRET);
+    const signed = (claims: { iss?: string; aud?: string; iat: number; exp: number }) => {
+      const jwt = new SignJWT({ role: 'buyer', name: BUYER.displayName })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setSubject(BUYER.id)
+        .setIssuedAt(claims.iat)
+        .setExpirationTime(claims.exp);
+      if (claims.iss !== undefined) jwt.setIssuer(claims.iss);
+      if (claims.aud !== undefined) jwt.setAudience(claims.aud);
+      return jwt.sign(key);
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const ours = { iss: SESSION_ISSUER, aud: SESSION_AUDIENCE };
+    const bad = [
+      `${header}.${forgedPayload}.${signature}`,
+      foreign,
+      'garbage',
+      await signed({ ...ours, iat: 0, exp: 1 }),
+      // Signed with the right key, but not a session: no issuer and audience, or another audience.
+      await signed({ iat: now, exp: now + 60 }),
+      await signed({ ...ours, aud: 'another-service', iat: now, exp: now + 60 }),
+      // Unexpired, but issued longer ago than a session lives.
+      await signed({ ...ours, iat: now - SESSION_TTL_SECONDS - 60, exp: now + 3_600 }),
+    ];
+    for (const token of bad) expect((await me(token)).statusCode).toBe(401);
   });
 
   it('answers 401 when the user no longer exists', async () => {
     const token = await sessionCookie(BUYER.id);
     state.users.delete(BUYER.id);
     expect((await me(token)).statusCode).toBe(401);
+  });
+});
+
+describe('admin claims', () => {
+  const adminHealth = (token: string) =>
+    app.inject({ url: '/api/v1/admin/health', cookies: { [SESSION_COOKIE]: token } });
+
+  it('are confirmed against the account: a demoted admin is a buyer on the next request', async () => {
+    const token = await sessionCookie(ADMIN.id);
+    state.users.set(ADMIN.id, { ...ADMIN, role: 'buyer' });
+    const response = await adminHealth(token);
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('count for nothing when the account does not exist', async () => {
+    const token = await createSessionCodec(SECRET).issue({
+      ...ADMIN,
+      id: '11111111-1111-4111-8111-111111111111',
+    });
+    expect((await adminHealth(token)).statusCode).toBe(401);
+  });
+
+  it('let a current admin through', async () => {
+    expect((await adminHealth(await sessionCookie(ADMIN.id))).statusCode).toBe(200);
   });
 });
 

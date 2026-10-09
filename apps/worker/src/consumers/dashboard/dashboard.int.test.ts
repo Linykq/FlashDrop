@@ -36,7 +36,6 @@ import {
   type WorkerTestEnv,
 } from '../../test/harness';
 import { startConsumer } from '../index';
-import { createPspClient } from '../psp-client';
 import { dashboardHandlers } from './index';
 
 /*
@@ -218,12 +217,14 @@ describe('sales-dashboard group through Kafka', () => {
   });
 
   async function startGroup(): Promise<ConsumerRunner> {
-    const psp = createPspClient({ baseUrl: 'http://127.0.0.1:9' });
-    const started = await startConsumer(
-      'dashboard',
-      { ...env.deps, psp },
-      { kafka, dlq: publisher, topic, dlqTopic, groupId, backoff: { baseMs: 50, capMs: 500 } },
-    );
+    const started = await startConsumer('dashboard', env.deps, {
+      kafka,
+      dlq: publisher,
+      topic,
+      dlqTopic,
+      groupId,
+      backoff: { baseMs: 50, capMs: 500 },
+    });
     await vi.waitFor(() => expect(started.health().healthy).toBe(true), { timeout: 30_000, interval: 100 });
     return started;
   }

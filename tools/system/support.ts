@@ -28,6 +28,7 @@ import {
   partitionForKey,
 } from '@flashdrop/messaging';
 import { z } from 'zod';
+import { stackSecret } from '../env-file';
 import { createEventsProbe } from '../event-samples';
 import { type InvariantsReport, verifyInvariants } from '../invariant-samples';
 
@@ -41,22 +42,17 @@ import { type InvariantsReport, verifyInvariants } from '../invariant-samples';
  *   ENABLE_TEST_ROUTES=true pnpm stack:up && FD_SYSTEM_TESTS=1 pnpm test:system
  *
  * The stack's Kafka is the one every integration test on the machine uses, and pausing or stopping it for up
- * to a minute fails their runs. So the tests refuse to start unless FD_SYSTEM_TESTS=1 says this run may
- * disrupt the stack: a bare `vitest run` never does. CI gives them a stack of their own (the system job);
- * on a shared machine, so does compose.isolated.yaml, a second project on other host ports (its header has
- * the commands).
+ * to a minute fails their runs. So `compose`, the only way to a service here, refuses unless
+ * FD_SYSTEM_TESTS=1 says this run may disrupt the stack: a bare `vitest run` never does. CI gives the tests
+ * a stack of their own (the system job); on a shared machine, so does compose.isolated.yaml, a second
+ * project on other host ports (its header has the commands).
+ *
+ * Nothing here reads the environment on import: the stack's address, secret and stores are read when first
+ * used, so the chaos run (tests/chaos/run.ts) imports this like any module and points the process at its
+ * target before calling anything.
  */
 
-if (process.env.FD_SYSTEM_TESTS !== '1') {
-  throw new Error(
-    'the system tests stop, kill and re-create services of the running stack, and pause its Kafka: ' +
-      'run them only on a stack nobody else is using, with FD_SYSTEM_TESTS=1',
-  );
-}
-
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const BASE_URL = new URL(process.env.E2E_BASE_URL || 'http://127.0.0.1:8080').origin;
-const TEST_SECRET = process.env.TEST_ROUTES_SECRET || 'dev-only-test-routes-secret';
 
 const exec = promisify(execFile);
 
@@ -69,6 +65,12 @@ export async function compose(
   args: readonly string[],
   overrides: Record<string, string> = {},
 ): Promise<string> {
+  if (process.env.FD_SYSTEM_TESTS !== '1') {
+    throw new Error(
+      'the system tests stop, kill and re-create services of the running stack, and pause its Kafka: ' +
+        'run them only on a stack nobody else is using, with FD_SYSTEM_TESTS=1',
+    );
+  }
   const { stdout } = await exec('docker', ['compose', '--profile', 'app', ...args], {
     cwd: REPO_ROOT,
     env: { ...process.env, ...overrides },
@@ -157,8 +159,6 @@ export function serviceLogs(service: string): Promise<string> {
 
 // ---------------------------------------------------------------- the stores, read-only
 
-const env = loadEnv([PostgresEnv, RedisEnv, KafkaEnv]);
-
 type Pool = ReturnType<typeof createPool>;
 
 export interface Stores {
@@ -171,8 +171,17 @@ export interface Stores {
   close(): Promise<void>;
 }
 
+export interface StoresOptions {
+  /**
+   * Where the Redis client reports its errors (default `console`). The chaos runs (tests/chaos) restart
+   * Redis on purpose and pass a quieter one than a stack trace per reconnect attempt.
+   */
+  readonly redisLogger?: Pick<Console, 'warn'>;
+}
+
 /** Postgres, the stack's Redis (a plain client: it never loads the Functions library) and a Kafka admin. */
-export async function connectStores(): Promise<Stores> {
+export async function connectStores({ redisLogger = console }: StoresOptions = {}): Promise<Stores> {
+  const env = loadEnv([PostgresEnv, RedisEnv, KafkaEnv]);
   const pool = createPool({
     connectionString: env.DATABASE_URL,
     logger: { warn: () => undefined },
@@ -181,7 +190,7 @@ export async function connectStores(): Promise<Stores> {
     applicationName: 'system-tests',
     max: 4,
   });
-  const redis = createCommandClient({ url: env.REDIS_URL, name: 'system-tests', logger: console });
+  const redis = createCommandClient({ url: env.REDIS_URL, name: 'system-tests', logger: redisLogger });
   await redis.connect();
   const kafka = createKafka({ brokers: env.KAFKA_BROKERS, clientId: 'system-tests', logLevel: 'error' });
   const admin = kafka.admin();
@@ -248,13 +257,18 @@ interface Call {
   readonly test?: boolean;
 }
 
+/** The stack's edge, as browsers and the E2E specs reach it. */
+const baseUrl = (): string => new URL(process.env.E2E_BASE_URL || 'http://127.0.0.1:8080').origin;
+
 async function call(method: string, path: string, { token, key, body, test }: Call = {}) {
-  const headers: Record<string, string> = { origin: BASE_URL };
+  const origin = baseUrl();
+  const headers: Record<string, string> = { origin };
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (token !== undefined) headers.cookie = `fd_session=${token}`;
   if (key !== undefined) headers['idempotency-key'] = key;
-  if (test === true) headers[TEST_SECRET_HEADER] = TEST_SECRET;
-  const response = await fetch(`${BASE_URL}/api/v1${path}`, {
+  // The api's own value: the shell's, else the one `pnpm stack:up` wrote to .env (Vitest loads .env too).
+  if (test === true) headers[TEST_SECRET_HEADER] = stackSecret('TEST_ROUTES_SECRET');
+  const response = await fetch(`${origin}/api/v1${path}`, {
     method,
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -273,7 +287,8 @@ async function expectStatus(what: string, status: number, response: Awaited<Retu
 
 export type TestDrop = z.output<typeof TestDropResponse>;
 
-export async function createTestDrop(body: Partial<z.input<typeof TestDropBody>>): Promise<TestDrop> {
+/** `POST /test/drops` through the edge: a fresh product and drop, armed and open from now. */
+export async function postTestDrop(body: Partial<z.input<typeof TestDropBody>>): Promise<TestDrop> {
   const settings = { stock: 10, perUserLimit: 2, holdSeconds: 120, paymentSeconds: 300, ...body };
   const json = await expectStatus(
     'test drop',
@@ -569,9 +584,29 @@ export async function deadLetter(stores: Stores, record: ReadRecord, consumer: s
   }
 }
 
-/** One line of a service's pino log. */
-const LogLine = z.looseObject({ msg: z.string() });
+/** One line of a service's pino log (`createLogger` of @flashdrop/config writes ISO times). */
+const LogLine = z.looseObject({ time: z.string(), msg: z.string() });
 export type LogLine = z.output<typeof LogLine>;
+
+/**
+ * The pino lines of a service's output, for the system tests and the chaos runs alike; anything else in it (a
+ * Node warning, a crash dump, a line cut off when its container was killed mid-write) is not one.
+ */
+export function logLines(output: string): LogLine[] {
+  return output.split('\n').flatMap((line) => {
+    const parsed = LogLine.safeParse(jsonOrUndefined(line));
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
+function jsonOrUndefined(line: string): unknown {
+  if (!line.startsWith('{')) return undefined;
+  try {
+    return JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * `dlq:replay` against the stack (§6.4), the way an operator runs it: a one-off of the consumers service,
@@ -587,11 +622,4 @@ export async function replayDeadLetters(args: readonly string[]): Promise<LogLin
     const output = error instanceof Error && 'stdout' in error ? String(error.stdout) : '';
     throw new Error(`dlq:replay ${args.join(' ')} failed:\n${output}`, { cause: error });
   }
-}
-
-function logLines(stdout: string): LogLine[] {
-  return stdout
-    .split('\n')
-    .filter((line) => line.startsWith('{'))
-    .map((line) => LogLine.parse(JSON.parse(line)));
 }

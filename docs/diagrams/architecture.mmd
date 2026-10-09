@@ -1,10 +1,10 @@
 %%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
-%% FlashDrop container view. Source of docs/diagrams/architecture.svg
+%% FlashDrop container view, as built (design section 15 service table). Source of docs/diagrams/architecture.svg
 %% Async-tier edges are written data-store-first so the layout keeps Data above Async above External.
 flowchart TB
   CL["Clients: buyer and admin browsers, k6"]
-  CADDY["caddy :8080 - edge<br/>/ → web<br/>/api, /uploads, /ws → api<br/>/ws/1 → api-1 · /ws/2 → api-2<br/>/_internal → 404"]
-  CL -->|"HTTP + WS (TLS in prod)"| CADDY
+  CADDY["caddy: the edge, 127.0.0.1:8080<br/>/ → web<br/>/api, /uploads, /ws → api<br/>/ws/1 → api-1<br/>/ws/2 → api-2<br/>/_internal, /metrics → 404"]
+  CL -->|"HTTP + WS"| CADDY
 
   subgraph REQ["Request tier (stateless)"]
     WEB["web: Next.js 16 + React 19<br/>SSR, live room,<br/>checkout, admin UI<br/>/_internal/revalidate<br/>(Compose network only)"]
@@ -16,28 +16,34 @@ flowchart TB
 
   subgraph DATA["Data stores"]
     RD[("Redis 8<br/>flashdrop Functions,<br/>stock gate, pub/sub")]
-    PG[("PostgreSQL 17<br/>orders, inventory, outbox,<br/>projections, psp schema")]
+    PG[("PostgreSQL 17<br/>orders, inventory, outbox,<br/>projections, listing jobs,<br/>psp schema")]
     KF[("Kafka 4 KRaft<br/>orders.v1 · 6 partitions<br/>key productId")]
   end
   API <-->|"fd_reserve, pub/sub"| RD
   API -->|"order txn + outbox"| PG
 
-  subgraph ASYNC["Async tier: one node image, role flags"]
-    WK["worker<br/>relay · sweeper + scheduler<br/>reconciler · listing"]
-    CON["consumers ×2<br/>payment · settlement · dashboard<br/>poison events → orders.v1.dlq"]
+  subgraph ASYNC["Async tier: one node image, WORKER_ROLES per service"]
+    WK["worker<br/>relay · sweeper + scheduler<br/>reconciler"]
+    CON["consumers ×2<br/>payment · settlement<br/>poison events → orders.v1.dlq"]
+    DCON["dashboard-consumers ×2<br/>projection in Postgres,<br/>totals → Redis pub/sub"]
+    LST["listing<br/>LLM listing jobs,<br/>status → Redis pub/sub"]
   end
-  PG <-->|"outbox, expiry, safety net, drop lock"| WK
+  RD <-->|"rebuild, settle,<br/>set status, PUBLISH"| WK
+  PG <-->|"outbox, expiry,<br/>safety net, drop lock"| WK
   KF <-->|"produce"| WK
-  RD <-->|"rebuild, settle, set status, PUBLISH"| WK
+  RD <-->|"confirm/release,<br/>PUBLISH"| CON
+  PG <-->|"CAS, payments"| CON
   KF -->|"orders.v1"| CON
-  PG <-->|"CAS, projection"| CON
-  RD <-->|"confirm/release, PUBLISH"| CON
-  WK -.->|"revalidate tag, internal HTTP"| WEB
+  KF -->|"orders.v1"| DCON
+  PG <-->|"jobs, SKIP LOCKED"| LST
+  WK -.->|"revalidate tag"| WEB
 
   subgraph EXT["Simulated / external"]
-    PSP["payment-mock<br/>charges, close-by-reference"]
+    PSP["payment-mock<br/>charges, close-by-reference,<br/>ledger in the psp schema"]
     LLM["Anthropic Messages API<br/>or fixture provider"]
   end
   CON -->|"charge, close"| PSP
-  PG <-->|"psp schema ledger"| PSP
-  WK -->|"vision + structured output"| LLM
+  LST -->|"vision + structured output"| LLM
+
+  OBS["tools profile (optional)<br/>Prometheus :9090 scrapes<br/>every app's /metrics<br/>Grafana :3001<br/>kafka-ui :8081"]
+  ASYNC -.->|"/metrics"| OBS

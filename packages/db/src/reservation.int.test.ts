@@ -6,6 +6,7 @@ import { createDb, type Db } from './client';
 import { getOrder } from './orders';
 import { insertOutboxEvents, orderEvent } from './outbox';
 import { createPool, POOL_PROFILES } from './pool';
+import { claimQuota, insertOrderOnConflictDoNothing, takeStock } from './reserve-steps';
 import { drops, outbox, userDropQuota } from './schema';
 import { createTestDatabase, type TestDatabase } from './test-database';
 import {
@@ -19,13 +20,10 @@ import {
 } from './test-fixtures';
 import { transaction } from './transaction';
 import {
-  claimQuota,
   fenceRedisGeneration,
-  insertOrderOnConflictDoNothing,
   insertRejectedTombstone,
   type ReservationOutcome,
   recordReservation,
-  takeStock,
 } from './transitions';
 
 /*

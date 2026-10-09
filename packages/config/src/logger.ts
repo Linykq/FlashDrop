@@ -6,11 +6,15 @@ export type { Logger } from 'pino';
 /** Secret variables from `.env`. Both URLs can embed a password. */
 const SECRET_VARIABLES = [
   'DATABASE_URL',
+  'PSP_DATABASE_URL',
   'REDIS_URL',
   'SESSION_SECRET',
   'REVALIDATE_SECRET',
   'TEST_ROUTES_SECRET',
   'ANTHROPIC_API_KEY',
+  'PSP_API_KEY',
+  'PSP_DB_PASSWORD',
+  'APP_DB_PASSWORD',
 ] as const;
 
 const SECRET_HEADERS = ['authorization', 'cookie', 'set-cookie', 'x-test-secret'] as const;

@@ -17,7 +17,7 @@ import { Skeleton, SkeletonText } from '../../../../components/ui/skeleton';
 import { TitleText } from '../../../../components/ui/title-text';
 import { newDropHref, productHref } from '../../../../lib/routes';
 import { getProduct } from '../../../../lib/server/catalog';
-import { requestOrigin } from '../../../../lib/server/request';
+import { publicOrigin } from '../../../../lib/server/origin';
 import { getViewer } from '../../../../lib/server/session';
 import { summarize } from '../../../../lib/text';
 
@@ -32,7 +32,7 @@ import { summarize } from '../../../../lib/text';
 
 export async function generateMetadata({ params }: PageProps<'/p/[slug]'>): Promise<Metadata> {
   const { slug } = await params;
-  const [detail, origin] = await Promise.all([getProduct(slug), requestOrigin()]);
+  const [detail, origin] = await Promise.all([getProduct(slug), publicOrigin()]);
   if (!detail) notFound();
   const { product } = detail;
   const description = summarize(product.description);

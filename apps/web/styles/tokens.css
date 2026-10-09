@@ -170,6 +170,8 @@
   /* A banner or an inline note appearing after the user's own action (§6.4). Opacity only, so it also runs
      under reduced motion (§6.5). */
   --animate-fade-in: fade-in 200ms var(--ease-standard);
+  /* Its exit, 200 ms ease-in like every exit (§6.1); it stays faded until the element is removed. */
+  --animate-fade-out: fade-out 200ms var(--ease-in) forwards;
   /* The `celebrate` spring (§6.3: visualDuration 0.5 s, bounce 0.3) sampled into a CSS curve over its 800 ms
      settle, peaking at 420 ms: the Buy button's "Reserved" check pops in without framer-motion in the
      product page's first load (§14). */
@@ -220,6 +222,11 @@
   }
   @keyframes fade-in {
     from {
+      opacity: 0;
+    }
+  }
+  @keyframes fade-out {
+    to {
       opacity: 0;
     }
   }

@@ -4,12 +4,27 @@ import { alert, BugError, type OrderStatus } from '@flashdrop/domain';
 import type { SettleOutcome } from '@flashdrop/inventory';
 import type { WorkerDeps } from '../deps';
 import { isTransientError } from '../loop';
+import { countQuarantine } from '../metrics';
 
 /*
  * What the settle-safety-net and orphan-scan loops do with each order they settle (design §4.6): each order
  * is handled on its own, so one failure costs one order, never the tick. A transient failure (Postgres or
  * Redis away) ends the tick instead, for the next one to retry; it is never quarantined.
  */
+
+/**
+ * The one place a quarantine is reported: counted (`fd_sweeper_quarantined_total{loop}`, §12) and alerted,
+ * always together, whichever loop parked the order.
+ */
+export function reportQuarantine(
+  logger: Pick<Logger, 'error'>,
+  loop: SweeperLoop,
+  orderId: string,
+  reason: unknown,
+): void {
+  countQuarantine(loop);
+  alert(logger, 'sweeper_quarantine', { loop, orderId, err: reason }, 'order quarantined');
+}
 
 /** Parks an order this loop cannot process: later ticks skip it, and every quarantine is an alert. */
 export async function quarantine(
@@ -19,7 +34,7 @@ export async function quarantine(
   reason: unknown,
 ): Promise<void> {
   const fresh = await quarantineOrder(deps.db, loop, orderId, reason);
-  if (fresh) alert(deps.logger, 'sweeper_quarantine', { loop, orderId, err: reason }, 'order quarantined');
+  if (fresh) reportQuarantine(deps.logger, loop, orderId, reason);
 }
 
 /** Logs a settle outcome; CONFLICT (an INV-8 breach) quarantines the order. */

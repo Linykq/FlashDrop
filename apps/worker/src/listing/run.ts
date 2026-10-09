@@ -2,7 +2,18 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ListingEffort, Logger } from '@flashdrop/config';
 import type { ImageKey, ListingCall, ListingJobStatus, ListingStatusMessage } from '@flashdrop/contracts';
-import type { Db } from '@flashdrop/db';
+import {
+  type ClaimedJob,
+  type Db,
+  finishListingJob,
+  type JobResult,
+  LEASE_SECONDS,
+  LeaseLostError,
+  markModelUnavailable,
+  recordListingCall,
+  releaseListingJob,
+  renewListingLease,
+} from '@flashdrop/db';
 import { alert, TransientError, UnprocessableInputError } from '@flashdrop/domain';
 import { type FlashdropRedis, REDIS_DEADLINE_MS, userChannel, withDeadline } from '@flashdrop/inventory';
 import {
@@ -13,16 +24,7 @@ import {
   MAX_LISTING_CALLS,
   NoFixtureError,
 } from '@flashdrop/llm';
-import {
-  type ClaimedJob,
-  finishListingJob,
-  type JobResult,
-  LeaseLostError,
-  markModelUnavailable,
-  recordListingCall,
-  releaseListingJob,
-  renewLease,
-} from './jobs';
+import { countLlmTokens } from '../metrics';
 
 /*
  * One run of one claimed listing job (design §10): read its stored photos, run the attempt-and-repair loop
@@ -33,7 +35,7 @@ import {
  * so a crash never loses what was billed; a resumed job spends only the calls the earlier run left.
  *
  * The lease is renewed every `HEARTBEAT_MS` while the run lives, so a model call of any length keeps it,
- * and a killed worker's job is due again within `LEASE_SECONDS` (`jobs.ts`). Each renewal changes the
+ * and a killed worker's job is due again within `LEASE_SECONDS` (`@flashdrop/db` listings.ts). Each renewal changes the
  * fencing token, so every write of the run goes through `leaseOf`, one at a time with the current token: a
  * write racing a renewal would fail its compare-and-set and lose the job to nobody. A renewal that finds the
  * job taken aborts the model call in flight.
@@ -63,7 +65,7 @@ export const UNAVAILABLE_ALERT_SECONDS = 10 * 60;
 /** Unavailable this long, the job FAILS: the admin can upload again once the model is back. */
 export const UNAVAILABLE_GIVE_UP_SECONDS = 30 * 60;
 /** Lease renewals while a run lives: four per `LEASE_SECONDS`, so one slow renewal never loses the job. */
-export const HEARTBEAT_MS = 30_000;
+export const HEARTBEAT_MS = (LEASE_SECONDS * 1_000) / 4;
 
 /** What a run did with its job. */
 export type RunOutcome = Extract<ListingJobStatus, 'READY' | 'NEEDS_REVIEW' | 'FAILED'> | 'RELEASED' | 'LOST';
@@ -94,7 +96,7 @@ function leaseOf(db: Db, jobId: string, initial: string): Lease {
   return {
     renew: () =>
       use(async (lease) => {
-        token = await renewLease(db, jobId, lease);
+        token = await renewListingLease(db, jobId, lease);
       }),
     use,
   };
@@ -270,6 +272,7 @@ async function run(
       beforeCall: () => lease.renew(),
       onCall: async (call) => {
         calls.push(call);
+        countLlmTokens(deps.model.provider, call);
         log.info({ call }, 'listing model call');
         await lease.use((current) => recordListingCall(deps.db, job.id, current, call));
       },

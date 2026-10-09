@@ -97,9 +97,10 @@ type SelectFieldProps = Omit<
   Omit<FieldFrameProps, 'children'>;
 
 /**
- * A native select in the text field's frame (§9.4): label always raised, `ChevronDown` 16 px from the right.
- * A required select also says so with `aria-required`: Chrome exposes `required` on a text field, but not on a
- * collapsed select.
+ * A native select in the text field's frame (§9.4): its label rests where a text field's does while the empty
+ * choice is selected, and rises once a value is chosen; `ChevronDown` sits 16 px from the right. A required
+ * select also says so with `aria-required`: Chrome exposes `required` on a text field, but not on a collapsed
+ * select.
  */
 export function SelectField({ id, label, helper, error, className, children, ...select }: SelectFieldProps) {
   return (

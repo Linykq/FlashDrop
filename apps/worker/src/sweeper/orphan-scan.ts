@@ -25,6 +25,7 @@ import { z } from 'zod';
 import type { WorkerDeps } from '../deps';
 import { isTransientError } from '../loop';
 import { withLoopLock } from '../postgres';
+import { reportRebuild } from '../rebuilds';
 import { oneOrder, recordSettle } from './settle';
 
 /*
@@ -149,8 +150,10 @@ export function createOrphanScan(deps: WorkerDeps): (signal: AbortSignal) => Pro
     try {
       const rebuilt = await tryWithDropLock(deps.lock, dropId, (lock) => rebuildDrop(deps, lock));
       // Busy: an admin action, the scheduler or the reconciler holds the drop; the next tick retries.
-      if (rebuilt.acquired)
-        log.warn({ stuck, outcome: rebuilt.value.kind }, 'drop rebuilt to drop stuck holds');
+      if (!rebuilt.acquired) return;
+      // Stuck holds are units Redis keeps away from buyers that Postgres never sold (§4.7). Their own reason,
+      // apart from the drift checks' `leak`, so a dashboard tells the two triggers apart.
+      reportRebuild(log.child({ stuck }), 'stuck_hold', rebuilt.value);
     } catch (err) {
       if (isTransientError(err)) throw err;
       log.error({ err, stuck }, 'rebuild for stuck holds failed');

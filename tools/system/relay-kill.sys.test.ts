@@ -3,12 +3,12 @@ import {
   compose,
   connectStores,
   createBuyers,
-  createTestDrop,
   killService,
   logEnds,
   outboxInFlight,
   outboxOf,
   partitionOf,
+  postTestDrop,
   problemsIn,
   purchaseAll,
   readPartition,
@@ -49,7 +49,7 @@ afterAll(async () => {
 describe('relay killed mid-batch', () => {
   it('loses no event: every outbox row reaches orders.v1, every order is PAID once, INV-5 holds', async () => {
     const buyers = await createBuyers(800);
-    const drop = await createTestDrop({ stock: buyers.length, perUserLimit: 1 });
+    const drop = await postTestDrop({ stock: buyers.length, perUserLimit: 1 });
     const partition = partitionOf(drop.productId);
     const from = (await logEnds(stores.admin)).get(partition) ?? '0';
 

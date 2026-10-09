@@ -11,7 +11,7 @@ import {
 import type { Api } from '../../http/api';
 import { rateLimitHook } from '../../http/rate-limit';
 import { adminOnly, requireAdmin } from '../../http/session';
-import type { ListingService } from './listings-store';
+import type { ListingService } from '../../services/admin-listings';
 import { LISTING_MULTIPART_OPTIONS, readListingUpload } from './listings-upload';
 
 /** Uploads per admin per minute: each one can cost up to three model calls (design §11). */

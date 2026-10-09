@@ -180,8 +180,10 @@ function StepButton({
         'opacity-0 transition-opacity duration-200 ease-standard',
         direction === 'previous' ? 'left-4' : 'right-4',
         // Exclusive sets: with both opacities in the class list, the stylesheet's order (100 after 40) would win.
+        // Focused at an end, the button and its ring stay whole and only the glyph dims: at 40% the ring would
+        // fade with it, under 2:1 on a light photo (WCAG 2.4.7, 1.4.11).
         disabled
-          ? 'cursor-default group-hover:opacity-40 focus-visible:opacity-40'
+          ? 'cursor-default group-hover:opacity-40 focus-visible:opacity-100 focus-visible:[&>svg]:opacity-40'
           : 'group-hover:opacity-100 focus-visible:opacity-100',
       )}
     >

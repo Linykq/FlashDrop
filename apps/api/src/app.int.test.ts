@@ -100,8 +100,8 @@ describe('catalog', () => {
     expect(response.statusCode).toBe(200);
     const { drops: listed } = DropListResponse.parse(response.json());
     expect(listed.map((drop) => [drop.product.slug, drop.status])).toEqual([
-      ['sage-wireless-headphones', 'LIVE'],
-      ['faceted-eau-de-parfum', 'SCHEDULED'],
+      ['faceted-eau-de-parfum', 'LIVE'],
+      ['sage-wireless-headphones', 'SCHEDULED'],
       ['linen-band-collar-shirt', 'SCHEDULED'],
     ]);
     expect(listed[0]).toMatchObject({
@@ -111,7 +111,8 @@ describe('catalog', () => {
       room: { slug: 'studio', title: 'FlashDrop Studio' },
       stock: { avail: 250, held: 0, sold: 0, status: 'LIVE', gen: 0, seq: 0 },
     });
-    expect(listed[1]?.room).toBeNull();
+    // The studio's rundown: the next two drops sell in the room too.
+    expect(listed.map((drop) => drop.room?.slug ?? null)).toEqual(['studio', 'studio', 'studio']);
     expect(listed.every((drop) => drop.product.imageKeys.length > 0)).toBe(true);
   });
 
@@ -130,15 +131,15 @@ describe('catalog', () => {
 
   it('returns a product with its open drop, or its latest ended one, or none', async () => {
     const live = ProductDetail.parse(
-      (await app.inject({ url: '/api/v1/products/sage-wireless-headphones' })).json(),
+      (await app.inject({ url: '/api/v1/products/faceted-eau-de-parfum' })).json(),
     );
     expect(live.drop).toMatchObject({
       id: LIVE_DROP,
       status: 'LIVE',
-      priceCents: 14_900,
+      priceCents: 6_800,
       room: { slug: 'studio' },
     });
-    expect(live.product.attributes.category).toBe('audio');
+    expect(live.product.attributes.category).toBe('fragrance');
     expect(live.product.attributes.photoCredits.length).toBe(live.product.imageKeys.length);
 
     const ended = ProductDetail.parse(
@@ -162,7 +163,7 @@ describe('catalog', () => {
     });
     expect(studio.drop).toMatchObject({
       id: LIVE_DROP,
-      product: { slug: 'sage-wireless-headphones' },
+      product: { slug: 'faceted-eau-de-parfum' },
       stock: { avail: 250, status: 'LIVE' },
     });
 

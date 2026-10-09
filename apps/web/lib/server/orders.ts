@@ -9,7 +9,7 @@ import {
 import { cookies } from 'next/headers';
 import { unstable_rethrow } from 'next/navigation';
 import { cache } from 'react';
-import { type HeldOrder, liveHold } from '../hold';
+import { NO_CLAIM, type ViewerClaim, viewerClaim } from '../hold';
 import { ApiError, apiGet } from './api';
 import { log } from './log';
 import type { Viewer } from './session';
@@ -66,24 +66,25 @@ export const readMyOrders = cache(
 );
 
 /**
- * The most recent orders searched for a live hold on a drop. A hold lives a few minutes at most, so it is
- * always among a buyer's latest orders.
+ * The most recent orders searched for the viewer's claim on a drop. A hold lives a few minutes at most, so it
+ * is always among a buyer's latest orders; a drop allows at most 10 units per person, so its paid orders are
+ * too, unless the buyer placed many orders on other drops since.
  */
 const RECENT_ORDERS = 20;
 
 /**
- * The signed-in viewer's live hold on the drop, which the Buy button offers back (design-system §9.13), or
- * `null`. Without one the page still sells: an api that can't list orders right now costs only the
- * reminder, and is logged.
+ * The signed-in viewer's claim on the drop: their live hold, which the Buy button offers back, and the units
+ * they already placed (design-system §9.13). Without a viewer, or when api can't list orders right now, the
+ * page still sells: that costs only the reminder, and is logged.
  */
-export async function readHeldOrder(viewer: Viewer | null, dropId: string): Promise<HeldOrder | null> {
-  if (viewer === null) return null;
+export async function readViewerClaim(viewer: Viewer | null, dropId: string): Promise<ViewerClaim> {
+  if (viewer === null) return NO_CLAIM;
   try {
     const read = await readMyOrders(RECENT_ORDERS);
-    return read.kind === 'ok' ? liveHold(read.value, dropId) : null;
+    return read.kind === 'ok' ? viewerClaim(read.value, dropId) : NO_CLAIM;
   } catch (error) {
     unstable_rethrow(error);
-    log().warn({ err: error, dropId }, 'cannot list orders to find a live hold');
-    return null;
+    log().warn({ err: error, dropId }, "cannot list orders to find the viewer's claim");
+    return NO_CLAIM;
   }
 }

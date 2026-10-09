@@ -121,6 +121,7 @@ export const PspLedgerResponse = z.strictObject({
 export type PspLedgerResponse = z.infer<typeof PspLedgerResponse>;
 
 export const PSP_ERROR_CODES = [
+  'unauthorized',
   'validation_failed',
   'not_found',
   'idempotency_key_reused',
@@ -129,7 +130,10 @@ export const PSP_ERROR_CODES = [
 ] as const;
 export type PspErrorCode = (typeof PSP_ERROR_CODES)[number];
 
-/** Every PSP error answer: 400, 404, 422 (a key reused with another body), 503 (with Retry-After), 500. */
+/**
+ * Every PSP error answer: 400, 401 (no or a wrong API key), 404, 422 (a key reused with another body), 503
+ * (with Retry-After), 500.
+ */
 export const PspErrorBody = z.strictObject({
   error: z.strictObject({
     code: z.enum(PSP_ERROR_CODES),

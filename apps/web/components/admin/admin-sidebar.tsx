@@ -14,7 +14,7 @@ type SidebarItem = {
 
 const ITEMS: readonly SidebarItem[] = [
   { href: '/admin/drops', label: 'Drops', icon: Layers, matches: ['/admin/drops', '/admin/dashboard'] },
-  { href: '/admin/listings/new', label: 'New listing', icon: Sparkles, matches: ['/admin/listings'] },
+  { href: '/admin/listings', label: 'Listings', icon: Sparkles, matches: ['/admin/listings'] },
   { href: '/admin/health', label: 'Health', icon: HeartPulse, matches: ['/admin/health'] },
 ];
 
@@ -26,10 +26,17 @@ const itemClass =
 /**
  * The admin sidebar (design system §10.7): 240 px and sticky beside the content from 1069 px, a row of the
  * same links under the bar below that, scrolling sideways. The current area's item is marked, also on the
- * pages reached from it (a drop's dashboard is under Drops). The storefront link leaves the area, so its icon
- * is `ArrowUpRight` (§7).
+ * pages reached from it (a drop's dashboard is under Drops). Listings counts the drafts waiting for review,
+ * so one never waits unseen. The storefront link leaves the area, so its icon is `ArrowUpRight` (§7).
  */
-export function AdminSidebar({ pathname = null }: { pathname?: string | null }) {
+export function AdminSidebar({
+  pathname = null,
+  toReview = 0,
+}: {
+  pathname?: string | null;
+  /** Listing drafts waiting for the admin (READY, NEEDS_REVIEW). */
+  toReview?: number;
+}) {
   return (
     <nav
       aria-label="Admin"
@@ -49,6 +56,12 @@ export function AdminSidebar({ pathname = null }: { pathname?: string | null }) 
               >
                 <Icon size={20} className="shrink-0" />
                 {label}
+                {href === '/admin/listings' && toReview > 0 && (
+                  <span className="ml-auto inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-fill-tertiary px-1.5 text-caption font-semibold tabular-nums max-md:ml-0">
+                    {toReview}
+                    <span className="sr-only"> to review</span>
+                  </span>
+                )}
               </Link>
             </li>
           );
@@ -66,6 +79,6 @@ export function AdminSidebar({ pathname = null }: { pathname?: string | null }) 
 }
 
 /** The sidebar with the current page marked. Reading the pathname suspends while prerendering. */
-export function CurrentAdminSidebar() {
-  return <AdminSidebar pathname={usePathname()} />;
+export function CurrentAdminSidebar({ toReview }: { toReview?: number }) {
+  return <AdminSidebar pathname={usePathname()} toReview={toReview} />;
 }

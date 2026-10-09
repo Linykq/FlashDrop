@@ -1,11 +1,7 @@
 'use client';
 
-import { CalendarClock } from 'lucide-react';
 import { type LiveLevel, useLiveStock } from '../../lib/live-stock';
-import { DropStatusPill } from '../ui/status-pill';
-import { Countdown } from './countdown';
-import { LiveBadge } from './live-badge';
-import { LocalTime } from './local-time';
+import { DropStatusLine } from './drop-status-line';
 
 type LiveDropStatusProps = {
   dropId: string;
@@ -13,31 +9,19 @@ type LiveDropStatusProps = {
   startsAt: string;
   endsAt: string;
   serverNow: number;
+  /** The home hero's badge pulses (§9.11); the product page's doesn't. */
+  pulse?: boolean;
 };
 
 /**
- * "[LIVE] Ends in 12:04" above the product title (§10.2), on the same live stock as the purchase panel, so
- * both change together when the drop opens, pauses or ends. A scheduled drop shows when it opens, as the home
- * hero does, and leaves the state to LiveStock's countdown and the Buy button: a "Scheduled" pill would only
- * repeat them (§1.4). Paused and ended drops show their status pill.
+ * The status line above a drop's title (§10.1, §10.2) on the drop's live stock, so it changes with the stock
+ * and the purchase panel when the drop opens, sells out, pauses or ends.
  */
-export function LiveDropStatus({ dropId, seed, startsAt, endsAt, serverNow }: LiveDropStatusProps) {
+export function LiveDropStatus({ dropId, seed, ...line }: LiveDropStatusProps) {
   const { level } = useLiveStock(dropId, seed);
   return (
     <div className="flex min-h-6 items-center gap-2 text-footnote text-label-secondary">
-      {level.status === 'LIVE' ? (
-        <>
-          <LiveBadge />
-          <Countdown target={endsAt} serverNow={serverNow} verb="Ends" />
-        </>
-      ) : level.status === 'SCHEDULED' ? (
-        <span className="inline-flex items-center gap-1.5">
-          <CalendarClock size={16} />
-          <LocalTime iso={startsAt} />
-        </span>
-      ) : (
-        <DropStatusPill status={level.status} />
-      )}
+      <DropStatusLine stock={level} {...line} />
     </div>
   );
 }

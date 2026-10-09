@@ -17,10 +17,10 @@ import { LISTING_PROMPT_VERSION } from '@flashdrop/llm';
 import sharp from 'sharp';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Api } from '../../http/api';
+import { listingInputHash } from '../../services/admin-listings';
 import { ORIGIN, sessionToken } from '../../test/fakes';
 import { type MultipartPart, multipartBody } from '../../test/listings-fake';
 import { createTestStack, type TestStack } from '../../test/stack';
-import { listingInputHash } from './listings-store';
 
 /*
  * The listing upload and approval against Postgres and the real image pipeline (design §10): the stored

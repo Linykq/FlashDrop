@@ -1,23 +1,24 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fastifyCookie from '@fastify/cookie';
-import type { ApiRole, Logger } from '@flashdrop/config';
+import type { ApiRole, DependencyCheck, Logger } from '@flashdrop/config';
 import { SESSION_COOKIE } from '@flashdrop/config/constants';
+import type { ReservationService } from '@flashdrop/inventory';
 import Fastify, { type FastifyBaseLogger, LogController, type RawServerDefault } from 'fastify';
 import type { Api } from './http/api';
 import { originGuard } from './http/origin';
 import { handleError, handleNotFound } from './http/problem';
 import { type RateLimitCounter, registerRateLimits } from './http/rate-limit';
-import { createSessionCodec } from './http/session';
+import { createAdminRoleCheck, createSessionCodec } from './http/session';
 import { traceIdOf } from './http/trace';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from './http/zod';
+import { METRICS_PATH, metricsRoute } from './metrics';
 import { adminRoutes } from './routes/admin';
 import { adminCatalogRoutes } from './routes/admin/catalog';
 import { adminDashboardRoutes } from './routes/admin/dashboard';
 import { adminHealthRoutes } from './routes/admin/health';
 import { listingRoutes } from './routes/admin/listings';
-import type { ListingService } from './routes/admin/listings-store';
-import { authRoutes } from './routes/auth';
+import { authRoutes, devLoginRoutes } from './routes/auth';
 import { catalogRoutes } from './routes/catalog';
 import { healthRoutes, PROBE_ROUTES } from './routes/health';
 import { orderRoutes } from './routes/orders';
@@ -28,10 +29,9 @@ import type { AdminCatalogService } from './services/admin-catalog';
 import type { AdminDashboardService } from './services/admin-dashboard';
 import type { AdminDropService } from './services/admin-drops';
 import type { AdminHealthService } from './services/admin-health';
+import type { ListingService } from './services/admin-listings';
 import type { CatalogStore } from './services/catalog';
-import type { DependencyCheck } from './services/health';
 import type { OrderService } from './services/orders';
-import type { ReservationService } from './services/reserve';
 import type { StockReader } from './services/stock';
 import type { TestRouteService } from './services/testing';
 import type { UserStore } from './services/users';
@@ -66,11 +66,17 @@ export interface TestRoutesOptions {
 
 export interface AppOptions {
   readonly logger: Logger;
-  /** `API_ROLES`: `http` serves REST and uploads; `ws` is the WebSocket gateway from M5. */
+  /** `API_ROLES`: `http` serves REST and uploads; `ws` is the WebSocket gateway. */
   readonly roles: readonly ApiRole[];
   /** `WS_ALLOWED_ORIGINS`, also the allowlist for mutating requests (design §11). */
   readonly allowedOrigins: readonly string[];
   readonly sessionSecret: string;
+  /** `COOKIE_SECURE`: whether `fd_session` is marked Secure (§11). */
+  readonly cookieSecure: boolean;
+  /** `ENABLE_DEV_LOGIN`: mounts the passwordless dev login (§5.1, §11). */
+  readonly devLogin: boolean;
+  /** `TRUST_PROXY`: the peers whose forwarded headers name the client (§11). */
+  readonly trustProxy: readonly string[];
   readonly uploadDir: string;
   readonly services: AppServices;
   /** Reservations per second: `RATE_LIMIT_USER_PER_SEC` and `RATE_LIMIT_IP_PER_SEC` (§11). */
@@ -85,7 +91,7 @@ export interface AppOptions {
   readonly now?: () => Date;
 }
 
-/** JSON bodies in FlashDrop are a few hundred bytes; the multipart listing upload (M8) sets its own limit. */
+/** JSON bodies in FlashDrop are a few hundred bytes; the multipart listing upload sets its own limit. */
 const BODY_LIMIT_BYTES = 64 * 1024;
 
 /**
@@ -93,6 +99,9 @@ const BODY_LIMIT_BYTES = 64 * 1024;
  * about to reuse, which would fail that request with a 502.
  */
 const KEEP_ALIVE_TIMEOUT_MS = 125_000;
+
+/** Routes polled by machines, every few seconds each: Compose's probes and Prometheus. */
+const QUIET_ROUTES: ReadonlySet<string> = new Set([...PROBE_ROUTES, METRICS_PATH]);
 
 /** Builds the api without listening, so tests drive it with `inject()`. */
 export async function buildApp(options: AppOptions): Promise<Api> {
@@ -105,10 +114,11 @@ export async function buildApp(options: AppOptions): Promise<Api> {
     childLoggerFactory: (logger, bindings, childOptions, raw) =>
       logger.child({ ...bindings, traceId: traceIdOf(raw) }, childOptions),
     logController: new LogController({
-      disableRequestLogging: (request) => PROBE_ROUTES.has(request.routeOptions.url ?? ''),
+      disableRequestLogging: (request) => QUIET_ROUTES.has(request.routeOptions.url ?? ''),
     }),
-    // Forwarded headers are trusted only from Caddy and web: loopback in dev, the Compose network in the stack.
-    trustProxy: ['loopback', 'uniquelocal'],
+    // Forwarded headers count only from the edge (`TRUST_PROXY`): any other peer is taken as the client, so
+    // nothing else on the network picks the address the per-IP limits count.
+    trustProxy: [...options.trustProxy],
     bodyLimit: BODY_LIMIT_BYTES,
     keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS,
   }).withTypeProvider<ZodTypeProvider>();
@@ -117,7 +127,8 @@ export async function buildApp(options: AppOptions): Promise<Api> {
   app.setSerializerCompiler(serializerCompiler);
   app.setErrorHandler(handleError);
   app.setNotFoundHandler(handleNotFound);
-  // JSON (and from M8 multipart) only: text/plain is a CORS "simple" type that a cross-site form can send.
+  // JSON (and, on the listing upload, multipart) only: text/plain is a CORS "simple" type that a cross-site
+  // form can send.
   app.removeContentTypeParser('text/plain');
 
   app.decorateRequest('traceId', {
@@ -130,9 +141,11 @@ export async function buildApp(options: AppOptions): Promise<Api> {
   app.addHook('onRequest', originGuard(options.allowedOrigins));
   await app.register(fastifyCookie);
   const sessions = createSessionCodec(options.sessionSecret);
+  const confirmAdmin = createAdminRoleCheck(async (userId) => (await services.users.findById(userId))?.role);
   app.addHook('onRequest', async (request) => {
     const token = request.cookies[SESSION_COOKIE];
-    request.session = token === undefined ? null : await sessions.verify(token);
+    const claims = token === undefined ? null : await sessions.verify(token);
+    request.session = claims === null ? null : await confirmAdmin(claims);
   });
   const limits = await registerRateLimits(app, {
     counter: services.rateLimitCounter,
@@ -144,7 +157,9 @@ export async function buildApp(options: AppOptions): Promise<Api> {
     async (api: Api) => {
       healthRoutes(api, services.checks);
       if (roles.has('http')) {
-        authRoutes(api, { users: services.users, sessions });
+        const auth = { users: services.users, cookieSecure: options.cookieSecure };
+        authRoutes(api, auth);
+        if (options.devLogin) devLoginRoutes(api, { ...auth, sessions });
         catalogRoutes(api, { catalog: services.catalog, stock: services.stock, now });
         reservationRoutes(api, { reservations: services.reservations, limits });
         orderRoutes(api, { orders: services.orders });
@@ -158,6 +173,7 @@ export async function buildApp(options: AppOptions): Promise<Api> {
     },
     { prefix: '/api/v1' },
   );
+  metricsRoute(app);
   if (roles.has('http')) uploadRoutes(app, options.uploadDir);
   if (roles.has('ws') && options.realtime !== undefined) {
     await app.register(websocketGateway, {

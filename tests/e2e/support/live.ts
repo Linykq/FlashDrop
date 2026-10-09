@@ -15,6 +15,12 @@ const HAVE_CURRENT_DATA = 2;
 /** The player itself: it takes focus for its single-key shortcuts. */
 export const player = (page: Page): Locator => page.getByRole('region', { name: 'Live stream' });
 
+/**
+ * The unmute pill's name: "Tap to unmute" where the pointer is a finger, "Unmute" with a mouse (CSS picks one,
+ * design-system §10.3), so it depends on the context's pointer rather than its viewport.
+ */
+export const UNMUTE = /^(Tap to unmute|Unmute)$/;
+
 /** "2 watching": the count on the video, its unit read by screen readers only. */
 export const viewerCount = (page: Page): Locator => page.getByRole('main').getByText(/^[\d,]+ watching$/);
 

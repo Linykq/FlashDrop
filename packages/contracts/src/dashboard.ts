@@ -122,6 +122,8 @@ export const DashboardDrop = z.object({
   status: DropStatus,
   startsAt: IsoDateTime,
   endsAt: IsoDateTime,
+  /** When it became ENDED (an early end, or `endsAt` when the clock closed it); null until then. */
+  endedAt: IsoDateTime.nullable(),
   priceCents: Cents,
   currency: Currency,
   /** `drop_inventory.total`: what sell-through is measured against. */

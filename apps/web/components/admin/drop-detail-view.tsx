@@ -16,7 +16,7 @@ import { DropStatusPill } from '../ui/status-pill';
 import { TitleText } from '../ui/title-text';
 import { AdminTime, DropWindow } from './admin-time';
 import { DropActions } from './drop-actions';
-import { DropSheet } from './drop-sheet';
+import { DropSheet, type DropSheetMode } from './drop-sheet';
 import { useLiveStock } from './live';
 import { PageHeader } from './page-header';
 import type { ActionFailure } from './problem-copy';
@@ -43,10 +43,11 @@ const cardClass = 'rounded-lg bg-surface p-5 elevation-1 sm:p-6';
  * the stock is Redis's while the drop is armed, since Redis admits every reservation (SD §4.3).
  */
 export function DropDetailView({ drop, stock, products, rooms }: DropDetailViewProps) {
-  const [editing, setEditing] = useState(false);
+  const [sheet, setSheet] = useState<DropSheetMode | null>(null);
   const [failure, setFailure] = useState<ActionFailure | null>(null);
   const router = useRouter();
   const armed = drop.status !== 'DRAFT';
+  const selling = drop.status === 'LIVE' || drop.status === 'PAUSED';
   const live = useLiveStock(armed ? drop.id : null, stock);
   const rebuilding = live.level?.status === 'RECONCILING';
 
@@ -62,11 +63,28 @@ export function DropDetailView({ drop, stock, products, rooms }: DropDetailViewP
       <PageHeader
         leading={<ProductThumb imageKey={drop.product.imageKeys[0]} size="md" />}
         title={<TitleText text={drop.product.title} />}
-        actions={<DropActions drop={drop} onEdit={() => setEditing(true)} onFailure={setFailure} />}
+        actions={
+          <DropActions
+            drop={drop}
+            onEdit={() => setSheet({ kind: 'edit', drop })}
+            onRunAgain={() => setSheet({ kind: 'copy', drop })}
+            onFailure={setFailure}
+          />
+        }
       >
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-footnote text-label-secondary">
           <DropStatusPill status={rebuilding ? 'RECONCILING' : drop.status} />
           <DropWindow startsAt={drop.startsAt} endsAt={drop.endsAt} />
+          {/* While it sells, the dashboard is where the admin is headed: up here, not under Settings. */}
+          {selling && (
+            <Link
+              href={`/admin/dashboard/${drop.id}`}
+              className="-my-3 inline-flex min-h-11 items-center gap-1 text-accent-label"
+            >
+              Open dashboard
+              <ChevronRight size={14} />
+            </Link>
+          )}
         </div>
       </PageHeader>
       {failure && (
@@ -118,14 +136,7 @@ export function DropDetailView({ drop, stock, products, rooms }: DropDetailViewP
           </ul>
         </nav>
       </div>
-      {drop.status === 'DRAFT' && (
-        <DropSheet
-          mode={editing ? { kind: 'edit', drop } : null}
-          onClose={() => setEditing(false)}
-          products={products}
-          rooms={rooms}
-        />
-      )}
+      <DropSheet mode={sheet} onClose={() => setSheet(null)} products={products} rooms={rooms} />
     </>
   );
 }
@@ -172,7 +183,7 @@ function LinkRow({ href, label, leaves = false }: { href: string; label: string;
 
 /**
  * Live stock (design system §10.8): the lg meter with a legend of every number. A draft has no live stock
- * yet; its card says so and shows what it will sell.
+ * yet; its card says so and shows what it will sell. An ended drop's card is its final stock.
  */
 function StockCard({
   drop,
@@ -185,13 +196,14 @@ function StockCard({
 }) {
   const { total, reserved, sold } = drop.inventory;
   const stock = level ?? { avail: total - reserved - sold, held: reserved, sold };
+  const ended = drop.status === 'ENDED';
   return (
     <section aria-labelledby="drop-stock" className={cardClass}>
       <div className="flex items-center justify-between gap-4">
         <h2 id="drop-stock" className="text-headline">
-          Live stock
+          {ended ? 'Final stock' : 'Live stock'}
         </h2>
-        {paused && drop.status !== 'DRAFT' && (
+        {paused && drop.status !== 'DRAFT' && !ended && (
           <p className="inline-flex items-center gap-1.5 text-footnote text-label-secondary">
             <WifiOff size={16} />
             Live updates paused
@@ -203,7 +215,7 @@ function StockCard({
           Live stock starts when you arm the drop. It will sell {formatCount(total)} units.
         </p>
       ) : (
-        <StockSummary avail={stock.avail} held={stock.held} sold={stock.sold} total={total} />
+        <StockSummary avail={stock.avail} held={stock.held} sold={stock.sold} total={total} ended={ended} />
       )}
     </section>
   );

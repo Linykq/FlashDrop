@@ -1,6 +1,7 @@
 import type { Logger } from '@flashdrop/config';
 import { isPostgresUnavailableError } from '@flashdrop/db';
 import { alert } from '@flashdrop/domain';
+import type { ReserveBreaker } from '@flashdrop/inventory';
 
 /*
  * The Postgres breaker of the reserve path (design §5.2: `if (!pgBreaker.healthy()) throw http503('RETRY')`).
@@ -20,13 +21,6 @@ import { alert } from '@flashdrop/domain';
  * real traffic never closes the breaker, and stale failures never reopen it.
  */
 
-export interface PgBreaker {
-  /** False while open: the caller answers 503 `RETRY` without touching Redis. */
-  healthy(): boolean;
-  /** Runs one Postgres call of the reserve path, counting its outcome. */
-  run<T>(call: () => Promise<T>): Promise<T>;
-}
-
 export interface PgBreakerOptions {
   /** Resolves when Postgres answers (`postgresCheck(pool)`), rejects otherwise. */
   readonly probe: () => Promise<void>;
@@ -38,7 +32,7 @@ export interface PgBreakerOptions {
   readonly now?: () => number;
 }
 
-export function createPgBreaker(options: PgBreakerOptions): PgBreaker {
+export function createPgBreaker(options: PgBreakerOptions): ReserveBreaker {
   const threshold = options.failureThreshold ?? 3;
   const probeIntervalMs = options.probeIntervalMs ?? 1_000;
   const alertIntervalMs = options.alertIntervalMs ?? 60_000;

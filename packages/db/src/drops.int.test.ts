@@ -169,6 +169,64 @@ describe('drop administration (§4.7, §5.1)', () => {
     expect(schedule.get(live.dropId)?.transitionDue).toBe(false);
   });
 
+  // Regression: a draft whose window had passed could be armed, and went straight from SCHEDULED to ENDED,
+  // burning the drop for its product.
+  it('refuses a window that has already ended: on create, on a PATCH of the times, and on arm', async () => {
+    const past = { startsAt: new Date(Date.now() - 2 * HOUR), endsAt: new Date(Date.now() - HOUR) };
+    const refusal = await createDraftDrop(db, await settings(past)).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(ValidationError);
+    expect(refusal).toMatchObject({ issues: [{ path: 'endsAt', message: 'endsAt must be in the future' }] });
+
+    const { drop } = await createDraftDrop(db, await settings());
+    await expect(patchDraftDrop(db, drop.id, past)).rejects.toBeInstanceOf(ValidationError);
+    expect((await getAdminDrop(db, drop.id))?.drop.endsAt.getTime()).toBe(drop.endsAt.getTime());
+
+    // Time passes a draft by: an unrelated edit is still accepted, but arming is refused and changes nothing.
+    await moveWindow(drop.id, -7200, -3600);
+    expect((await patchDraftDrop(db, drop.id, { stock: 60 })).inventory.total).toBe(60);
+    const armed = applyDropAction(db, drop.id, 'arm');
+    await expect(armed).rejects.toMatchObject({
+      code: 'WINDOW_PASSED',
+      status: 409,
+      message: "This drop's window has passed. Edit its times first.",
+    });
+    expect((await getAdminDrop(db, drop.id))?.drop.status).toBe('DRAFT');
+
+    // A window that opened already but is still running arms, and goes LIVE on the next scheduler tick.
+    await moveWindow(drop.id, -60, 3600);
+    expect(await applyDropAction(db, drop.id, 'arm')).toEqual({ from: 'DRAFT', to: 'SCHEDULED' });
+  });
+
+  it('records when a drop ended: the moment of an early end, or its scheduled end when the clock closed it', async () => {
+    const endedAt = async (dropId: string) => (await getAdminDrop(db, dropId))?.drop.endedAt ?? null;
+    const dbNow = async () => {
+      const [row] = await db.select({ now: sql<string>`now()::text` }).from(drops).limit(1);
+      return new Date(row?.now ?? Number.NaN);
+    };
+
+    const early = await createDraftDrop(db, await settings());
+    await applyDropAction(db, early.drop.id, 'arm');
+    expect(await endedAt(early.drop.id)).toBeNull();
+    const before = await dbNow();
+    await applyDropAction(db, early.drop.id, 'end');
+    const ended = await endedAt(early.drop.id);
+    expect(ended?.getTime()).toBeGreaterThanOrEqual(before.getTime());
+    expect(ended?.getTime()).toBeLessThan(early.drop.endsAt.getTime());
+
+    // The scheduler, a minute late: the drop still ended at its scheduled end.
+    const { dropId } = await createDrop(db, { status: 'LIVE' });
+    await moveWindow(dropId, -3600, -60);
+    expect(await applyDueDropTransition(db, dropId)).toEqual({ from: 'LIVE', to: 'ENDED' });
+    const scheduled = await getAdminDrop(db, dropId);
+    expect(scheduled?.drop.endedAt).toEqual(scheduled?.drop.endsAt);
+
+    // A resume past the window lands on ENDED the same way.
+    const paused = await createDrop(db, { status: 'PAUSED', startsIn: -3600, endsIn: -30 });
+    expect(await applyDropAction(db, paused.dropId, 'resume')).toEqual({ from: 'PAUSED', to: 'ENDED' });
+    const resumed = await getAdminDrop(db, paused.dropId);
+    expect(resumed?.drop.endedAt).toEqual(resumed?.drop.endsAt);
+  });
+
   // Regression: both CTEs took FOR UPDATE, which conflicts with the FOR KEY SHARE that every in-flight
   // reserve holds on the drops row through its foreign keys, so a hot drop could be neither paused nor ended.
   it('changes the status of a drop while reserve transactions hold its row for their foreign keys', async () => {

@@ -1,28 +1,29 @@
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createLogger } from '@flashdrop/config';
-import { createDb, createPool } from '@flashdrop/db';
+import { closeAll, createLogger, installGracefulShutdown, logUncaughtExceptions } from '@flashdrop/config';
+import { createDb, createPool, outboxBacklog } from '@flashdrop/db';
 import {
   connectCommandClient,
   createSyncNudger,
   DROP_LOCK_POOL_PROFILE,
   type FlashdropRedis,
 } from '@flashdrop/inventory';
-import { createKafka, createPublisher, createWebRevalidator } from '@flashdrop/messaging';
+import { createGroupLagReader, createKafka, createPublisher } from '@flashdrop/messaging';
 import { consumerConnections } from './consumers';
 import { loadWorkerEnv } from './env';
 import { type HealthServer, startHealthServer } from './health';
+import { collectProcessMetrics, consumerGroupsOf, registerScrapeGauges, registry } from './metrics';
 import { WORKER_POOL_PROFILE } from './postgres';
+import { createWebRevalidator } from './revalidate';
 import { type RunningRole, startRoles } from './roles';
 
-/**
- * Below Compose's 10 s stop grace period, so a stuck shutdown still exits with our own log line. A consumer
- * stops within its PSP timeout (5 s): no new message starts once it stops, and the one in flight finishes.
- * The relay stops at once unless a batch is mid-send, which settles within the producer's 10 s message
- * timeout: during a Kafka outage the timer can win, and the exit code 1 says so. Nothing is lost: the
- * batch's transaction rolls back with the process.
+/*
+ * Shutdown is bounded by `SHUTDOWN_TIMEOUT_MS` (8 s, under Compose's 10 s grace). A consumer stops within its
+ * PSP timeout (5 s): no new message starts once it stops, and the one in flight finishes. The relay stops
+ * at once unless a batch is mid-send, which settles within the producer's 10 s message timeout: during a
+ * Kafka outage the timer can win, and the exit code 1 says so. Nothing is lost: the batch's transaction
+ * rolls back with the process.
  */
-const SHUTDOWN_TIMEOUT_MS = 8_000;
 
 /** The loops' connections: their ticks, the reconciler, the nudger. */
 const LOOP_CONNECTIONS = 10;
@@ -30,8 +31,7 @@ const LOOP_CONNECTIONS = 10;
 const env = loadWorkerEnv();
 const logger = createLogger({ name: 'worker', level: env.LOG_LEVEL });
 
-// Logged synchronously before Node prints the crash, so it reaches the JSON logs with context.
-process.on('uncaughtExceptionMonitor', (err, origin) => logger.fatal({ err, origin }, 'uncaught exception'));
+logUncaughtExceptions(logger);
 
 const instance = `worker:${hostname()}`;
 const pool = createPool({
@@ -58,45 +58,50 @@ const kafka = createKafka({
 });
 const publisher = createPublisher({ kafka, logger });
 
+// The scrape-time gauges of this process's roles (§12). The lag reader never joins a group, and its clients
+// connect on the first scrape, so without Prometheus it costs nothing.
+const groupIds = consumerGroupsOf(env.WORKER_ROLES);
+const lagReader = groupIds.length > 0 ? createGroupLagReader(kafka) : undefined;
+collectProcessMetrics();
+registerScrapeGauges({
+  ...(env.WORKER_ROLES.includes('relay') ? { outbox: () => outboxBacklog(db) } : {}),
+  ...(lagReader === undefined ? {} : { lag: { groupIds, read: (groupId) => lagReader.read(groupId) } }),
+  logger,
+});
+
 let redis: FlashdropRedis | undefined;
 let roles: RunningRole[] = [];
 let health: HealthServer | undefined;
 
-/** Stops the roles first (each waits for its work in flight), then closes what they used. */
+/**
+ * Stops the roles first (each waits for its work in flight), then closes what they used, the pools last.
+ * Every failure is logged by name and makes the exit code 1; nothing stops the closes after it.
+ */
 async function close(): Promise<void> {
-  await Promise.all(roles.map((role) => role.stop()));
-  await health?.close();
-  await publisher.close();
-  await redis?.close();
-  await Promise.all([pool.end(), lockPool.end()]);
+  const closed = [
+    await closeAll(logger, Object.fromEntries(roles.map((role) => [`role ${role.role}`, () => role.stop()]))),
+    await closeAll(logger, {
+      health: async () => health?.close(),
+      lagReader: async () => lagReader?.close(),
+      publisher: () => publisher.close(),
+      redis: async () => redis?.close(),
+    }),
+    await closeAll(logger, { pool: () => pool.end(), lockPool: () => lockPool.end() }),
+  ];
+  if (closed.includes(false)) process.exitCode = 1;
 }
 
-let closing = false;
-/** Settles once the roles have started or the start failed (and cleaned up); never rejects. */
+/** Settles once the roles have started or the start failed; never rejects. */
 let startup: Promise<void> = Promise.resolve();
 
-async function shutdown(signal: NodeJS.Signals): Promise<void> {
-  if (closing) return;
-  closing = true;
-  logger.info({ signal }, 'shutting down');
-  const timer = setTimeout(() => {
-    logger.error({ timeoutMs: SHUTDOWN_TIMEOUT_MS }, 'shutdown timed out');
-    process.exit(1);
-  }, SHUTDOWN_TIMEOUT_MS);
-  timer.unref();
-  try {
-    // A role still starting (a consumer joining its group) finishes first, so that close() stops it too.
+// A role still starting (a consumer joining its group) finishes first, so that close() stops it too.
+const shutdown = installGracefulShutdown({
+  logger,
+  close: async () => {
     await startup;
     await close();
-  } catch (err) {
-    logger.error({ err }, 'shutdown failed');
-    process.exitCode = 1;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-process.once('SIGTERM', (signal) => void shutdown(signal));
-process.once('SIGINT', (signal) => void shutdown(signal));
+  },
+});
 
 startup = (async () => {
   try {
@@ -122,7 +127,10 @@ startup = (async () => {
       databaseUrl: env.DATABASE_URL,
       kafka,
       publisher,
-      paymentMockUrl: env.PAYMENT_MOCK_URL,
+      ...(env.PSP_API_KEY === undefined
+        ? {}
+        : { psp: { baseUrl: env.PAYMENT_MOCK_URL, apiKey: env.PSP_API_KEY } }),
+      chaosDupDelivery: env.FD_CHAOS_DUP_DELIVERY,
       // Resolved from this entry, which sits at the same depth in the source tree (src/main.ts) as in the
       // image (dist/main.js); code inlined from packages would resolve against the bundle instead.
       listing: { ...env, fixturesDir: fileURLToPath(new URL('../../../tests/fixtures', import.meta.url)) },
@@ -131,17 +139,14 @@ startup = (async () => {
       host: env.HEALTH_HOST,
       port: env.HEALTH_PORT,
       source: { roles: env.WORKER_ROLES, components: () => roles.flatMap((role) => role.health()) },
+      metrics: registry,
       logger,
     });
     logger.info({ roles: env.WORKER_ROLES }, 'worker ready');
   } catch (err) {
     logger.fatal({ err }, 'worker failed to start');
     process.exitCode = 1;
-    // A shutdown already waiting on this start closes everything itself.
-    if (closing) return;
-    closing = true;
-    await close().catch((closeErr: unknown) =>
-      logger.error({ err: closeErr }, 'cleanup after a failed start failed'),
-    );
+    // Not awaited: the shutdown waits for this start to settle, then closes what it opened.
+    void shutdown('startup failed');
   }
 })();

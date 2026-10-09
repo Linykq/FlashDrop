@@ -1,5 +1,8 @@
+import { Counter, Registry } from '@prometheus-io/client';
 import { describe, expect, it } from 'vitest';
 import { type ComponentHealth, healthReport, startHealthServer } from './health';
+
+const quiet = { info: () => undefined, error: () => undefined };
 
 const component = (name: string, healthy: boolean): ComponentHealth => ({
   name,
@@ -30,7 +33,7 @@ describe('startHealthServer', () => {
       host: '127.0.0.1',
       port: 0,
       source: { roles: ['reconciler'], components: () => [component('reconciler', healthy)] },
-      logger: { info: () => undefined },
+      logger: quiet,
     });
     try {
       const url = `http://127.0.0.1:${server.port}`;
@@ -48,6 +51,26 @@ describe('startHealthServer', () => {
       });
 
       expect((await fetch(`${url}/metrics`)).status).toBe(404);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('serves GET /metrics in the Prometheus text format when given a registry', async () => {
+    const registry = new Registry();
+    new Counter({ name: 'fd_test_total', help: 'A test series.', registers: [registry] }).inc(2);
+    const server = await startHealthServer({
+      host: '127.0.0.1',
+      port: 0,
+      source: { roles: ['relay'], components: () => [component('relay', true)] },
+      metrics: registry,
+      logger: quiet,
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/metrics`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toBe(registry.contentType);
+      expect(await response.text()).toContain('fd_test_total 2');
     } finally {
       await server.close();
     }

@@ -1,7 +1,7 @@
 'use client';
 
 import {
-  ChevronRight,
+  CircleCheck,
   CircleMinus,
   CircleX,
   Hourglass,
@@ -10,16 +10,26 @@ import {
   TriangleAlert,
   WifiOff,
 } from 'lucide-react';
-import Link from 'next/link';
-import { type ReactNode, type RefObject, useEffect, useEffectEvent, useId, useRef, useState } from 'react';
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useId,
+  useRef,
+  useState,
+} from 'react';
 import { cx } from '../../lib/cx';
 import { formatCount, formatDuration } from '../../lib/format';
-import type { HeldOrder } from '../../lib/hold';
-import { buyAction, maxQuantity } from '../../lib/purchase';
+import type { ViewerClaim } from '../../lib/hold';
+import { buyAction, maxQuantity, type NextDrop, purchaseRow, UPCOMING_HREF } from '../../lib/purchase';
 import { type ReserveNote, type ReserveNoteTone, reserveNote } from '../../lib/reserve-copy';
 import { pendingQuantity } from '../../lib/reserve-key';
-import { checkoutHref } from '../../lib/routes';
+import { takeReturnFocus } from '../../lib/return-focus';
+import { checkoutHref, ORDERS_HREF, orderPageHref } from '../../lib/routes';
 import { describeStock, type StockState } from '../../lib/stock';
+import { useFocusRescue } from '../../lib/use-focus-rescue';
 import { useMediaQuery } from '../../lib/use-media-query';
 import { useRefreshOnReturn } from '../../lib/use-refresh-on-return';
 import { type ReserveProblem, useReserve } from '../../lib/use-reserve';
@@ -35,61 +45,75 @@ type PurchasePanelProps = {
   stock: StockState;
   perUserLimit: number;
   holdSeconds: number;
-  startsAt: string;
   serverNow: number;
   priceCents: number;
   currency: string;
   signedIn: boolean;
   /** This product page, to come back to after signing in. */
   returnTo: string;
-  /** The viewer's live hold on this drop when the page was rendered (§9.13), or `null`. */
-  heldOrder: HeldOrder | null;
+  /** What the viewer already has of this drop when the page was rendered (§9.13). */
+  claim: ViewerClaim;
+  /** Where a sold-out drop sends the buyer: the next drop, or `null` for the list of upcoming ones. */
+  next: NextDrop | null;
   /**
    * `page` on the product page: the terms below the row, and the sticky buy bar on phones. `card` in a drop
-   * card (§9.12), which states the terms itself and sits in the first viewport, so it needs no bar.
+   * card (§9.12), which states the terms itself, with the bar below 1069 px, where the card sits under the
+   * player rather than beside it and its Buy can start below the first viewport.
    */
   layout?: 'page' | 'card';
 };
 
 /**
- * The purchase row of the product page (§10.2): the buyer's live hold if they have one, the quantity stepper
- * and the Buy button, the note a press can leave under them, the terms, and on phones the sticky buy bar that
+ * The purchase row (§9.13, §10.2): the buyer's live hold if they have one, the quantity stepper and the Buy
+ * button, the note a press can leave under them, the terms, and on narrow screens the sticky buy bar that
  * takes over while the row is not wholly on screen, so an available purchase action is always reachable
- * without scrolling (§1.1). Renders nothing once the drop ended, unless the buyer still holds some of it.
+ * without scrolling (§1.1). With a live hold the filled action is always "Go to checkout": paying for the
+ * hold is the next step while its clock runs, and reserving more is the gray one beside the stepper. A buyer
+ * who has their limit is told so, a sold-out drop points to the next one, and a drop that hasn't opened shows
+ * no button at all: its status line and countdown already say when (§1.4). When the control that had focus
+ * leaves (a hold ends, a refusal replaces the row), focus stays in the panel (§13.2).
  */
 export function PurchasePanel({
   dropId,
   stock,
   perUserLimit,
   holdSeconds,
-  startsAt,
   serverNow,
   priceCents,
   currency,
   signedIn,
   returnTo,
-  heldOrder,
+  claim,
+  next,
   layout = 'page',
 }: PurchasePanelProps) {
   const [endedHold, setEndedHold] = useState<string | null>(null);
-  const held = heldOrder !== null && heldOrder.id !== endedHold ? heldOrder : null;
-  // The hold already takes the whole limit: the filled action leads back to it, never to a press api refuses.
-  const atLimit = held !== null && held.qty >= perUserLimit;
-  // What the buyer may still add beside the hold. With 1 there is nothing to choose: no stepper (§9.6).
-  const room = Math.max(1, perUserLimit - (held?.qty ?? 0));
-
+  const shown = claim.held !== null && claim.held.id === endedHold ? { ...claim, held: null } : claim;
   const action = buyAction(stock, signedIn);
-  const max = maxQuantity(stock, room);
-  const [quantity, setQuantity] = useState(1);
   const { state, buy, dismiss } = useReserve(dropId, returnTo, { prefetch: action.kind === 'buy' });
-  const row = useRef<HTMLDivElement>(null);
+  const refusedAtLimit = state.problem?.kind === 'refused' && state.problem.code === 'LIMIT_REACHED';
+  const row = purchaseRow(shown, perUserLimit, refusedAtLimit);
+  const held = row.kind === 'checkout' ? row.held : null;
+  // What the stepper may still offer: the limit less what the buyer holds and placed. With 1, no stepper (§9.6).
+  const room = row.kind === 'have-limit' ? 0 : row.room;
+  const max = maxQuantity(stock, Math.max(1, room));
+  const [quantity, setQuantity] = useState(1);
+
+  const panel = useRef<HTMLDivElement>(null);
+  // The row comes and goes (a drop that opens grows one), so the observer follows the element itself.
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [rowElement, setRowElement] = useState<HTMLDivElement | null>(null);
+  const attachRow = useCallback((element: HTMLDivElement | null) => {
+    rowRef.current = element;
+    setRowElement(element);
+  }, []);
   const bar = useRef<HTMLDivElement>(null);
   const inlineBuy = useRef<HTMLButtonElement>(null);
   const noteRef = useRef<HTMLParagraphElement>(null);
   const noteId = useId();
   const pressedIn = useRef<'row' | 'bar'>('row');
-  const rowInView = useWhollyInView(row);
-  const phone = useMediaQuery('(width < 735px)') && layout === 'page';
+  const rowInView = useWhollyInView(rowElement);
+  const narrow = useMediaQuery(layout === 'page' ? '(width < 735px)' : '(width < 1069px)');
 
   // After a reload, offer the unfinished request again: the same quantity reuses its key and replays it.
   useEffect(() => {
@@ -99,6 +123,16 @@ export function PurchasePanel({
 
   // The hold the buyer comes back from (Back, "Leave checkout", "Try again") is server data.
   useRefreshOnReturn();
+
+  // The row's Buy, else its first control, else the row itself: never <body> (§13.2).
+  const actionTarget = () =>
+    inlineBuy.current ?? rowRef.current?.querySelector<HTMLElement>('a, button') ?? rowRef.current;
+  useFocusRescue(panel, actionTarget);
+
+  // Back from "Sign in to buy": the buyer came to buy, so focus starts where they left off.
+  useEffect(() => {
+    if (takeReturnFocus(returnTo)) actionTarget()?.focus();
+  }, [returnTo]);
 
   const barShown = !rowInView;
   const noteFor = (problem: ReserveProblem) => reserveNote(problem, { perUserLimit, stock });
@@ -127,7 +161,11 @@ export function PurchasePanel({
     ) {
       inlineBuy.current?.focus({ preventScroll: true });
     }
-    noteRef.current?.scrollIntoView({ block: barShown ? 'center' : 'nearest', behavior: smoothScroll() });
+    // A refusal at the limit replaces the row, which then says it all (`HaveLimit`).
+    (noteRef.current ?? rowRef.current)?.scrollIntoView({
+      block: barShown ? 'center' : 'nearest',
+      behavior: smoothScroll(),
+    });
   });
   useEffect(() => {
     if (state.problem) showNote(state.problem);
@@ -145,97 +183,151 @@ export function PurchasePanel({
     onAvailChange(stock.avail);
   }, [stock.avail]);
 
-  const heldNotice = (link: boolean) =>
-    held && (
-      <HeldOrderNotice
-        order={held}
-        serverNow={serverNow}
-        link={link}
-        onEnd={() => setEndedHold(held.id)}
-        className={layout === 'page' ? 'mt-6' : undefined}
-      />
-    );
-
-  // An ended drop has no Buy row, but a hold made before the end can still check out.
-  if (action.kind === 'hidden') return heldNotice(true);
   const busy = state.phase !== 'idle';
-  // The stepper sits only beside the button that reserves the chosen quantity: signed out, the choice would
-  // be lost on the way through sign-in. It stays (locked) while its quantity is being reserved.
-  const choosing = (action.kind === 'buy' && !atLimit) || busy;
-  const chosen = Math.min(quantity, max);
-  // The bar keeps an available action within reach; a closed state has none, so it never pins a dead button.
-  const actionable = action.kind !== 'closed' || busy || atLimit;
-  const button = {
-    action,
-    reserve: state,
-    quantity: chosen,
-    maxQuantity: max,
-    startsAt,
-    serverNow,
-    returnTo,
-  };
-  const press = (from: 'row' | 'bar') => {
-    pressedIn.current = from;
-    buy(chosen);
-  };
   const toCheckout = (size: 'lg' | 'md', className?: string) =>
     held && (
       <ButtonLink href={checkoutHref(held.id)} size={size} className={className}>
         Go to checkout
       </ButtonLink>
     );
-  const noteAction =
-    held && state.problem?.kind === 'refused' && state.problem.code === 'LIMIT_REACHED' ? (
-      <Link href={checkoutHref(held.id)} className="inline-flex items-center gap-0.5 text-accent-label">
-        Go to checkout
-        <ChevronRight size={14} />
-      </Link>
-    ) : null;
+  const heldNotice = held && (
+    <HeldOrderNotice
+      order={held}
+      serverNow={serverNow}
+      onEnd={() => {
+        setEndedHold(held.id);
+        // Its row and "Go to checkout" leave with it, and nothing on screen says why without this.
+        announce('Your reservation ended.');
+      }}
+      className={layout === 'page' ? 'mt-6' : undefined}
+    />
+  );
+
+  // An ended drop has no Buy row, but a hold made before the end can still check out.
+  if (action.kind === 'hidden') {
+    return (
+      held && (
+        <div ref={panel}>
+          {heldNotice}
+          <div ref={attachRow} tabIndex={-1} className="mt-3 flex outline-none">
+            {toCheckout('lg', 'flex-1')}
+          </div>
+        </div>
+      )
+    );
+  }
+
+  const soldOut = action.kind === 'closed' && action.reason === 'sold-out' && !busy;
+  // The stepper sits only beside the button that reserves the chosen quantity (signed out, the choice would be
+  // lost on the way through sign-in), and stays, locked, while its quantity is being reserved. Beside a hold it
+  // goes with the gray "Buy 1 more".
+  const choosing = row.kind !== 'have-limit' && ((action.kind === 'buy' && room > 0) || busy);
+  const offersMore = row.kind === 'checkout' && choosing;
+  const chosen = Math.min(quantity, max);
+  // The bar keeps an available action within reach; a closed state has none, so it never pins a dead button.
+  const actionable =
+    row.kind === 'checkout' ||
+    busy ||
+    (row.kind === 'buy' && (action.kind === 'buy' || action.kind === 'sign-in'));
+  const button = { action, reserve: state, quantity: chosen, maxQuantity: max, returnTo };
+  const press = (from: 'row' | 'bar') => {
+    pressedIn.current = from;
+    buy(chosen);
+  };
+  const stepper = (size: 'md' | 'lg') =>
+    choosing && (
+      <QuantityStepper
+        value={chosen}
+        max={max}
+        limit={Math.max(1, room)}
+        size={size}
+        disabled={busy}
+        onChange={(value) => {
+          setQuantity(value);
+          dismiss();
+        }}
+      />
+    );
+
+  let main: ReactNode = null;
+  if (row.kind === 'checkout') {
+    main = toCheckout('lg', 'min-w-fit flex-1');
+  } else if (row.kind === 'have-limit') {
+    main = (
+      <HaveLimit
+        perUserLimit={perUserLimit}
+        href={row.lastPlacedId === null ? ORDERS_HREF : orderPageHref(row.lastPlacedId)}
+      />
+    );
+  } else if (soldOut) {
+    main = (
+      <ButtonLink href={next?.href ?? UPCOMING_HREF} variant="tinted" size="lg" className="min-w-fit flex-1">
+        {next ? 'See the next drop' : 'See upcoming drops'}
+      </ButtonLink>
+    );
+  } else if (!(action.kind === 'closed' && action.reason === 'opens') || busy) {
+    main = (
+      <>
+        {stepper('lg')}
+        <BuyButton
+          {...button}
+          onBuy={() => press('row')}
+          buttonRef={inlineBuy}
+          describedBy={state.problem ? noteId : undefined}
+          className="min-w-fit flex-1"
+        />
+      </>
+    );
+  }
 
   return (
-    <>
-      {heldNotice(!atLimit)}
+    <div ref={panel}>
+      {heldNotice}
       {/* A label longer than the room beside the stepper wraps the button onto its own full-width line. */}
-      <div
-        ref={row}
-        className={cx(held ? 'mt-3' : layout === 'page' && 'mt-6', 'flex flex-wrap items-center gap-3')}
-      >
-        {choosing && (
-          <QuantityStepper
-            value={chosen}
-            max={max}
-            limit={room}
-            size="lg"
-            disabled={busy}
-            onChange={(next) => {
-              setQuantity(next);
-              dismiss();
-            }}
-          />
-        )}
-        {atLimit && !busy ? (
-          toCheckout('lg', 'min-w-fit flex-1')
-        ) : (
+      {main !== null && (
+        <div
+          ref={attachRow}
+          tabIndex={-1}
+          className={cx(
+            held ? 'mt-3' : layout === 'page' && 'mt-6',
+            'flex flex-wrap items-center gap-3 outline-none',
+          )}
+        >
+          {main}
+        </div>
+      )}
+      {offersMore && (
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          {stepper('md')}
           <BuyButton
             {...button}
+            variant="gray"
+            size="md"
+            more
             onBuy={() => press('row')}
             buttonRef={inlineBuy}
             describedBy={state.problem ? noteId : undefined}
-            className="min-w-fit flex-1"
           />
-        )}
-      </div>
-      {state.problem && (
-        <ReserveNoteLine id={noteId} ref={noteRef} note={noteFor(state.problem)} action={noteAction} />
+        </div>
       )}
-      {/* One footnote under the row, so there is one rhythm below the button. */}
-      {layout === 'page' && (
+      {state.problem && row.kind !== 'have-limit' && (
+        <ReserveNoteLine id={noteId} ref={noteRef} note={noteFor(state.problem)} />
+      )}
+      {soldOut && next && row.kind === 'buy' && (
+        <p className="mt-3 text-footnote text-label-secondary">Up next: {next.title}</p>
+      )}
+      {action.kind === 'closed' && action.reason === 'all-reserved' && row.kind === 'buy' && (
+        <p className="mt-3 text-footnote text-label-secondary">This page updates live if one frees up.</p>
+      )}
+      {/* One terms line under the row, so there is one rhythm below the button. A sold-out drop and a buyer
+          who has their limit have no terms left to read. */}
+      {layout === 'page' && row.kind !== 'have-limit' && !(soldOut && row.kind === 'buy') && (
         <p className="mt-3 text-footnote text-label-secondary">
           Limit {formatCount(perUserLimit)} per person. We hold your item for {formatDuration(holdSeconds)} at
           checkout.
         </p>
       )}
-      {phone && actionable && (
+      {narrow && actionable && (
         // Mounted while there is an action to keep in reach, so it fades both ways as the row leaves and
         // returns (200 ms, §6.4). `data-bottom-bar` is present only while it shows: base.css then reserves its
         // height below the page and in the scroll padding (§4.5).
@@ -257,15 +349,32 @@ export function PurchasePanel({
               </p>
               <p className="text-footnote tabular-nums">{describeStock(stock).primary}</p>
             </div>
-            {atLimit && !busy ? (
-              toCheckout('md')
-            ) : (
-              <BuyButton {...button} onBuy={() => press('bar')} size="md" />
-            )}
+            {held ? toCheckout('md') : <BuyButton {...button} onBuy={() => press('bar')} size="md" />}
           </div>
         </div>
       )}
-    </>
+    </div>
+  );
+}
+
+/**
+ * The buyer already has every unit the limit allows (§9.13): said plainly, with the way to the order, in place
+ * of a Buy that api can only refuse.
+ */
+function HaveLimit({ perUserLimit, href }: { perUserLimit: number; href: string }) {
+  const n = formatCount(perUserLimit);
+  return (
+    <div className="flex w-full flex-col gap-4">
+      <p className="flex items-start gap-2 text-callout">
+        <CircleCheck className="shrink-0 text-success" />
+        <span>
+          You have your {n}. Limit {n} per person.
+        </span>
+      </p>
+      <ButtonLink href={href} variant="tinted" size="lg">
+        View your order
+      </ButtonLink>
+    </div>
   );
 }
 
@@ -287,8 +396,6 @@ const toneClass: Record<ReserveNoteTone, { text: string; icon: string }> = {
 type ReserveNoteLineProps = {
   id: string;
   note: ReserveNote;
-  /** The next step, when there is one to link to ("Go to checkout" after the limit). */
-  action: ReactNode;
   ref: RefObject<HTMLParagraphElement | null>;
 };
 
@@ -297,17 +404,14 @@ type ReserveNoteLineProps = {
  * region: the panel announces it once, politely, through the Announcer. The inline Buy button points at it
  * with `aria-describedby`, so the reason is read with the control.
  */
-function ReserveNoteLine({ id, note, action, ref }: ReserveNoteLineProps) {
+function ReserveNoteLine({ id, note, ref }: ReserveNoteLineProps) {
   const Icon = glyphs[note.glyph];
   const tone = toneClass[note.tone];
   return (
     <p ref={ref} className={cx('mt-4 flex animate-fade-in items-start gap-1.5 text-callout', tone.text)}>
       {/* 16 px beside 20 px lines: 2 px down centres it on the first line. */}
       <Icon size={16} className={cx('mt-0.5 shrink-0', tone.icon)} />
-      <span>
-        <span id={id}>{note.text}</span>
-        {action && <> {action}</>}
-      </span>
+      <span id={id}>{note.text}</span>
     </p>
   );
 }
@@ -321,10 +425,9 @@ function smoothScroll(): ScrollBehavior {
  * bar. A row that is cut by the bottom edge, or slides under the translucent bar, doesn't count: the buyer
  * can't use it there, so the buy bar stays (§1.1).
  */
-function useWhollyInView(ref: RefObject<HTMLElement | null>): boolean {
+function useWhollyInView(element: HTMLElement | null): boolean {
   const [inView, setInView] = useState(true);
   useEffect(() => {
-    const element = ref.current;
     if (!element) return;
     // The bar's height includes the top safe area, which a CSS length in `rootMargin` can't express.
     const top = document.querySelector('[data-nav-bar]')?.getBoundingClientRect().height ?? 0;
@@ -335,6 +438,6 @@ function useWhollyInView(ref: RefObject<HTMLElement | null>): boolean {
     );
     observer.observe(element);
     return () => observer.disconnect();
-  }, [ref]);
+  }, [element]);
   return inView;
 }

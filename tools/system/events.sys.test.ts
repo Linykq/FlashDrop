@@ -6,11 +6,11 @@ import {
   checkout,
   connectStores,
   createBuyers,
-  createTestDrop,
   logEnds,
   orderOf,
   outboxOf,
   partitionOf,
+  postTestDrop,
   readPartition,
   reserve,
   type Stores,
@@ -35,7 +35,7 @@ afterAll(async () => {
 
 describe('orders.v1 on the running stack', () => {
   it('carries order.* events keyed by productId, on murmur2(productId) % 6, in each order’s order', async () => {
-    const drop = await createTestDrop({ stock: 5, paymentSeconds: 60 });
+    const drop = await postTestDrop({ stock: 5, paymentSeconds: 60 });
     const partition = partitionOf(drop.productId);
     const from = (await logEnds(stores.admin)).get(partition) ?? '0';
     const [paid, cancelled, declined] = (await createBuyers(3)) as [Buyer, Buyer, Buyer];

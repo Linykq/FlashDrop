@@ -19,9 +19,11 @@ type HoldTimerLinkProps = {
 /**
  * The compact countdown in checkout's bar (design-system §9.18, §9.19), while the hold card's countdown is
  * scrolled out of view, so the time limit stays visible as the buyer fills in the form (WCAG 2.2.1). After the
- * wordmark from 735 px; on phones in its place, beside "Leave checkout" (`checkout-bar.tsx`). Like the card, it
- * takes the warning colour for the last minute, and its digits are hidden from assistive technology: the link
- * is named by the deadline, a time that doesn't change, and leads back to the card, which takes focus.
+ * wordmark from 735 px; on phones in its place, beside "Leave checkout" (`checkout-bar.tsx`). Its digits stay
+ * `label` in every state: on the translucent bar a status colour drops under 4.5:1 over dark content (§2.5),
+ * so only the Timer glyph takes the warning colour in the last minute, a non-text signal that keeps 3:1 there.
+ * The digits are hidden from assistive technology: the link is named by the deadline, a time that doesn't
+ * change, and leads back to the card, which takes focus.
  */
 export function HoldTimerLink({ orderId, hold: rendered }: HoldTimerLinkProps) {
   const [hold] = useCheckoutHold(orderId, rendered);
@@ -37,12 +39,11 @@ export function HoldTimerLink({ orderId, hold: rendered }: HoldTimerLinkProps) {
       onClick={focusCard}
       className={cx(
         // 44 px tall, its icon on the wordmark's edge; the ring is inset, so the bar's edges never clip it.
-        '-ml-2 inline-flex h-11 animate-fade-in items-center gap-1.5 rounded-md px-2 text-callout font-medium tabular-nums',
+        '-ml-2 inline-flex h-11 animate-fade-in items-center gap-1.5 rounded-md px-2 text-callout font-medium text-label tabular-nums',
         'transition-colors duration-200 ease-standard hover:bg-fill-quaternary focus-visible:-outline-offset-3',
-        warning ? 'text-warning' : 'text-label',
       )}
     >
-      <Timer size={16} className="shrink-0" />
+      <Timer size={16} className={cx('shrink-0', warning && 'text-warning')} />
       <span aria-hidden="true">{formatCountdown(remainingMs)}</span>
       <span className="sr-only">
         Reserved until <LocalTime iso={hold.expiresAt} format="time" />

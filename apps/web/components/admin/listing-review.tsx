@@ -7,16 +7,17 @@ import {
   PRODUCT_CATEGORIES,
   PRODUCT_CONDITIONS,
 } from '@flashdrop/contracts';
-import { ChevronDown, CircleAlert, CircleX, Pencil, Plus, Sparkles, TriangleAlert, X } from 'lucide-react';
+import { ChevronDown, CircleAlert, Pencil, Plus, Sparkles, TriangleAlert, X } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { type ReactNode, type Ref, useId, useMemo, useRef, useState, useTransition } from 'react';
+import { type ReactNode, useId, useMemo, useRef, useState, useTransition } from 'react';
 import { approveListing } from '../../app/admin/_lib/actions';
 import { cx } from '../../lib/cx';
 import { formatCount, plural } from '../../lib/format';
 import { announce } from '../ui/announcer';
 import { Banner } from '../ui/banner';
 import { Button } from '../ui/button';
+import { ErrorSummary } from '../ui/error-summary';
 import { IconButton } from '../ui/icon-button';
 import { errorId } from '../ui/text-field';
 import { toast } from '../ui/toast';
@@ -178,6 +179,10 @@ export function ListingReview({ job }: { job: ListingJob }) {
   // The summary lists what was wrong at the last approve, minus what has been fixed since: a fixed field's
   // link would otherwise stay, empty, in the tab order, and the count would overstate what is left.
   const shownSummary = (summary ?? []).filter((key) => errorOf(key) !== undefined);
+  // What blocks publishing, as the fields show it right now: the bar counts it first (§10.9).
+  const toFix = orderedKeys({ ...clientErrors, ...serverErrors }, values.highlights.length).filter(
+    (key) => errorOf(key) !== undefined,
+  ).length;
 
   const shell = (
     field: ReviewField,
@@ -205,7 +210,8 @@ export function ListingReview({ job }: { job: ListingJob }) {
       }}
       className="flex flex-col gap-8"
     >
-      {banner && (
+      {/* Once a submit failed, the summary says what blocks publishing; the banner would say it twice. */}
+      {banner && shownSummary.length === 0 && (
         <Banner
           tone="warning"
           title={banner.title}
@@ -226,9 +232,8 @@ export function ListingReview({ job }: { job: ListingJob }) {
       {shownSummary.length > 0 && (
         <ErrorSummary
           ref={summaryRef}
-          keys={shownSummary}
-          message={(key) => errorOf(key) ?? ''}
-          targetOf={targetOf}
+          title={`Fix ${formatCount(shownSummary.length)} ${plural(shownSummary.length, 'field', 'fields')} to publish`}
+          items={shownSummary.map((key) => ({ targetId: targetOf(key), message: errorOf(key) ?? '' }))}
         />
       )}
       {failure && shownSummary.length === 0 && (
@@ -381,7 +386,7 @@ export function ListingReview({ job }: { job: ListingJob }) {
         )}
       </FieldShell>
 
-      <ActionBar status={reviewStatus(job.draft !== null, unchanged, open.length)} pending={pending} />
+      <ActionBar status={reviewStatus(job.draft !== null, unchanged, open.length, toFix)} pending={pending} />
     </form>
   );
 }
@@ -734,58 +739,6 @@ function Highlights({
         Add highlight
       </Button>
     </>
-  );
-}
-
-/**
- * The error summary of a failed approve (§10.9, as checkout's, SD §8.3): a region named by its title and
- * described by its list that takes focus, so one focus event reads the count and every field to fix.
- */
-function ErrorSummary({
-  ref,
-  keys,
-  message,
-  targetOf,
-}: {
-  ref: Ref<HTMLElement>;
-  keys: readonly ErrorKey[];
-  message: (key: ErrorKey) => string;
-  /** The id each link focuses (`focusKeyOf`). */
-  targetOf: (key: ErrorKey) => string;
-}) {
-  return (
-    <section
-      ref={ref}
-      aria-labelledby="review-summary-title"
-      aria-describedby="review-summary-list"
-      tabIndex={-1}
-      className="flex animate-fade-in items-start gap-3 rounded-md bg-danger-tint py-3 pr-4 pl-4"
-    >
-      <CircleX className="shrink-0 text-danger" />
-      <div className="min-w-0 flex-1">
-        <h2 id="review-summary-title" className="text-headline">
-          Fix {keys.length} {plural(keys.length, 'field', 'fields')} to publish
-        </h2>
-        <ul id="review-summary-list" className="mt-1 text-callout">
-          {keys.map((key) => (
-            <li key={key}>
-              <a
-                href={`#${targetOf(key)}`}
-                onClick={(event) => {
-                  const target = document.getElementById(targetOf(key));
-                  if (!target) return;
-                  event.preventDefault();
-                  target.focus();
-                }}
-                className="inline-flex min-h-6 items-center text-label underline underline-offset-2"
-              >
-                {message(key)}
-              </a>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </section>
   );
 }
 

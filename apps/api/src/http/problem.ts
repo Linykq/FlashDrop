@@ -18,7 +18,7 @@ export interface Problem {
   readonly headers: Readonly<Record<string, string>>;
 }
 
-/** Codes for Fastify's own 4xx errors (bad JSON, 413, 415, and from M2 the rate limiter's 429). */
+/** Codes for Fastify's own 4xx errors (bad JSON, 413, 415, and the rate limiter's 429). */
 const CLIENT_ERROR_CODES: Readonly<Partial<Record<number, ErrorCode>>> = {
   401: 'UNAUTHENTICATED',
   403: 'FORBIDDEN',

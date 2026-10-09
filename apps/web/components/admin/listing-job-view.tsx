@@ -317,8 +317,13 @@ function PhotoViewer({ imageKeys }: { imageKeys: readonly string[] }) {
   );
 }
 
-/** What the generation cost (SD §10 metrics per job): model, prompt, calls, tokens, cost, latency, edits. */
+/**
+ * What the generation cost (SD §10 metrics per job): model, prompt, calls, tokens, cost, latency, edits. A job
+ * answered from recorded fixtures (`LLM_PROVIDER=fixture`, the default outside a real key) says so, and its cost
+ * is the recording's, not a bill: nobody reading it should believe a model call was paid for.
+ */
 function GenerationDetails({ job }: { job: ListingJob }) {
+  const recorded = job.provider !== null && job.provider !== 'anthropic';
   const tokensIn = job.calls.reduce((sum, call) => sum + call.inputTokens, 0);
   const tokensOut = job.calls.reduce((sum, call) => sum + call.outputTokens, 0);
   const cached = job.calls.reduce((sum, call) => sum + call.cacheReadInputTokens, 0);
@@ -329,7 +334,11 @@ function GenerationDetails({ job }: { job: ListingJob }) {
     {
       key: 'Model',
       value: (
-        <span className="font-mono text-footnote">{models.length > 0 ? models.join(', ') : job.model}</span>
+        <>
+          {recorded && 'Recorded fixture ('}
+          <span className="font-mono text-footnote">{models.length > 0 ? models.join(', ') : job.model}</span>
+          {recorded && ')'}
+        </>
       ),
     },
     {
@@ -353,7 +362,12 @@ function GenerationDetails({ job }: { job: ListingJob }) {
       value:
         job.costUsd === null
           ? null
-          : `${formatUsdCost(job.costUsd)}${job.latencyMs === null ? '' : ` · ${formatLatency(job.latencyMs)}`}`,
+          : [
+              recorded ? `${formatUsdCost(job.costUsd)} recorded · not billed` : formatUsdCost(job.costUsd),
+              job.latencyMs === null ? null : formatLatency(job.latencyMs),
+            ]
+              .filter(Boolean)
+              .join(' · '),
     },
     {
       key: 'Edited',
