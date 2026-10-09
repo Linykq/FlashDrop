@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
+import { createLogger, type Logger } from '@flashdrop/config';
 import { SESSION_COOKIE } from '@flashdrop/config/constants';
 import {
   type ClientMessage,
@@ -23,7 +24,7 @@ import {
   userChannel,
   viewersKey,
 } from '@flashdrop/inventory';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { WebSocket } from 'ws';
 import type { Api } from '../http/api';
 import { createSessionCodec } from '../http/session';
@@ -44,28 +45,33 @@ const LIVE_DROP = seedId(4, 1);
 
 let stack: TestStack;
 let redis: FlashdropRedis;
-const urls: Record<'one' | 'two' | 'tight' | 'capped', string> = { one: '', two: '', tight: '', capped: '' };
+const urls: Record<'one' | 'two' | 'capped', string> = { one: '', two: '', capped: '' };
 const instanceIds = {
   one: `int-ws-1-${RUN}`,
   two: `int-ws-2-${RUN}`,
-  tight: `int-ws-3-${RUN}`,
   capped: `int-ws-4-${RUN}`,
 };
 const redisDrops: string[] = [];
 let room: string;
 
+interface Instance {
+  readonly app: Api;
+  readonly url: string;
+}
+
 async function serve(
   instanceId: string,
   limits: Partial<GatewayLimits>,
-  options: { readonly maxSocketsPerAddress?: number } = {},
-): Promise<string> {
+  { logger, ...options }: { readonly maxSocketsPerAddress?: number; readonly logger?: Logger } = {},
+): Promise<Instance> {
   const app: Api = await stack.build({
     roles: ['ws'],
     realtime: { ...stack.wired.realtime, instanceId, limits, ...options },
+    ...(logger === undefined ? {} : { logger }),
   });
   await app.listen({ host: '127.0.0.1', port: 0 });
   const { port } = app.server.address() as AddressInfo;
-  return `ws://127.0.0.1:${port}/ws`;
+  return { app, url: `ws://127.0.0.1:${port}/ws` };
 }
 
 /** DRAFT drops in Postgres with these ids: enough for the gateway's directory, invisible to everything else. */
@@ -143,8 +149,7 @@ interface Client {
   readonly closed: Promise<{ code: number; reason: string }>;
 }
 
-const clients: Client[] = [];
-
+/** A client socket of the running test, cut off when the test ends however it ends (a timeout included). */
 async function connect(url: string, options: { cookie?: string; origin?: string } = {}): Promise<Client> {
   const socket = new WebSocket(url, {
     headers: {
@@ -152,6 +157,7 @@ async function connect(url: string, options: { cookie?: string; origin?: string 
       ...(options.cookie === undefined ? {} : { cookie: options.cookie }),
     },
   });
+  onTestFinished(() => socket.terminate());
   const frames: ServerMessage[] = [];
   const waiters = new Set<() => void>();
   socket.on('message', (data) => {
@@ -188,7 +194,6 @@ async function connect(url: string, options: { cookie?: string; origin?: string 
       });
     },
   };
-  clients.push(client);
   return client;
 }
 
@@ -213,26 +218,20 @@ beforeAll(async () => {
   await stack.database.db.update(drops).set({ roomId: room }).where(eq(drops.id, LIVE_DROP));
 
   const quickViewers = { viewerIntervalMs: 200 };
-  urls.one = await serve(instanceIds.one, quickViewers);
-  urls.two = await serve(instanceIds.two, quickViewers);
-  urls.tight = await serve(instanceIds.tight, {
-    flushIntervalMs: 10,
-    skipAboveBytes: 16 * 1024,
-    closeAboveBytes: 64 * 1024 * 1024,
-    stallCloseMs: 500,
-    watchdogIntervalMs: 100,
-  });
-  urls.capped = await serve(
-    instanceIds.capped,
-    { beatIntervalMs: 300, watchdogIntervalMs: 50 },
-    {
-      maxSocketsPerAddress: 2,
-    },
-  );
+  urls.one = (await serve(instanceIds.one, quickViewers)).url;
+  urls.two = (await serve(instanceIds.two, quickViewers)).url;
+  urls.capped = (
+    await serve(
+      instanceIds.capped,
+      { beatIntervalMs: 300, watchdogIntervalMs: 50 },
+      {
+        maxSocketsPerAddress: 2,
+      },
+    )
+  ).url;
 });
 
 afterAll(async () => {
-  for (const client of clients) client.socket.terminate();
   for (const dropId of redisDrops) {
     const k = dropKeys(dropId);
     await redis.del([k.inv, k.rsv, k.uq, k.exp]);
@@ -412,33 +411,68 @@ describe('private topics', () => {
 
 describe('backpressure (§7)', () => {
   it('closes a socket that stops reading with 1013 once its sends have been skipped long enough', async () => {
-    const dropIds = Array.from({ length: 64 }, () => randomUUID());
+    // An instance of its own, so the one connection it serves is this test's, and its log tells when the
+    // gateway decides to close.
+    const limits = {
+      flushIntervalMs: 10,
+      skipAboveBytes: 4 * 1024,
+      stallCloseMs: 500,
+      watchdogIntervalMs: 50,
+    } satisfies Partial<GatewayLimits>;
+    const logs: Readonly<Record<string, unknown>>[] = [];
+    const logger = createLogger(
+      { name: 'ws-stall-test', level: 'info' },
+      { write: (line: string) => void logs.push(JSON.parse(line) as Readonly<Record<string, unknown>>) },
+    );
+    const { app, url } = await serve(`int-ws-stall-${RUN}`, limits, { logger });
+    const peers: Socket[] = [];
+    app.server.on('connection', (socket: Socket) => peers.push(socket));
+    let publishing = false;
+    let publisher: Promise<void> = Promise.resolve();
+    // Runs however the test ends: nothing it started may outlive it, or keep the worker from exiting.
+    onTestFinished(async () => {
+      publishing = false;
+      await publisher;
+      for (const peer of peers) {
+        while (peer.writableCorked > 0) peer.uncork();
+      }
+      await app.close();
+    });
+
+    const dropIds = Array.from({ length: 8 }, () => randomUUID());
     await pgDrops(dropIds);
     const topics = dropIds.map((dropId) => topicOf('stock', dropId));
-    const client = await connect(urls.tight);
-    client.send({ type: 'sub', topics });
+    const client = await connect(url);
     await hello(client);
+    expect(peers).toHaveLength(1);
+    const [peer] = peers;
+    if (peer === undefined) throw new Error('the connection was not seen');
+    client.send({ type: 'sub', topics });
 
-    let seq = 0;
-    let publishing = true;
-    const publisher = (async () => {
-      while (publishing) {
-        seq += 1;
+    publishing = true;
+    publisher = (async () => {
+      for (let seq = 1; publishing; seq += 1) {
         const level = `1:${seq}:${1_000_000 - seq}:0:${seq}:LIVE:${Date.now()}`;
         await Promise.all(dropIds.map((dropId) => redis.publish(stockChannel(dropId), level)));
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
     })();
-    try {
-      // Every topic flowing, then the client stops reading: the kernel buffers fill, then the send buffer.
-      await Promise.all(topics.map((topic) => client.waitFor(deltaWith(topic, 1))));
-      client.socket.pause();
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
-    } finally {
-      publishing = false;
-      await publisher;
-    }
-    client.socket.resume();
+    await Promise.all(topics.map((topic) => client.waitFor(deltaWith(topic, 1))));
+
+    // The client stops reading. Pausing it would not do: what piles up in the gateway's send buffer is
+    // only what the kernel buffers in between cannot take, and Linux autotunes loopback TCP buffers to
+    // several MB, more than this test sends. Corking the server's end keeps every byte in user space (the
+    // socket's write buffer, which `bufferedAmount` reads), as full kernel buffers would, whatever their size.
+    peer.cork();
+    const closing = () => logs.find((line) => line.msg === 'closing websocket');
+    await expect.poll(closing, { timeout: 10_000 }).toBeDefined();
+    expect(closing()).toMatchObject({ code: WS_CLOSE.TRY_AGAIN_LATER, reason: 'stalled' });
+    // Skipped, not queued: the levels published all along did not pile up past the soft limit (the slack
+    // is the frame that crossed it, and the close frame).
+    expect(peer.writableLength).toBeGreaterThan(limits.skipAboveBytes);
+    expect(peer.writableLength).toBeLessThan(limits.skipAboveBytes + 1024);
+
+    peer.uncork();
     await expect(client.closed).resolves.toEqual({ code: WS_CLOSE.TRY_AGAIN_LATER, reason: 'stalled' });
   });
 });

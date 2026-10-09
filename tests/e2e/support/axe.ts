@@ -41,15 +41,37 @@ export async function settle(page: Page): Promise<void> {
   await animationsDone(page);
 }
 
-export async function expectNoBlockingViolations(page: Page, testInfo: TestInfo): Promise<void> {
+type Blocking = { id: string; impact: string; help: string; targets: string[] };
+
+async function blockingViolations(page: Page, testInfo: TestInfo, name: string): Promise<Blocking[]> {
   await settle(page);
   const { violations } = await new AxeBuilder({ page }).analyze();
-  await testInfo.attach('axe-violations.json', {
-    body: JSON.stringify(violations, null, 2),
-    contentType: 'application/json',
-  });
-  const blocking = violations
+  await testInfo.attach(name, { body: JSON.stringify(violations, null, 2), contentType: 'application/json' });
+  return violations
     .filter(({ impact }) => impact != null && BLOCKING_IMPACTS.has(impact))
-    .map(({ id, impact, help, nodes }) => ({ id, impact, help, targets: nodes.map(({ target }) => target) }));
-  expect(blocking).toEqual([]);
+    .map(({ id, impact, help, nodes }) => ({
+      id,
+      impact: impact ?? '',
+      help,
+      targets: nodes.map(({ target }) => target.join(' ')),
+    }));
+}
+
+/**
+ * A live page keeps changing while axe reads it: in the live room the "On screen" link follows the video and
+ * can mount, fading in, during the scan, where axe judges it at part opacity. A real violation is still there
+ * at rest, so a finding counts only if a second scan, after the page settles again, repeats it on the same
+ * elements.
+ */
+export async function expectNoBlockingViolations(page: Page, testInfo: TestInfo): Promise<void> {
+  const first = await blockingViolations(page, testInfo, 'axe-violations.json');
+  if (first.length === 0) return;
+  const second = await blockingViolations(page, testInfo, 'axe-violations-rescan.json');
+  const persistent = first
+    .map((violation) => {
+      const again = second.find(({ id }) => id === violation.id);
+      return { ...violation, targets: violation.targets.filter((target) => again?.targets.includes(target)) };
+    })
+    .filter(({ targets }) => targets.length > 0);
+  expect(persistent).toEqual([]);
 }

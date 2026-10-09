@@ -40,23 +40,53 @@ describe('fd_reserve under concurrency', () => {
   it('admits exactly the stock: 2,000 concurrent reserves from 300 users on 100 units, limit 2', async () => {
     const { dropId } = await arm({ total: 100, limit: 2 });
     const users = Array.from({ length: 300 }, () => randomUUID());
+    // Each user sends 6-7 requests back to back, spread over 8 connections.
+    const inputs = Array.from({ length: 2_000 }, (_, i) => {
+      const user = users[Math.floor((i * users.length) / 2_000)] as string; // index < users.length
+      return reserveInput(dropId, user);
+    });
 
-    // Each user sends 6-7 requests back to back, spread over 8 connections, so the limit gate is hit
-    // long before the stock runs out.
     const results = await Promise.all(
-      Array.from({ length: 2_000 }, (_, i) => {
-        const user = users[Math.floor((i * users.length) / 2_000)] as string; // index < users.length
-        return fdReserve(pool[i % pool.length] as FlashdropRedis, reserveInput(dropId, user));
-      }),
+      inputs.map((input, i) => fdReserve(pool[i % pool.length] as FlashdropRedis, input)),
     );
 
+    // Which refusal a loser gets, LIMIT or SOLD_OUT, depends on the order Redis happens to run the calls
+    // in, so only the invariants are asserted here; the limit gate under contention is the next test's.
     const kinds = results.map((result) => result.kind);
     expect(kinds.filter((kind) => kind === 'RESERVED')).toHaveLength(100);
-    expect(new Set(kinds)).toEqual(new Set(['RESERVED', 'SOLD_OUT', 'LIMIT']));
+    const refusals = new Set(['SOLD_OUT', 'LIMIT']);
+    expect(kinds.filter((kind) => kind !== 'RESERVED' && !refusals.has(kind))).toEqual([]);
+    const reservedBy = new Map<string, number>();
+    for (const [i, result] of results.entries()) {
+      const { userId, qty } = inputs[i] as (typeof inputs)[number]; // results[i] answers inputs[i]
+      if (result.kind === 'RESERVED') reservedBy.set(userId, (reservedBy.get(userId) ?? 0) + qty);
+    }
+    expect(Math.max(...reservedBy.values())).toBeLessThanOrEqual(2);
     const state = await readDropState(redis, dropId);
     expect(state.inv).toMatchObject({ total: 100, avail: 0, held: 100, sold: 0, seq: 100 });
     expect([...state.entries.values()].filter((entry) => entry.s === 'HELD')).toHaveLength(100);
-    expect(Math.max(...state.quotas.values())).toBeLessThanOrEqual(2);
+    // uq counts exactly the units each user was answered RESERVED for, and none is over the limit.
+    expect(state.quotas).toEqual(reservedBy);
+    expect(redisDropViolations(state)).toEqual([]);
+  });
+
+  it('holds one user to the limit however many of their reserves race: 40 at once, limit 2', async () => {
+    const { dropId } = await arm({ total: 100, limit: 2 });
+    const user = randomUUID();
+
+    // Stock for everyone, so the limit is the only gate that can refuse.
+    const results = await Promise.all(
+      Array.from({ length: 40 }, (_, i) =>
+        fdReserve(pool[i % pool.length] as FlashdropRedis, reserveInput(dropId, user)),
+      ),
+    );
+
+    const kinds = results.map((result) => result.kind);
+    expect(kinds.filter((kind) => kind === 'RESERVED')).toHaveLength(2);
+    expect(kinds.filter((kind) => kind === 'LIMIT')).toHaveLength(38);
+    const state = await readDropState(redis, dropId);
+    expect(state.inv).toMatchObject({ total: 100, avail: 98, held: 2, sold: 0, seq: 2 });
+    expect(state.quotas).toEqual(new Map([[user, 2]]));
     expect(redisDropViolations(state)).toEqual([]);
   });
 

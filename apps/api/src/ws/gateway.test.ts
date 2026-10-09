@@ -20,7 +20,13 @@ import { WebSocket } from 'ws';
 import type { Principal } from './access';
 import type { ChannelListener, PubSub } from './channels';
 import type { TopicDirectory } from './directory';
-import { type ClientInfo, createGateway, GATEWAY_LIMITS, type GatewaySocket } from './gateway';
+import {
+  type ClientInfo,
+  createGateway,
+  GATEWAY_LIMITS,
+  type GatewayLimits,
+  type GatewaySocket,
+} from './gateway';
 import type { ViewerStore } from './viewers';
 
 const DROP = '5eed0004-0000-4000-8000-000000000001';
@@ -122,7 +128,7 @@ class FakePubSub implements PubSub {
 const stockMessage = (seq: number, avail: number, ts = 1_000 + seq) =>
   `3:${seq}:${avail}:0:${100 - avail}:LIVE:${ts}`;
 
-function setup(options: { otherViewers?: number } = {}) {
+function setup(options: { otherViewers?: number; limits?: Partial<GatewayLimits> } = {}) {
   const pubsub = new FakePubSub();
   const stock = new Map<string, RedisStock>([
     [DROP, { status: 'LIVE', gen: 3, seq: 10, avail: 90, held: 0, sold: 10 }],
@@ -182,6 +188,7 @@ function setup(options: { otherViewers?: number } = {}) {
     directory,
     viewers,
     logger: createLogger({ name: 'gateway-test', level: 'silent' }),
+    ...(options.limits === undefined ? {} : { limits: options.limits }),
   });
   function connect(
     principal: Principal = anonymousPrincipal(),
@@ -506,6 +513,23 @@ describe('backpressure (§7)', () => {
     await vi.advanceTimersByTimeAsync(GATEWAY_LIMITS.stallCloseMs - 2_000);
     expect(draining.closedWith).toBeUndefined();
     expect(flooded.closedWith).toEqual({ code: WS_CLOSE.TRY_AGAIN_LATER, reason: 'send buffer full' });
+  });
+
+  it('applies injected thresholds, as the integration test injects tiny ones', async () => {
+    const limits = { skipAboveBytes: 1024, stallCloseMs: 500, watchdogIntervalMs: 50 };
+    const { connect, pubsub } = start({ limits });
+    const socket = connect();
+    sub(socket, STOCK);
+    await settle();
+
+    // Far below the production soft limit, above the injected one: skipped.
+    socket.bufferedAmount = 2 * 1024;
+    pubsub.publish(stockChannel(DROP), stockMessage(11, 89));
+    await vi.advanceTimersByTimeAsync(limits.stallCloseMs);
+    expect(socket.ofType('delta')).toEqual([]);
+    expect(socket.closedWith).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(limits.watchdogIntervalMs);
+    expect(socket.closedWith).toEqual({ code: WS_CLOSE.TRY_AGAIN_LATER, reason: 'stalled' });
   });
 });
 

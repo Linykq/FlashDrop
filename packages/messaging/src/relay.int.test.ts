@@ -241,7 +241,12 @@ describe('outbox relay', () => {
     await admin.createTopics({ topics: [{ topic, numPartitions: 1, replicationFactor: 1 }] });
     onTestFinished(() => admin.deleteTopics({ topics: [topic] }));
     await vi.waitFor(async () => expect(await unpublished(db)).toBe(0), WAIT);
-    expect(relay.health()).toMatchObject({ healthy: true, consecutiveFailures: 0, published: 2 });
+    // The relay updates its counters after its commit resolves, so the rows can read published a moment before
+    // health() says so.
+    await vi.waitFor(
+      () => expect(relay.health()).toMatchObject({ healthy: true, consecutiveFailures: 0, published: 2 }),
+      WAIT,
+    );
   }, 90_000);
 
   it('cleans up rows published more than the retention ago', async () => {
