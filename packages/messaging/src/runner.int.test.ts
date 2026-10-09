@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'v
 import { replayDlq } from './dlq-replay';
 import type { OrderEventHandlers } from './handlers';
 import { DLQ_HEADERS, headerText } from './headers';
-import { fetchGroupLag } from './lag';
+import { createGroupLagReader, type GroupLagReader } from './lag';
 import { createPublisher, type OutgoingRecord, type Publisher } from './publisher';
 import { type ConsumerRunner, type ConsumerRunnerOptions, createConsumerRunner } from './runner';
 import { readToEnd, testAdmin, testGroup, testKafka, testTopic } from './test/kafka';
@@ -42,6 +42,8 @@ const produce = (topic: string, events: readonly OrderEvent[]) =>
 
 interface Setup {
   readonly admin: KafkaJS.Admin;
+  /** Reads `topic` unless told otherwise. */
+  readonly lag: GroupLagReader;
   readonly topic: string;
   readonly dlqTopic: string;
   readonly groupId: string;
@@ -53,7 +55,9 @@ async function setup(partitions = 1): Promise<Setup> {
     testTopic(admin, 'runner', partitions),
     testTopic(admin, 'runner-dlq', 1),
   ]);
-  return { admin, topic, dlqTopic, groupId: testGroup(admin, 'runner') };
+  const lag = createGroupLagReader(kafka, { topic, timeoutMs: 10_000 });
+  onTestFinished(() => lag.close());
+  return { admin, lag, topic, dlqTopic, groupId: testGroup(admin, 'runner') };
 }
 
 async function startRunner(
@@ -78,10 +82,9 @@ async function startRunner(
   return { runner, log };
 }
 
-/** The group's committed offset per partition ('-1' when none). */
-async function committed(s: Setup): Promise<Map<number, string>> {
-  const offsets = await s.admin.fetchOffsets({ groupId: s.groupId, topics: [s.topic] });
-  return new Map(offsets.flatMap((t) => t.partitions.map((p) => [p.partition, p.offset])));
+/** The group's committed offset per partition (null when none). */
+async function committed(s: Setup): Promise<Map<number, string | null>> {
+  return new Map((await s.lag.read(s.groupId)).map((p) => [p.partition, p.committed]));
 }
 
 async function expectCommittedToEnd(s: Setup): Promise<void> {
@@ -99,7 +102,7 @@ describe('consumer runner', () => {
     const s = await setup(3);
     const events = Array.from({ length: 30 }, () => testEvent('order.paid'));
     await produce(s.topic, events);
-    const before = await fetchGroupLag(s.admin, s.groupId, s.topic);
+    const before = await s.lag.read(s.groupId);
     expect(before.map((p) => p.committed)).toEqual([null, null, null]);
     expect(before.reduce((sum, p) => sum + p.lag, 0)).toBe(30);
     const seen = new Set<string>();
@@ -114,7 +117,7 @@ describe('consumer runner', () => {
 
     await vi.waitFor(() => expect(seen.size).toBe(30), WAIT);
     await expectCommittedToEnd(s);
-    expect((await fetchGroupLag(s.admin, s.groupId, s.topic)).map((p) => p.lag)).toEqual([0, 0, 0]);
+    expect((await s.lag.read(s.groupId)).map((p) => p.lag)).toEqual([0, 0, 0]);
     expect(runner.health()).toMatchObject({ healthy: true, partitions: [0, 1, 2], retrying: [], stuck: [] });
   });
 
@@ -202,7 +205,7 @@ describe('consumer runner', () => {
     // Each replay records its progress in its own group here (`dlq-replay` in production): the admin
     // health tile counts the letters past it as the ones still to act on.
     const progressOf = async (progressGroup: string) =>
-      (await fetchGroupLag(s.admin, progressGroup, s.dlqTopic)).map((p) => [p.committed, p.lag]);
+      (await s.lag.read(progressGroup, s.dlqTopic)).map((p) => [p.committed, p.lag]);
     const done = testGroup(s.admin, 'dlq-progress');
     const dryRun = await replayDlq({
       kafka,
@@ -379,10 +382,7 @@ describe('consumer runner', () => {
 
     await vi.waitFor(() => expect(seen.size).toBe(events.length), { ...WAIT, timeout: 60_000 });
     await vi.waitFor(
-      async () =>
-        expect((await fetchGroupLag(s.admin, s.groupId, s.topic)).map((p) => p.lag)).toEqual([
-          0, 0, 0, 0, 0, 0,
-        ]),
+      async () => expect((await s.lag.read(s.groupId)).map((p) => p.lag)).toEqual([0, 0, 0, 0, 0, 0]),
       { timeout: 15_000, interval: 250 },
     );
   });

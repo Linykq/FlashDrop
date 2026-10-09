@@ -8,6 +8,7 @@ import { requestFingerprint, reservationId } from '@flashdrop/domain/identity';
 import { dropKeys, fdReserve, readStock } from '@flashdrop/inventory';
 import {
   type ConsumerRunner,
+  createGroupLagReader,
   createKafka,
   createPublisher,
   dispatchOrderEvent,
@@ -173,6 +174,7 @@ describe('duplicate order.placed in one batch', () => {
       ],
     });
     const publisher = createPublisher({ kafka, logger: env.deps.logger });
+    const lag = createGroupLagReader(kafka, { topic, timeoutMs: 10_000 });
     let runner: ConsumerRunner | undefined;
     try {
       const { orderId, event } = await placed();
@@ -202,8 +204,8 @@ describe('duplicate order.placed in one batch', () => {
       );
       await vi.waitFor(
         async () => {
-          const [lag] = await admin.fetchOffsets({ groupId, topics: [topic] });
-          expect(lag?.partitions[0]?.offset).toBe('4');
+          const [partition] = await lag.read(groupId);
+          expect(partition?.committed).toBe('4');
         },
         { timeout: 30_000, interval: 100 },
       );
@@ -223,6 +225,7 @@ describe('duplicate order.placed in one batch', () => {
       psp.beforeCharge(undefined);
       await runner?.stop();
       await publisher.close();
+      await lag.close();
       await admin.deleteGroups([groupId]).catch(() => undefined);
       await admin.deleteTopics({ topics: [topic, dlqTopic] }).catch(() => undefined);
       await admin.disconnect();

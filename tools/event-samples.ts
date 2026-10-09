@@ -2,12 +2,13 @@ import type { KafkaJS } from '@confluentinc/kafka-javascript';
 import { CONSUMER_GROUPS, TOPICS } from '@flashdrop/config';
 import { type Executor, outboxBacklog } from '@flashdrop/db';
 import type { EventsSample } from '@flashdrop/inventory';
-import { fetchGroupLag } from '@flashdrop/messaging';
+import type { GroupLagReader } from '@flashdrop/messaging';
 
 /*
  * Sampling the event pipeline for INV-5 (design §1.1, §13): the outbox backlog in Postgres and, from the
  * broker's point of view, how far each checked consumer group has committed. Read-only: the admin API reads
- * watermarks and committed offsets and never joins a group, so a running consumer is never disturbed.
+ * the watermarks and a lag reader the committed offsets, and neither joins a group (lag.ts), so a running
+ * consumer is never disturbed.
  */
 
 /** The groups INV-5 waits for (§6.3). */
@@ -17,13 +18,15 @@ export const CHECKED_GROUPS: readonly { readonly name: string; readonly groupId:
   { name: 'dashboard', groupId: CONSUMER_GROUPS.dashboard },
 ];
 
-/** How long one sample may take before the broker counts as unreachable. */
-const SAMPLE_TIMEOUT_MS = 15_000;
+/** How long one sample may take before the broker counts as unreachable; also the lag reader's bound. */
+export const SAMPLE_TIMEOUT_MS = 15_000;
 
 export interface EventsProbeOptions {
   readonly db: Executor;
   /** A connected admin client. */
   readonly admin: KafkaJS.Admin;
+  /** The checked groups' committed offsets (`createGroupLagReader`, bounded by `SAMPLE_TIMEOUT_MS`). */
+  readonly lag: GroupLagReader;
   readonly topic?: string;
   /** Counted for the report; null leaves the count out. */
   readonly dlqTopic?: string | null;
@@ -33,7 +36,7 @@ export interface EventsProbeOptions {
 export type EventsProbe = () => Promise<EventsSample>;
 
 export function createEventsProbe(options: EventsProbeOptions): EventsProbe {
-  const { db, admin, topic = TOPICS.orders, groups = CHECKED_GROUPS } = options;
+  const { db, admin, lag, topic = TOPICS.orders, groups = CHECKED_GROUPS } = options;
   const dlqTopic = options.dlqTopic === undefined ? TOPICS.ordersDlq : options.dlqTopic;
 
   async function sample(): Promise<EventsSample> {
@@ -42,7 +45,7 @@ export function createEventsProbe(options: EventsProbeOptions): EventsProbe {
     const outbox = await outboxBacklog(db);
     const [watermarks, lags, deadLetters] = await Promise.all([
       admin.fetchTopicOffsets(topic),
-      Promise.all(groups.map((group) => fetchGroupLag(admin, group.groupId, topic))),
+      Promise.all(groups.map((group) => lag.read(group.groupId, topic))),
       dlqTopic === null ? null : countRecords(admin, dlqTopic),
     ]);
     return {

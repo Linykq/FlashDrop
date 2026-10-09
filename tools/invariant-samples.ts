@@ -32,7 +32,7 @@ import type { EventsProbe } from './event-samples';
  * `sampleDrop`, the same reads the api's admin health page runs) and samples of the event pipeline around
  * them, repeated until everything is quiescent or the wait runs out, then the report. Read-only everywhere:
  * the Redis client never loads the Functions library, every Postgres read runs in a READ ONLY transaction,
- * and Kafka is read through the admin API.
+ * and Kafka is read through the admin API and a lag reader that never joins a group.
  */
 
 export interface SampleDeps extends DropSampleDeps {
@@ -176,7 +176,8 @@ async function sampleRound(
   if (deps.events === undefined || before === undefined) return { drops, events: null, dashboards: null };
   // The projection can only be held to its orders when the group that writes it is among those caught up.
   const projected = before.groups.some((group) => group.name === DASHBOARD_ROLE);
-  const calm = pendingEvents(before, before).length === 0 && drops.every((drop) => drop.pending.length === 0);
+  const pendingBefore = pendingEvents(before, before);
+  const calm = pendingBefore.length === 0 && drops.every((drop) => drop.pending.length === 0);
   const dashboards =
     projected && calm
       ? new Map(
@@ -184,7 +185,11 @@ async function sampleRound(
         )
       : null;
   const after = await deps.events();
-  return { drops, events: { sample: after, pending: pendingEvents(before, after) }, dashboards };
+  const pendingAfter = pendingEvents(before, after);
+  // A group that caught up between the two samples leaves the second one quiet, but it was still changing
+  // the drops (and the projection, which was then not read) while they were sampled: the round stays pending.
+  const pending = pendingAfter.length > 0 ? pendingAfter : pendingBefore;
+  return { drops, events: { sample: after, pending }, dashboards };
 }
 
 /** INV-5 on every drop's projection, with the comparisons that could not be made. */

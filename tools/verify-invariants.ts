@@ -25,9 +25,9 @@ import { parseArgs } from 'node:util';
 import { KafkaEnv, loadEnv, PostgresEnv, RedisEnv } from '@flashdrop/config';
 import { createDb, createPool } from '@flashdrop/db';
 import { createCommandClient } from '@flashdrop/inventory';
-import { createKafka } from '@flashdrop/messaging';
+import { createGroupLagReader, createKafka } from '@flashdrop/messaging';
 import { z } from 'zod';
-import { createEventsProbe, withDeadline } from './event-samples';
+import { createEventsProbe, SAMPLE_TIMEOUT_MS, withDeadline } from './event-samples';
 import { type InvariantsReport, verifyInvariants } from './invariant-samples';
 
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -83,11 +83,9 @@ const pool = createPool({
 });
 // A plain command client: it never loads the Functions library, so verifying writes nothing to Redis.
 const redis = createCommandClient({ url: env.REDIS_URL, name: 'verify-invariants', logger: warn });
-const admin = createKafka({
-  brokers: env.KAFKA_BROKERS,
-  clientId: 'verify-invariants',
-  logLevel: 'error',
-}).admin();
+const kafka = createKafka({ brokers: env.KAFKA_BROKERS, clientId: 'verify-invariants', logLevel: 'error' });
+const admin = kafka.admin();
+const lag = createGroupLagReader(kafka, { timeoutMs: SAMPLE_TIMEOUT_MS });
 
 try {
   // node-redis and librdkafka keep reconnecting while their server is down, so bound the first connection.
@@ -99,7 +97,7 @@ try {
   );
   const db = createDb(pool);
   const report = await verifyInvariants(
-    { db, redis, events: createEventsProbe({ db, admin }) },
+    { db, redis, events: createEventsProbe({ db, admin, lag }) },
     {
       dropIds: args.drop?.map((id) => id.toLowerCase()),
       timeoutMs: args.timeout * 1000,
@@ -120,6 +118,7 @@ try {
   redis.destroy();
   // Also after a failed connect: librdkafka would otherwise keep retrying the broker and hold the process open.
   await admin.disconnect().catch(() => undefined);
+  await lag.close();
   await pool.end();
 }
 

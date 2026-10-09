@@ -51,7 +51,7 @@ import {
   readDashboardChecks,
 } from '@flashdrop/db';
 import { createCommandClient, dashboardChannel, REDIS_DEADLINE_MS, withDeadline } from '@flashdrop/inventory';
-import { createKafka, fetchGroupLag } from '@flashdrop/messaging';
+import { createGroupLagReader, createKafka } from '@flashdrop/messaging';
 import { z } from 'zod';
 import {
   ConsumersRunningError,
@@ -110,11 +110,10 @@ const pool = createPool({
 const db = createDb(pool);
 // A plain command client: publishing needs no Functions library.
 const redis = createCommandClient({ url: env.REDIS_URL, name: 'dash-rebuild', logger: warn });
-const admin = createKafka({
-  brokers: env.KAFKA_BROKERS,
-  clientId: 'dash-rebuild',
-  logLevel: 'error',
-}).admin();
+const kafka = createKafka({ brokers: env.KAFKA_BROKERS, clientId: 'dash-rebuild', logLevel: 'error' });
+const admin = kafka.admin();
+// Its consumer never joins the group (lag.ts), so it does not stop the rebuild from resetting the group.
+const lag = createGroupLagReader(kafka, { timeoutMs: CONNECT_TIMEOUT_MS });
 
 /** `docker compose --profile app <args>` with this environment, so `COMPOSE_FILE` (CI's overrides) applies. */
 async function compose(...composeArgs: string[]): Promise<void> {
@@ -126,8 +125,8 @@ async function compose(...composeArgs: string[]): Promise<void> {
 async function caughtUp(what: string): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const lag = await fetchGroupLag(admin, CONSUMER_GROUPS.dashboard);
-    const behind = lag.reduce((sum, partition) => sum + partition.lag, 0);
+    const partitions = await lag.read(CONSUMER_GROUPS.dashboard);
+    const behind = partitions.reduce((sum, partition) => sum + partition.lag, 0);
     if (behind === 0) return true;
     if (Date.now() >= deadline) return false;
     console.log(`  ${what}: ${behind} events to go`);
@@ -291,5 +290,6 @@ try {
 } finally {
   redis.destroy();
   await admin.disconnect().catch(() => undefined);
+  await lag.close();
   await pool.end();
 }

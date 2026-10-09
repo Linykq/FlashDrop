@@ -39,6 +39,7 @@ import {
 } from '@flashdrop/inventory';
 import {
   createConsumerRunner,
+  createGroupLagReader,
   createKafka,
   createPublisher,
   type OrderEventHandlers,
@@ -46,7 +47,7 @@ import {
 } from '@flashdrop/messaging';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { z } from 'zod';
-import { createEventsProbe } from './event-samples';
+import { createEventsProbe, SAMPLE_TIMEOUT_MS } from './event-samples';
 import { type InvariantsReport, verifyInvariants } from './invariant-samples';
 
 /*
@@ -437,6 +438,8 @@ async function testPipeline() {
   });
   const publisher = createPublisher({ kafka, logger });
   onTestFinished(() => publisher.close());
+  const lag = createGroupLagReader(kafka, { topic, timeoutMs: SAMPLE_TIMEOUT_MS });
+  onTestFinished(() => lag.close());
 
   /** The relay's batches, sent to the test topic; returns how many events it published. */
   async function relayAll(): Promise<number> {
@@ -467,13 +470,20 @@ async function testPipeline() {
     await runner.start();
   }
 
-  return { admin, topic, dlqTopic, groupId, publisher, relayAll, startGroup };
+  return { admin, lag, topic, dlqTopic, groupId, publisher, relayAll, startGroup };
 }
 
 describe('verify:invariants on the event pipeline', () => {
   it('waits for the relay and every checked consumer group (INV-5)', async () => {
-    const { admin, topic, dlqTopic, groupId, publisher, relayAll, startGroup } = await testPipeline();
-    const events = createEventsProbe({ db, admin, topic, dlqTopic, groups: [{ name: 'test', groupId }] });
+    const { admin, lag, topic, dlqTopic, groupId, publisher, relayAll, startGroup } = await testPipeline();
+    const events = createEventsProbe({
+      db,
+      admin,
+      lag,
+      topic,
+      dlqTopic,
+      groups: [{ name: 'test', groupId }],
+    });
     const verifyAll = (dropId: string, timeoutMs = 0, maxDeadLetters?: number) =>
       verifyInvariants({ db, redis, events }, { dropIds: [dropId], timeoutMs, maxDeadLetters });
 
@@ -534,10 +544,11 @@ describe('verify:invariants on the event pipeline', () => {
   });
 
   it('holds each drop’s dashboard to its orders once the group that writes it caught up (INV-5, §9)', async () => {
-    const { admin, topic, dlqTopic, groupId, relayAll, startGroup } = await testPipeline();
+    const { admin, lag, topic, dlqTopic, groupId, relayAll, startGroup } = await testPipeline();
     const events = createEventsProbe({
       db,
       admin,
+      lag,
       topic,
       dlqTopic,
       groups: [{ name: 'dashboard', groupId }],

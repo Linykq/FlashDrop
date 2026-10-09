@@ -28,7 +28,8 @@ import type { OutgoingRecord, Publisher } from './publisher';
  *   offsets request in flight kills the process (assertion `eonce->refcnt > 0` in
  *   `rd_kafka_enq_once_del_source_return`, SIGABRT). The commit check runs every 5 s, so every Kafka restart
  *   took both `consumers` replicas down (M4 integration: `checkout-decoupled`, and a probe that crashed
- *   with `fetchOffsets` and survived restarts with `committed()` and `fetchTopicOffsets`).
+ *   with `fetchOffsets` and survived restarts with `committed()` and `fetchTopicOffsets`). A coordinator error
+ *   in its reply crashes it too (SIGSEGV, see lag.ts), so nothing in the repository calls it.
  * - Grouped concurrency: one unit per order, sequential inside, `p-limit(concurrency)` across units.
  * - Failures: poison (invalid envelope, unknown type, `InvariantViolation`) goes to the DLQ at once;
  *   transient failures pause the partition, seek to the first unfinished offset and resume after a

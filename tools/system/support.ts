@@ -20,16 +20,17 @@ import {
 import { createDb, createPool, type Db } from '@flashdrop/db';
 import { createCommandClient, type FlashdropRedis } from '@flashdrop/inventory';
 import {
+  createGroupLagReader,
   createKafka,
   createProducer,
   DLQ_HEADERS,
-  fetchGroupLag,
+  type GroupLagReader,
   headersAsText,
   partitionForKey,
 } from '@flashdrop/messaging';
 import { z } from 'zod';
 import { stackSecret } from '../env-file';
-import { createEventsProbe } from '../event-samples';
+import { createEventsProbe, SAMPLE_TIMEOUT_MS } from '../event-samples';
 import { type InvariantsReport, verifyInvariants } from '../invariant-samples';
 
 /*
@@ -168,6 +169,8 @@ export interface Stores {
   readonly redis: FlashdropRedis;
   readonly kafka: KafkaJS.Kafka;
   readonly admin: KafkaJS.Admin;
+  /** Consumer groups' committed lag on `orders.v1` (lag.ts: never the admin API's group offsets request). */
+  readonly lag: GroupLagReader;
   close(): Promise<void>;
 }
 
@@ -179,7 +182,10 @@ export interface StoresOptions {
   readonly redisLogger?: Pick<Console, 'warn'>;
 }
 
-/** Postgres, the stack's Redis (a plain client: it never loads the Functions library) and a Kafka admin. */
+/**
+ * Postgres, the stack's Redis (a plain client: it never loads the Functions library), a Kafka admin and a
+ * lag reader.
+ */
 export async function connectStores({ redisLogger = console }: StoresOptions = {}): Promise<Stores> {
   const env = loadEnv([PostgresEnv, RedisEnv, KafkaEnv]);
   const pool = createPool({
@@ -195,15 +201,18 @@ export async function connectStores({ redisLogger = console }: StoresOptions = {
   const kafka = createKafka({ brokers: env.KAFKA_BROKERS, clientId: 'system-tests', logLevel: 'error' });
   const admin = kafka.admin();
   await admin.connect();
+  const lag = createGroupLagReader(kafka, { timeoutMs: SAMPLE_TIMEOUT_MS });
   return {
     db: createDb(pool),
     pool,
     redis,
     kafka,
     admin,
+    lag,
     async close() {
       redis.destroy();
       await admin.disconnect().catch(() => undefined);
+      await lag.close();
       await pool.end();
     },
   };
@@ -216,7 +225,11 @@ export function verifyDrops(
   timeoutMs = 90_000,
 ): Promise<InvariantsReport> {
   return verifyInvariants(
-    { db: stores.db, redis: stores.redis, events: createEventsProbe({ db: stores.db, admin: stores.admin }) },
+    {
+      db: stores.db,
+      redis: stores.redis,
+      events: createEventsProbe({ db: stores.db, admin: stores.admin, lag: stores.lag }),
+    },
     { dropIds, timeoutMs },
   );
 }
@@ -479,7 +492,7 @@ export async function outboxInFlight(pool: Pool): Promise<{ pending: number; loc
 
 /** A group's committed lag on one `orders.v1` partition: events it has not processed. */
 export async function groupLagOn(stores: Stores, groupId: string, partition: number): Promise<number> {
-  const lags = await fetchGroupLag(stores.admin, groupId, TOPICS.orders);
+  const lags = await stores.lag.read(groupId, TOPICS.orders);
   return lags.find((lag) => lag.partition === partition)?.lag ?? 0;
 }
 
