@@ -63,6 +63,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm infra:up
+      # Includes the race matrix (design §13): apps/worker's `race-matrix.int.test.ts` forces each interleaving
+      # through FD_TEST_HOOKS, which only that test process sets; apps/api's holds the reserve service's
+      # Postgres step at a gate through its ports.
       - run: pnpm test:int
       - name: Collect Compose logs
         if: failure()
@@ -75,7 +78,7 @@ jobs:
           path: compose-logs.txt
           retention-days: 7
 
-  # The images, built once per run: e2e and load-smoke load this job's export. Baking in both of them would
+  # The images, built once per run: e2e, load-smoke and system load this job's export. Baking in both of them would
   # double the build minutes and base-image pulls, and their concurrent `cache-to` exports to the same GHA
   # scopes would race, the last writer winning.
   images:
@@ -159,18 +162,36 @@ jobs:
         run: docker compose --profile app up --detach --wait --wait-timeout 300
       - run: pnpm e2e:install --with-deps
       - run: pnpm test:e2e
+      # The specs' stock assertions would also pass on the settle safety net, which repairs Redis 10 to 15 s
+      # after a settlement handler gave up on an event. On this fresh broker every dead letter belongs to this
+      # run, so the DLQ must be empty: a failing consumer fails the job instead of hiding behind the fallback.
+      - name: Verify invariants
+        if: ${{ !cancelled() }}
+        run: pnpm verify:invariants --max-dead-letters 0
+      - name: No container restarted
+        if: ${{ !cancelled() }}
+        run: sh tools/check-restarts.sh
       - name: Collect Compose logs
         if: failure()
         run: docker compose --profile app logs --no-color --timestamps > compose-logs.txt
-      - name: Upload report, traces and logs
+      # Also on success: it holds the M4 demo's evidence (the 'paid-order-page' screenshot, checkout.spec.ts).
+      - name: Upload the HTML report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+      - name: Upload traces, invariants report and logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-results
           path: |
-            playwright-report/
             test-results/
+            invariants-report.json
             compose-logs.txt
+          if-no-files-found: warn
           retention-days: 7
 
   load-smoke:
@@ -203,19 +224,32 @@ jobs:
         run: zstd -dc images.tar.zst | docker load
       - name: Start the stack
         run: docker compose --profile app up --detach --wait --wait-timeout 300
-      # Design §13: the reserve-only CI profile on a fresh drop through Caddy: an opening spike of 300 buyers
-      # firing together (contention, double clicks in flight), then an arrival-rate burst. Strict correctness
-      # thresholds (exactly the stock in distinct orders, every replay consistent, no 429, all stock back
-      # after the holds expire) and loose latency ones. k6 exits non-zero when a threshold fails.
-      - name: Reserve burst (k6, ci profile)
+      # Design §13: the CI profile on a fresh drop through Caddy: an opening spike of 300 buyers firing together
+      # (contention, double clicks in flight), then an arrival-rate burst; of the winners 70% check out (90%
+      # pm_ok, 10% pm_decline) and are paid by the consumers through payment-mock, 20% cancel, 10% walk away.
+      # Strict correctness thresholds (every unit sold at most once, every replay consistent, every pm_ok
+      # order PAID and every pm_decline order PAYMENT_FAILED in time, no 429, declined, cancelled and abandoned
+      # stock back) and loose latency ones. k6 exits non-zero when a threshold fails.
+      - name: Burst (k6, ci profile)
         run: docker compose --profile load run --rm k6 run /scripts/burst.ts -e PROFILE=ci
+      # 50 identical reserves give one hold; 20 identical checkouts give one submission, one charge, PAID.
       - name: Idempotency storm (k6)
         if: ${{ !cancelled() }}
         run: docker compose --profile load run --rm k6 run /scripts/idempotency-storm.ts
-      # Waits for quiescence, then checks INV-1 to INV-9 (v1: those M2 can break) on every tracked drop.
+      # Reserve everything, never pay, three rounds: the stock and every buyer's quota come back each time.
+      - name: Expiry soak (k6)
+        if: ${{ !cancelled() }}
+        run: docker compose --profile load run --rm k6 run /scripts/expiry-soak.ts
+      # Waits for quiescence (outbox drained, payment and settlement at lag 0), then checks INV-1 to INV-9
+      # (v2: with the money, INV-4 against the PSP ledger, and the event pipeline, INV-5) on every tracked drop.
+      # No dead letters: on this fresh broker any would be this run's, events a consumer gave up on, which
+      # stock_returned alone would miss because the settle safety net returns the stock anyway.
       - name: Verify invariants
         if: ${{ !cancelled() }}
-        run: pnpm verify:invariants
+        run: pnpm verify:invariants --max-dead-letters 0
+      - name: No container restarted
+        if: ${{ !cancelled() }}
+        run: sh tools/check-restarts.sh
       - name: Step summary
         if: ${{ !cancelled() }}
         run: pnpm exec tsx tools/load-smoke-summary.ts >> "$GITHUB_STEP_SUMMARY"
@@ -233,3 +267,63 @@ jobs:
             compose-logs.txt
           if-no-files-found: warn
           retention-days: 14
+
+  # The M3/M4 demos as tests (design §13, §16), against the same stack: events on orders.v1 keyed and
+  # partitioned by productId; SIGKILL of the worker with a relay batch in flight loses nothing; with the
+  # consumers stopped the safety net still returns stock; checkout-decoupled (Kafka and payment-mock stopped,
+  # submit still 202); timeout-after-success charges once; a late payment is refunded; a dead-lettered
+  # payment event is replayed inside the network. They stop and start services, so they get a stack of their
+  # own instead of sharing e2e's or load-smoke's.
+  system:
+    name: System tests (Compose stack, failure injection)
+    needs: [static, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The tests drive `docker compose` themselves (tools/system/support.ts); every command applies the CI
+      # overrides, so a service they re-create keeps them.
+      COMPOSE_FILE: compose.yaml:compose.ci.yaml
+      TEST_ROUTES_SECRET: ci-only-test-routes-secret
+      # The system tests refuse to run without it: they stop and kill services of the stack they run on.
+      FD_SYSTEM_TESTS: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          name: images
+      - name: Load images
+        run: zstd -dc images.tar.zst | docker load
+      - name: Start the stack
+        run: docker compose --profile app up --detach --wait --wait-timeout 300
+      - run: pnpm test:system
+      # Whatever the tests did to the stack, the tracked drops must still satisfy every invariant. One dead
+      # letter is expected: dlq-replay.sys.test.ts writes it on purpose (and replays it); any other is an event
+      # a consumer gave up on during the failure injection.
+      - name: Verify invariants
+        if: ${{ !cancelled() }}
+        run: pnpm verify:invariants --max-dead-letters 1
+      # Each service the tests stopped or killed was stopped by hand, which Docker never undoes; a restart
+      # means a process crashed, for example a consumer during the broker restart.
+      - name: No container restarted
+        if: ${{ !cancelled() }}
+        run: sh tools/check-restarts.sh
+      - name: Collect Compose logs
+        if: failure()
+        run: docker compose --profile app logs --no-color --timestamps > compose-logs.txt
+      - name: Upload invariants report and logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: system-results
+          path: |
+            invariants-report.json
+            compose-logs.txt
+          retention-days: 7

@@ -76,7 +76,7 @@ describe('test routes', () => {
         perUserLimit: 1,
         holdSeconds: 10,
         paymentSeconds: 30,
-        durationSeconds: 3600,
+        durationSeconds: 1800,
         priceCents: 2500,
       },
     ]);

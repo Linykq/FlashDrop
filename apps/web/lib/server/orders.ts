@@ -1,5 +1,11 @@
 import { SESSION_COOKIE } from '@flashdrop/config/constants';
-import { OrderListResponse, OrderResponse, type OrderView, Uuid } from '@flashdrop/contracts';
+import {
+  type OrderDetail,
+  OrderDetailResponse,
+  OrderListResponse,
+  type OrderView,
+  Uuid,
+} from '@flashdrop/contracts';
 import { cookies } from 'next/headers';
 import { cache } from 'react';
 import { ApiError, apiGet } from './api';
@@ -31,13 +37,13 @@ async function readWithSession<T>(read: (cookie: string) => Promise<T>): Promise
 }
 
 /**
- * One of the buyer's orders, memoised per request, so the checkout layout and page share one api read. A
- * malformed id never reaches api.
+ * One of the buyer's orders with its checkout details (`OrderDetail`), memoised per request, so the checkout
+ * layout and page share one api read. A malformed id never reaches api.
  */
-export const readOrder = cache(async (orderId: string): Promise<SessionRead<OrderView>> => {
+export const readOrder = cache(async (orderId: string): Promise<SessionRead<OrderDetail>> => {
   if (!Uuid.safeParse(orderId).success) return { kind: 'not-found' };
   return readWithSession(async (cookie) => {
-    const { order } = await apiGet(`/api/v1/orders/${orderId}`, OrderResponse, { cookie });
+    const { order } = await apiGet(`/api/v1/orders/${orderId}`, OrderDetailResponse, { cookie });
     return order;
   });
 });

@@ -8,9 +8,11 @@
   "dependencies": {
     "@confluentinc/kafka-javascript": "catalog:",
     "@flashdrop/config": "workspace:*",
+    "@flashdrop/contracts": "workspace:*",
     "@flashdrop/db": "workspace:*",
     "@flashdrop/domain": "workspace:*",
     "@flashdrop/inventory": "workspace:*",
+    "@flashdrop/messaging": "workspace:*",
     "sharp": "catalog:",
     "zod": "catalog:"
   }

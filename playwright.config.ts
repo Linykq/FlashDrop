@@ -23,6 +23,11 @@ export default defineConfig({
   retries: 0,
   // Two cores on a CI runner also run the stack; locally, Playwright's default (half the cores).
   workers: ci ? 2 : undefined,
+  // A spec that waits for a payment may spend SETTLES_WITHIN_MS (30 s) on the decision alone, and the a11y
+  // order pages wait for two in a row; one withheld PSP answer (timeout-after-success stays on in CI) holds
+  // the payment group's batch for 5 s. Each wait's own budget, which names what it waited for, must decide a
+  // failure, not Playwright's default 30 s for the whole test, fixtures included.
+  timeout: ci ? 90_000 : 60_000,
   reporter: ci ? [['github'], ['html', { open: 'never' }]] : [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL,

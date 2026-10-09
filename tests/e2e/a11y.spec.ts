@@ -1,6 +1,16 @@
 import AxeBuilder from '@axe-core/playwright';
+import type { OrderStatus, PaymentMethod } from '@flashdrop/contracts';
 import type { Page, TestInfo } from '@playwright/test';
-import { createDrop, expect, pollOrder, reserveViaApi, signInNewBuyer, test } from './support/fixtures';
+import { formReady, orderHeading, payButton, SETTLES_WITHIN_MS } from './support/checkout';
+import {
+  checkoutViaApi,
+  createDrop,
+  expect,
+  pollOrder,
+  reserveViaApi,
+  signInNewBuyer,
+  test,
+} from './support/fixtures';
 
 /*
  * The axe gate of design §13: 0 serious or critical violations on every page built so far, in both themes.
@@ -36,6 +46,22 @@ async function expectNoBlockingViolations(page: Page, testInfo: TestInfo): Promi
     .filter(({ impact }) => impact != null && BLOCKING_IMPACTS.has(impact))
     .map(({ id, impact, help, nodes }) => ({ id, impact, help, targets: nodes.map(({ target }) => target) }));
   expect(blocking).toEqual([]);
+}
+
+/** A placed order of the spec's buyer, waited on until the payment consumer decided it. */
+async function decidedOrder(
+  page: Page,
+  baseURL: string | undefined,
+  dropId: string,
+  paymentMethod: PaymentMethod,
+  status: OrderStatus,
+): Promise<string> {
+  const order = await reserveViaApi(page.request, baseURL, dropId);
+  await checkoutViaApi(page.request, baseURL, order.id, paymentMethod);
+  await expect
+    .poll(async () => (await pollOrder(page.request, order.id))?.status, { timeout: SETTLES_WITHIN_MS })
+    .toBe(status);
+  return order.id;
 }
 
 for (const colorScheme of ['light', 'dark'] as const) {
@@ -84,13 +110,46 @@ for (const colorScheme of ['light', 'dark'] as const) {
       await expectNoBlockingViolations(page, testInfo);
     });
 
+    test('checkout with the error summary and the leave dialog has no serious or critical axe violations', async ({
+      page,
+      drop,
+      buyer: _,
+      baseURL,
+    }, testInfo) => {
+      const order = await reserveViaApi(page.request, baseURL, drop.id);
+      await page.goto(`/checkout/${order.id}`);
+      await formReady(page);
+      await payButton(page).click();
+      // The error summary takes focus (checkout-keyboard.spec.ts follows it further).
+      await expect(page.locator(':focus')).toHaveAccessibleName(/^Fix \d+ fields/);
+      await expectNoBlockingViolations(page, testInfo);
+      await page.getByRole('button', { name: 'Leave checkout' }).click();
+      await expect(page.getByRole('alertdialog', { name: 'Leave checkout?' })).toBeVisible();
+      await expectNoBlockingViolations(page, testInfo);
+    });
+
+    test('order pages, paid and declined, have no serious or critical axe violations', async ({
+      page,
+      drop,
+      buyer: _,
+      baseURL,
+    }, testInfo) => {
+      const paid = await decidedOrder(page, baseURL, drop.id, 'pm_ok', 'PAID');
+      await page.goto(`/orders/${paid}`);
+      await expect(orderHeading(page)).toHaveText('You got it.');
+      await expectNoBlockingViolations(page, testInfo);
+      const declined = await decidedOrder(page, baseURL, drop.id, 'pm_decline', 'PAYMENT_FAILED');
+      await page.goto(`/orders/${declined}`);
+      await expect(orderHeading(page)).toHaveText('Payment declined');
+      await expectNoBlockingViolations(page, testInfo);
+    });
+
     test('checkout expired has no serious or critical axe violations', async ({
       page,
       context,
       request,
       baseURL,
     }, testInfo) => {
-      test.setTimeout(60_000);
       // The shortest hold there is, left to run out: Postgres expires it within a second of its deadline.
       const drop = await createDrop(request, baseURL, { stock: 1, holdSeconds: 10 });
       await signInNewBuyer(request, baseURL, context);
@@ -104,6 +163,26 @@ for (const colorScheme of ['light', 'dark'] as const) {
     });
   });
 }
+
+test.describe('reduced motion', () => {
+  test.use({ reducedMotion: 'reduce' });
+
+  test('checkout and a paid order have no serious or critical axe violations', async ({
+    page,
+    drop,
+    buyer: _,
+    baseURL,
+  }, testInfo) => {
+    const order = await reserveViaApi(page.request, baseURL, drop.id);
+    await page.goto(`/checkout/${order.id}`);
+    await expect(page.getByRole('region', { name: 'Reserved for you' })).toBeVisible();
+    await expectNoBlockingViolations(page, testInfo);
+    const paid = await decidedOrder(page, baseURL, drop.id, 'pm_ok', 'PAID');
+    await page.goto(`/orders/${paid}`);
+    await expect(orderHeading(page)).toHaveText('You got it.');
+    await expectNoBlockingViolations(page, testInfo);
+  });
+});
 
 test.describe('forced colours', () => {
   test.use({ forcedColors: 'active' });

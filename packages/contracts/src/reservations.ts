@@ -40,7 +40,10 @@ export const OrderQty = z.int().min(MIN_ORDER_QTY).max(MAX_ORDER_QTY);
 export const ReserveBody = z.object({ qty: OrderQty });
 export type ReserveBody = z.infer<typeof ReserveBody>;
 
-/** An order as its owner sees it. Shipping and payment details stay out of reads (§11). */
+/**
+ * An order as its owner sees it in lists and in reserve, checkout, cancel and extend answers. The checkout
+ * details (shipping, payment method, decline code) are only on the owner's order page: `OrderDetail`.
+ */
 export const OrderView = z.object({
   id: Uuid,
   status: OrderStatus,

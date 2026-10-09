@@ -3,9 +3,11 @@ import {
   canTransition,
   INITIAL_ORDER_STATUSES,
   isTerminalOrderStatus,
+  isTerminalUnpaidOrderStatus,
   LIVE_ORDER_STATUSES,
   ORDER_TRANSITIONS,
   TERMINAL_ORDER_STATUSES,
+  TERMINAL_UNPAID_ORDER_STATUSES,
 } from './order-state';
 import { ORDER_STATUSES, type OrderStatus } from './statuses';
 
@@ -43,5 +45,15 @@ describe('order state machine', () => {
 
   it('inserts only holds and tombstones', () => {
     expect(INITIAL_ORDER_STATUSES).toEqual(['RESERVED', 'REJECTED']);
+  });
+
+  it('calls terminal-unpaid exactly the ends a checked-out order can reach without being paid', () => {
+    const reachableFromCheckout: readonly OrderStatus[] = ORDER_TRANSITIONS.PENDING_PAYMENT.filter(
+      (to) => to !== 'PAID',
+    );
+    expect([...TERMINAL_UNPAID_ORDER_STATUSES].sort()).toEqual([...reachableFromCheckout].sort());
+    for (const status of ORDER_STATUSES) {
+      expect(isTerminalUnpaidOrderStatus(status)).toBe(reachableFromCheckout.includes(status));
+    }
   });
 });

@@ -37,6 +37,7 @@ import { Banner } from '../../../../components/ui/banner';
 import { Button, ButtonLink } from '../../../../components/ui/button';
 import { EmptyState } from '../../../../components/ui/empty-state';
 import { IconButton } from '../../../../components/ui/icon-button';
+import { RadioCard } from '../../../../components/ui/radio-card';
 import { Skeleton, SkeletonText } from '../../../../components/ui/skeleton';
 import {
   DropStatusPill,
@@ -44,6 +45,8 @@ import {
   OrderStatusPill,
   StatusPill,
 } from '../../../../components/ui/status-pill';
+import { Steps } from '../../../../components/ui/steps';
+import { SelectField, TextField } from '../../../../components/ui/text-field';
 import { cx } from '../../../../lib/cx';
 import type { StockState } from '../../../../lib/stock';
 import {
@@ -479,6 +482,73 @@ async function Gallery() {
           <StepperDemo max={4} size="lg" />
           <span className="text-footnote text-label-secondary">Limit 2 per person</span>
         </Row>
+      </Section>
+
+      <Section
+        title="Fields and choices"
+        description="Floating labels, never placeholders. Errors in text, linked to their field. Radio cards for a choice of a few."
+      >
+        <div className="grid max-w-form gap-4 rounded-xl bg-canvas p-(--grid-gap) sm:grid-cols-2">
+          <TextField
+            id="demo-name"
+            name="demoName"
+            label="Full name"
+            autoComplete="off"
+            defaultValue="Mira Chen"
+            className="sm:col-span-2"
+          />
+          <TextField id="demo-city" name="demoCity" label="City" autoComplete="off" />
+          <SelectField id="demo-state" name="demoState" label="State" defaultValue="IL">
+            <option value="IL">Illinois</option>
+            <option value="NY">New York</option>
+          </SelectField>
+          <TextField
+            id="demo-zip"
+            name="demoZip"
+            label="ZIP code"
+            autoComplete="off"
+            inputMode="numeric"
+            defaultValue="627"
+            helper="5 digits"
+            error="Enter a 5-digit ZIP code."
+            className="sm:col-span-2"
+          />
+          <fieldset className="grid min-w-0 gap-3 sm:col-span-2">
+            <legend className="mb-3 text-title-3">Payment</legend>
+            <RadioCard
+              name="demoPayment"
+              defaultChecked
+              title="Card ending 4242"
+              description="Test card that always approves."
+            />
+            <RadioCard
+              name="demoPayment"
+              title="Declining card"
+              description="Test card that is always declined, so you can see what happens."
+            />
+          </fieldset>
+        </div>
+      </Section>
+
+      <Section title="Steps" description="Shapes differ by state, so colour is never the only signal.">
+        <div className="flex max-w-form flex-col gap-8">
+          <Steps
+            label="Order progress"
+            steps={[
+              { label: 'Reserved', state: 'done' },
+              { label: 'Payment', state: 'running' },
+              { label: 'Paid', state: 'upcoming' },
+            ]}
+          />
+          <Steps
+            label="Listing progress"
+            steps={[
+              { label: 'Uploaded', state: 'done' },
+              { label: 'Generating', state: 'done' },
+              { label: 'Review', state: 'current' },
+            ]}
+          />
+        </div>
       </Section>
 
       <Section

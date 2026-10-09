@@ -3,11 +3,13 @@
 # The `node` image (design §2, §14): api, worker and payment-mock, and the one-shot `migrate` job, all from
 # one image. Built with the repo root as context by `docker buildx bake node` (docker-bake.hcl).
 #
-#   build arg APPS   space-separated directories under apps/ to bundle (default "api worker", what
-#                    compose.yaml runs; docker-bake.hcl passes its NODE_APPS); each one runs as
+#   build arg APPS   space-separated directories under apps/ to bundle (default "api worker payment-mock",
+#                    what compose.yaml runs; docker-bake.hcl passes its NODE_APPS); each one runs as
 #                    `node apps/<app>/dist/main.js`
 #   migrate job      `node packages/db/dist/cli/migrate.js`, then `node tools/dist/seed.js`, which seeds and
 #                    arms the drops in Redis (migrations in packages/db/drizzle, seed photos in assets/catalog)
+#   dlq:replay       `node apps/worker/dist/dlq-replay.js`, bundled with worker, run as a one-off of the
+#                    consumers service so that payment-mock resolves (compose.yaml, design §6.4)
 #
 # tsup bundles the workspace code (infra/docker/tsup.config.ts). Third-party packages come from a
 # production install made on Linux, which builds the native bindings that pnpm's allow-list permits.
@@ -30,7 +32,7 @@ COPY --parents pnpm-lock.yaml pnpm-workspace.yaml */package.json */*/package.jso
 
 # ---------------------------------------------------------------- bundle
 FROM manifests AS build
-ARG APPS="api worker"
+ARG APPS="api worker payment-mock"
 # The root project brings tsup; @flashdrop/db... covers the migrate entry, and @flashdrop/tools... the seed
 # entry, whose imports resolve through tools/node_modules. `{./apps/<app>}...` needs its braces:
 # `./apps/<app>...` selects the directory alone, without the workspace packages it uses.
@@ -49,7 +51,7 @@ RUN pnpm exec tsup --config infra/docker/tsup.config.ts
 # resolve from apps/<app>/dist. shamefully-hoist links all of them into the root node_modules. (The
 # hoisted node-linker would too, but it ignores --filter and installs the whole workspace, Next included.)
 FROM manifests AS prod-deps
-ARG APPS="api worker"
+ARG APPS="api worker payment-mock"
 # @flashdrop/inventory... brings what the migrate and seed bundles import (pg, drizzle-orm, redis, pino).
 RUN --mount=type=cache,id=flashdrop-pnpm-store,target=/pnpm/store \
     pnpm install --prod --frozen-lockfile --store-dir=/pnpm/store --config.shamefully-hoist=true \

@@ -1,4 +1,6 @@
 import type { CloseReason, OrderView } from '@flashdrop/contracts';
+import type { CheckoutHold } from './checkout-hold';
+import type { OrderState } from './order-requests';
 
 /*
  * The checkout hold (SD §8.3, design-system §10.4): how much of it is left, when it turns to the warning
@@ -8,7 +10,7 @@ import type { CloseReason, OrderView } from '@flashdrop/contracts';
 
 /** The UI ends the hold this much before api does, so a buyer never acts on a hold Postgres already ended. */
 export const HOLD_MARGIN_MS = 2_000;
-/** From here on the countdown and the bar take the warning colour (§10.4). */
+/** From here on the countdown and the bar take the warning colour, and the extension is offered (§10.4). */
 const WARNING_MS = 60_000;
 
 export type HoldClock = {
@@ -57,14 +59,43 @@ const ANNOUNCEMENTS: readonly (readonly [seconds: number, text: string])[] = [
 
 /**
  * The announcement when the countdown crosses 2:00, 1:00, 0:30 or 0:10 (SD §8.3), and `null` at every other
- * tick. A jump across several (a tab that slept) announces only the latest.
+ * tick. A jump across several (a tab that slept) announces only the latest. At 1:00 it also offers the
+ * one-time extension while that is still available (§12.2); once used, the countdown jumps up by a minute and
+ * meets 1:00 again, which it then announces plainly.
  */
-// TODO(M3): "1 minute left. You can add 1 more minute." while the one-time extension is available.
-export function holdAnnouncement(before: number, after: number): string | null {
+export function holdAnnouncement(
+  before: number,
+  after: number,
+  { canExtend = false }: { canExtend?: boolean } = {},
+): string | null {
   for (const [seconds, text] of ANNOUNCEMENTS) {
-    if (after <= seconds && before > seconds) return text;
+    if (after <= seconds && before > seconds) {
+      return seconds === 60 && canExtend ? `${text} You can add 1 more minute.` : text;
+    }
   }
   return null;
+}
+
+/**
+ * Whether the hold card offers the one-time +60 s extension (SD §5.1, WCAG 2.2.1), "Need more time?": in the
+ * last minute (§10.4), while the order has never been extended. Once used, `extensions` is 1 and the offer
+ * never returns.
+ */
+export function offersExtension(state: Pick<HoldState, 'warning' | 'expired'>, extensions: number): boolean {
+  return extensions === 0 && state.warning && !state.expired;
+}
+
+/**
+ * Whether the extension row shows: while the offer stands, and once the buyer answered it (adding, added,
+ * refused or failed) until the hold ends. Checkout shows the row in the hold card and, while the card is out
+ * of view, again just above Pay, both driven by one state (`use-hold-extension.ts`), so the offer stays once-only.
+ */
+export function showsExtensionRow(
+  state: Pick<HoldState, 'warning' | 'expired'>,
+  extensions: number,
+  answered: boolean,
+): boolean {
+  return !state.expired && (answered || offersExtension(state, extensions));
 }
 
 /**
@@ -74,6 +105,41 @@ export function holdAnnouncement(before: number, after: number): string | null {
  */
 export function announcedFrom(createdAt: string, expiresAt: string): number {
   return Math.round((Date.parse(expiresAt) - Date.parse(createdAt)) / 1000) + 1;
+}
+
+/** What a reading of the order from the server means for the hold a checkout tab shows. */
+export type HoldVerdict =
+  /** Still held, until later than the tab shows: extended elsewhere. The reading to take. */
+  | { kind: 'moved'; change: Pick<CheckoutHold, 'expiresAt' | 'extensions' | 'serverNow'> }
+  /** Still held, until when the tab already shows. */
+  | { kind: 'held' }
+  | { kind: 'expired' }
+  /**
+   * No longer a hold: submitted (`placed`, and perhaps paid or failed since), or cancelled in another tab or
+   * browser (`left`).
+   */
+  | { kind: 'closed'; end: 'placed' | 'left' };
+
+/**
+ * Judges a reading of the order against the hold on screen (`hold`, as the tab knew it when it asked). Only
+ * the server knows whether a hold ended for a reason no clock shows, so a tab asks before it says "expired"
+ * (`clockEnded`): a hold submitted in another tab is `closed` there, not expired. When the deadline that ran out
+ * still stands, the hold is over: Postgres ends it within the UI's 2 s margin (SD §8.3).
+ */
+export function judgeReading(
+  hold: Pick<CheckoutHold, 'expiresAt'>,
+  order: OrderState,
+  { clockEnded = false }: { clockEnded?: boolean } = {},
+): HoldVerdict {
+  if (order.status === 'EXPIRED') return { kind: 'expired' };
+  if (order.status === 'CANCELLED') return { kind: 'closed', end: 'left' };
+  // REJECTED was never a hold, so any other status left checkout through a submit.
+  if (order.status !== 'RESERVED') return { kind: 'closed', end: 'placed' };
+  if (Date.parse(order.expiresAt) > Date.parse(hold.expiresAt)) {
+    const { expiresAt, extensions, serverNow } = order;
+    return { kind: 'moved', change: { expiresAt, extensions, serverNow: Date.parse(serverNow) } };
+  }
+  return clockEnded ? { kind: 'expired' } : { kind: 'held' };
 }
 
 /** Whether an order is a hold that is still live at `now` (server time), by the UI's own deadline. */

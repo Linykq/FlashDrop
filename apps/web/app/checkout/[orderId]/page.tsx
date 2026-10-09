@@ -1,11 +1,11 @@
-import type { OrderView } from '@flashdrop/contracts';
 import type { Metadata } from 'next';
 import { notFound, redirect } from 'next/navigation';
 import { Suspense } from 'react';
-import { type CheckoutState, CheckoutView } from '../../../components/checkout/checkout-view';
+import { CheckoutView } from '../../../components/checkout/checkout-view';
 import { OrderSummary } from '../../../components/checkout/order-summary';
 import { Skeleton, SkeletonText } from '../../../components/ui/skeleton';
-import { holdClock, holdState, rejectionText } from '../../../lib/hold';
+import { formatMoney } from '../../../lib/format';
+import { holdClock, holdState } from '../../../lib/hold';
 import { checkoutHref, loginHref, orderPageHref, productHref } from '../../../lib/routes';
 import { readOrder } from '../../../lib/server/orders';
 
@@ -32,35 +32,28 @@ async function Checkout({ params }: Pick<PageProps<'/checkout/[orderId]'>, 'para
   if (read.kind === 'signed-out') redirect(loginHref(checkoutHref(orderId)));
   if (read.kind === 'not-found') notFound();
   const order = read.value;
-  const state = checkoutState(order);
-  // Submitted or finished: what happened next is the order page's to show (§10.4).
-  if (state === null) redirect(orderPageHref(order.id));
+  // Checkout renders only a hold. Submitted, paid, expired, left or refused: what happened is the order
+  // page's to show (§10.4), and it sends a hold back here, so the two never loop.
+  if (order.status !== 'RESERVED') redirect(orderPageHref(order.id));
+
+  const serverNow = Date.parse(order.serverNow);
   return (
     <CheckoutView
-      state={state}
+      orderId={order.id}
+      hold={{
+        createdAt: order.createdAt,
+        expiresAt: order.expiresAt,
+        extensions: order.extensions,
+        serverNow,
+      }}
+      // Past the UI's deadline (2 s before api's), Postgres is about to expire the hold: it is over here.
+      expiredAtLoad={holdState(serverNow, holdClock(order.createdAt, order.expiresAt)).expired}
       productHref={productHref(order.product.slug)}
+      orderPageHref={orderPageHref(order.id)}
+      payLabel={`Pay ${formatMoney(order.totalCents, order.currency, 'exact')}`}
       summary={<OrderSummary order={order} />}
     />
   );
-}
-
-/** What checkout shows for the order, or `null` when it belongs on the order page. */
-function checkoutState(order: OrderView): CheckoutState | null {
-  switch (order.status) {
-    case 'RESERVED': {
-      const serverNow = Date.parse(order.serverNow);
-      // The UI ends a hold 2 s early; Postgres expires it a moment after its deadline (SD §4.6).
-      if (holdState(serverNow, holdClock(order.createdAt, order.expiresAt)).expired)
-        return { kind: 'expired' };
-      return { kind: 'held', createdAt: order.createdAt, expiresAt: order.expiresAt, serverNow };
-    }
-    case 'EXPIRED':
-      return { kind: 'expired' };
-    case 'REJECTED':
-      return { kind: 'rejected', reason: rejectionText(order.closeReason) };
-    default:
-      return null;
-  }
 }
 
 /** The page's exact box while the order loads: the heading, the hold card and the summary card (§9.16). */

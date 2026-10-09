@@ -49,6 +49,12 @@ describe('isTransientDbError', () => {
     ['connection failure', { code: '08006', severity: 'ERROR' }],
     ['server shutting down', { code: '57P01', severity: 'FATAL' }],
     ['any FATAL', { code: 'XX000', severity: 'FATAL' }],
+    // A full disk, exhausted memory or an I/O error passes; dead-lettering on it would drop events (§6.4).
+    ['disk full', { code: '53100', severity: 'ERROR' }],
+    ['out of memory', { code: '53200', severity: 'ERROR' }],
+    ['too many connections', { code: '53300', severity: 'FATAL' }],
+    ['generic insufficient resources', { code: '53000', severity: 'ERROR' }],
+    ['I/O error', { code: '58030', severity: 'ERROR' }],
   ] as const)('retries a %s', (_name, fields) => {
     expect(isTransientDbError(wrapped(databaseError(fields)))).toBe(true);
   });

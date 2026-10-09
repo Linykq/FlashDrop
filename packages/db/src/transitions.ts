@@ -1,26 +1,47 @@
 import type { ProductSummary } from '@flashdrop/contracts';
-import type { PostgresRefusal, RejectReason } from '@flashdrop/domain';
-import { BugError, TERMINAL_ORDER_STATUSES } from '@flashdrop/domain';
+import {
+  ADMISSION_REFUSALS,
+  BugError,
+  type PostgresRefusal,
+  type RejectReason,
+  TERMINAL_ORDER_STATUSES,
+} from '@flashdrop/domain';
+import { uuidv7 } from '@flashdrop/domain/identity';
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Executor, Tx } from './client';
 import { HotRowBusyError, pgErrorOf } from './errors';
 import { type OrderRecord, type OrderWithProduct, parseOrderRows } from './orders';
-import { insertOutboxEvents, orderEvent, outboxRow } from './outbox';
+import { orderEvent, outboxRow } from './outbox';
 import { PgUuid, parseRows } from './rows';
 import { literalList } from './schema/columns';
-import { transaction } from './transaction';
 
 /*
  * The guarantee-carrying statements of a reservation's life in Postgres (design §4.4, §4.5, §5.2), written
- * by hand through Drizzle's `sql` template so the ORM never decides lock order or statement shape (§3).
+ * by hand so the ORM never decides lock order or statement shape (§3).
  *
- * Global lock order: orders row -> user_drop_quota row -> drop_inventory row, always last. The reserve
- * transaction follows it statement by statement, so the hot inventory row is held for one statement plus
- * the commit, and a transaction holding it never waits on anything else: it cannot be part of a deadlock.
+ * The reserve transaction runs server-side, in the PL/pgSQL functions of migration 0006 (§5.2 "Hot row",
+ * escalation step 1): `recordReservation` is one statement, committed in the round trip that runs it, so the
+ * hot inventory row is never held while a COMMIT travels from the api. The step functions below call the
+ * same SQL one step at a time, for callers that must hold a reserve transaction open between steps.
+ *
+ * Global lock order: orders row -> user_drop_quota row -> drop_inventory row, always last. A transaction
+ * holding the hot row never waits on anything else, so it cannot be part of a deadlock.
  */
 
 const TERMINAL = literalList(TERMINAL_ORDER_STATUSES);
+
+/** query_canceled: on the api pool, its `statement_timeout`. */
+const STATEMENT_TIMEOUT = '57014';
+
+/** The SQLSTATE `fd_record_reservation` refuses with (migration 0006); DETAIL carries the reason. */
+const RESERVATION_REFUSED = 'FD001';
+
+const Refusal = z.enum([...ADMISSION_REFUSALS, 'STALE_GEN']) satisfies z.ZodType<PostgresRefusal>;
+
+function hotRowBusy(dropId: string, cause: unknown): HotRowBusyError {
+  return new HotRowBusyError(`stock row of drop ${dropId} busy past the statement timeout`, { cause });
+}
 
 /** A Lua-admitted reservation to record: the rid, who, what, and the request it came from. */
 export interface NewReservation {
@@ -34,41 +55,7 @@ export interface NewReservation {
   readonly requestHash: Buffer;
 }
 
-/**
- * Inserts the order as RESERVED with the drop's product and price, `expires_at = now() + hold_seconds`.
- * Undefined when the rid already exists: a replay. A same-key request still in flight holds the primary
- * key, so this waits for it and then replays its outcome, which is why no "in progress" state exists (§4.5).
- * It is also undefined for a drop id that does not exist, which Lua never admits.
- *
- * `ON CONFLICT DO NOTHING` names no conflict target on purpose. A same-key request collides on two unique
- * indexes, the primary key and `(user_id, drop_id, idempotency_key)`, which encode the same identity
- * (rid = uuidv5 of that triple). With `ON CONFLICT (id)` only the primary key is an arbiter, and two
- * concurrent same-key inserts could meet on the other index first and fail with 23505 instead of
- * replaying (seen under a 50-request storm). Without a target every unique index is an arbiter.
- *
- * The same statement reads the product summary the 201 answer shows, so a winner needs no second read.
- */
-export async function insertOrderOnConflictDoNothing(
-  tx: Tx,
-  r: NewReservation,
-): Promise<OrderWithProduct | undefined> {
-  const { rows } = await tx.execute(sql`
-    WITH ins AS (
-      INSERT INTO orders (id, user_id, drop_id, product_id, qty, unit_price_cents, currency, status,
-                          idempotency_key, request_hash, expires_at)
-      SELECT ${r.id}::uuid, ${r.userId}::uuid, d.id, d.product_id, ${r.qty}::int, d.price_cents, d.currency, 'RESERVED',
-             ${r.idempotencyKey}::text, ${r.requestHash}::bytea, now() + make_interval(secs => d.hold_seconds)
-      FROM drops d WHERE d.id = ${r.dropId}
-      ON CONFLICT DO NOTHING
-      RETURNING *)
-    SELECT ins.*, p.slug AS product_slug, p.title AS product_title, p.image_keys AS product_image_keys
-    FROM ins JOIN products p ON p.id = ins.product_id`);
-  const [order] = parseOrderRows(rows, 'insertOrderOnConflictDoNothing');
-  const [product] = parseRows(InsertedProduct, rows, 'insertOrderOnConflictDoNothing product');
-  if (order === undefined || product === undefined) return undefined;
-  return { order, product: { id: order.productId, ...product } };
-}
-
+/** The product summary the 201 answer shows, read by the same statement that inserts the order. */
 const InsertedProduct = z
   .object({ product_slug: z.string(), product_title: z.string(), product_image_keys: z.array(z.string()) })
   .transform((row) => ({
@@ -77,75 +64,74 @@ const InsertedProduct = z
     imageKeys: row.product_image_keys,
   }));
 
+/** The order and product of a statement that returns both, or undefined when it returned no row. */
+function orderWithProduct(rows: readonly unknown[], statement: string): OrderWithProduct | undefined {
+  const [order] = parseOrderRows(rows, statement);
+  const [product] = parseRows(InsertedProduct, rows, `${statement} product`);
+  if (order === undefined || product === undefined) return undefined;
+  return { order, product: { id: order.productId, ...product } };
+}
+
 /**
- * Adds `qty` to the user's quota for the drop, unless that would pass the limit (`within_limit`, INV-3).
- * The first claim copies the drop's per-user limit into `limit_qty`; armed drops never change it, so the
- * copy cannot go stale. The upsert locks the quota row, so concurrent claims of one user, from any number
+ * Step 1 (`fd_insert_reserved_order`): inserts the order as RESERVED with the drop's product and price,
+ * `expires_at = now() + hold_seconds`. Undefined when the rid already exists: a replay. A same-key request
+ * still in flight holds the primary key, so this waits for it and then replays its outcome, which is why no
+ * "in progress" state exists (§4.5). It is also undefined for a drop id that does not exist, which Lua never
+ * admits. The conflict has no target, so both unique indexes of the rid's identity are arbiters (see 0006).
+ */
+export async function insertOrderOnConflictDoNothing(
+  tx: Tx,
+  r: NewReservation,
+): Promise<OrderWithProduct | undefined> {
+  const { rows } = await tx.execute(sql`
+    SELECT o.*, p.slug AS product_slug, p.title AS product_title, p.image_keys AS product_image_keys
+    FROM fd_insert_reserved_order(${r.id}::uuid, ${r.userId}::uuid, ${r.dropId}::uuid, ${r.qty}::int,
+                                  ${r.idempotencyKey}::text, ${r.requestHash}::bytea) o
+    JOIN products p ON p.id = o.product_id`);
+  return orderWithProduct(rows, 'fd_insert_reserved_order');
+}
+
+const Claimed = z.object({ claimed: z.boolean() });
+
+/**
+ * Step 2 (`fd_claim_quota`): adds `qty` to the user's quota for the drop, unless that would pass the limit
+ * (`within_limit`, INV-3). The upsert locks the quota row, so concurrent claims of one user, from any number
  * of tabs and keys, serialize on it and each sees the committed total. False: the limit would be passed.
  */
 export async function claimQuota(tx: Tx, userId: string, dropId: string, qty: number): Promise<boolean> {
-  const { rows } = await tx.execute(sql`
-    INSERT INTO user_drop_quota (user_id, drop_id, claimed, limit_qty)
-    SELECT ${userId}::uuid, d.id, ${qty}::int, d.per_user_limit FROM drops d
-    WHERE d.id = ${dropId} AND ${qty}::int <= d.per_user_limit
-    ON CONFLICT (user_id, drop_id) DO UPDATE SET claimed = user_drop_quota.claimed + EXCLUDED.claimed
-      WHERE user_drop_quota.claimed + EXCLUDED.claimed <= user_drop_quota.limit_qty
-    RETURNING claimed`);
-  return rows.length === 1;
+  const { rows } = await tx.execute(
+    sql`SELECT fd_claim_quota(${userId}::uuid, ${dropId}::uuid, ${qty}::int) AS claimed`,
+  );
+  const [row] = parseRows(Claimed, rows, 'fd_claim_quota');
+  return row?.claimed === true;
 }
 
 export type TakeStockResult = 'OK' | Exclude<PostgresRefusal, 'LIMIT'>;
 
-const StockState = z.object({ gen: z.int(), available: z.int(), open: z.boolean() });
+const StockTaken = z.object({ result: z.enum(['OK', 'STALE_GEN', 'NOT_LIVE', 'SOLD_OUT']) });
 
 /**
- * Takes `qty` units of the drop: the last statement of the reserve transaction, on the hot row (§5.2).
- * One conditional UPDATE carries three guarantees: the generation fence (a rebuild since Lua admitted the
- * request makes it fail, §4.7), the stock backstop (INV-1, whatever Redis said), and the window backstop
- * (no order outside SCHEDULED/LIVE and `[starts_at, ends_at)`, whatever the Redis status). The join reads
- * `drops` through MVCC and locks nothing there.
- *
- * On 0 rows the transaction re-reads and classifies, in this order: STALE_GEN (retry with the same key),
- * NOT_LIVE, SOLD_OUT. The re-read may see later commits than the UPDATE did; any answer it gives is still a
- * refusal of this transaction, and SOLD_OUT is the default.
+ * Step 3, the last (`fd_take_stock`): takes `qty` units of the drop on the hot row (§5.2). One conditional
+ * UPDATE carries the generation fence (§4.7), the stock backstop (INV-1) and the window backstop; on 0 rows
+ * it classifies the refusal as STALE_GEN (retry with the same key), then NOT_LIVE, then SOLD_OUT.
  *
  * A statement timeout here is the winners' queue on the row (every reservation of the drop takes it), so it
  * is rethrown as `HotRowBusyError`: still 503 `RETRY`, but not evidence that Postgres is failing.
  */
 export async function takeStock(tx: Tx, dropId: string, qty: number, gen: number): Promise<TakeStockResult> {
-  const taken = await tx
-    .execute(sql`
-      UPDATE drop_inventory di SET reserved = di.reserved + ${qty}, updated_at = now()
-      FROM drops d
-      WHERE di.drop_id = ${dropId} AND d.id = di.drop_id
-        AND di.redis_gen = ${gen}
-        AND di.total - di.sold - di.reserved >= ${qty}
-        AND d.status IN ('SCHEDULED', 'LIVE') AND now() >= d.starts_at AND now() < d.ends_at
-      RETURNING di.reserved`)
+  const { rows } = await tx
+    .execute(sql`SELECT fd_take_stock(${dropId}::uuid, ${qty}::int, ${gen}::int) AS result`)
     .catch((error: unknown) => {
-      if (pgErrorOf(error)?.code === '57014') {
-        throw new HotRowBusyError(`stock row of drop ${dropId} busy past the statement timeout`, {
-          cause: error,
-        });
-      }
+      if (pgErrorOf(error)?.code === STATEMENT_TIMEOUT) throw hotRowBusy(dropId, error);
       throw error;
     });
-  if (taken.rows.length === 1) return 'OK';
-
-  const { rows } = await tx.execute(sql`
-    SELECT di.redis_gen AS gen, di.total - di.sold - di.reserved AS available,
-           d.status IN ('SCHEDULED', 'LIVE') AND now() >= d.starts_at AND now() < d.ends_at AS open
-    FROM drop_inventory di JOIN drops d ON d.id = di.drop_id
-    WHERE di.drop_id = ${dropId}`);
-  const [state] = parseRows(StockState, rows, 'takeStock re-read');
-  if (state === undefined) throw new BugError(`takeStock: drop ${dropId} has no inventory`);
-  if (state.gen !== gen) return 'STALE_GEN';
-  if (!state.open) return 'NOT_LIVE';
-  return 'SOLD_OUT';
+  const [row] = parseRows(StockTaken, rows, 'fd_take_stock');
+  if (row === undefined) throw new BugError('fd_take_stock returned no row');
+  return row.result;
 }
 
 export type ReservationOutcome =
-  /** Committed. The product summary comes from the insert statement itself, for the 201 answer. */
+  /** Committed. The product summary comes from the reserve statement itself, for the 201 answer. */
   | { readonly kind: 'created'; readonly order: OrderRecord; readonly product: ProductSummary }
   /**
    * The rid already has an order; the caller reads and replays it (`reserveReplay`). Should the read find
@@ -155,47 +141,55 @@ export type ReservationOutcome =
   /** Rolled back. SOLD_OUT, LIMIT and NOT_LIVE are tombstoned by the caller; STALE_GEN is retried. */
   | { readonly kind: 'refused'; readonly reason: PostgresRefusal };
 
-class Refusal extends Error {
-  readonly reason: PostgresRefusal;
-
-  constructor(reason: PostgresRefusal) {
-    super(`reservation refused: ${reason}`);
-    this.reason = reason;
-  }
-}
-
 /**
- * The reserve transaction (§5.2), for a hold Lua granted under generation `gen`: the order, the quota, the
- * `order.reserved` outbox row, then the stock, in lock order. Use a pool with the api profile
- * (`statement_timeout=2s`, `transaction_timeout=5s`), so no reserve transaction outlives the orphan scan's
- * 30 s of grace (§4.6). It sends no NOTIFY (§5.4).
+ * The reserve transaction (§5.2) for a hold Lua granted under generation `gen`: the order, the quota, the
+ * `order.reserved` outbox row, then the stock, in lock order, all in ONE statement (`fd_record_reservation`)
+ * outside any explicit transaction. Postgres commits it when the function returns, in the same round trip,
+ * so the hot row is held for zero network round trips. It sends no NOTIFY (§5.4).
+ *
+ * Use a pool with the api profile: `statement_timeout` (2 s) bounds the whole transaction, below the orphan
+ * scan's 30 s grace (§4.6). A timeout while queued on the hot row (the context of the error names
+ * `fd_take_stock`) is `HotRowBusyError`; one anywhere else stays a plain statement timeout, as it was when
+ * each step was a statement of its own.
  */
 export async function recordReservation(
   db: Db,
   r: NewReservation & { readonly gen: number; readonly traceId?: string },
 ): Promise<ReservationOutcome> {
+  let rows: readonly unknown[];
   try {
-    return await transaction(db, async (tx): Promise<ReservationOutcome> => {
-      const inserted = await insertOrderOnConflictDoNothing(tx, r);
-      if (inserted === undefined) return { kind: 'replay' };
-      const { order, product } = inserted;
-      if (!(await claimQuota(tx, r.userId, r.dropId, r.qty))) throw new Refusal('LIMIT');
-      await insertOutboxEvents(tx, [
-        orderEvent(
-          'order.reserved',
-          order,
-          { qty: order.qty, unitPriceCents: order.unitPriceCents, expiresAt: order.expiresAt.toISOString() },
-          { occurredAt: order.createdAt, traceId: r.traceId },
-        ),
-      ]);
-      const stock = await takeStock(tx, r.dropId, r.qty, r.gen);
-      if (stock !== 'OK') throw new Refusal(stock);
-      return { kind: 'created', order, product };
-    });
+    ({ rows } = await db.execute(sql`
+      SELECT (r.reserved_order).*, r.product_slug, r.product_title, r.product_image_keys
+      FROM fd_record_reservation(${r.id}::uuid, ${r.userId}::uuid, ${r.dropId}::uuid, ${r.qty}::int,
+                                 ${r.idempotencyKey}::text, ${r.requestHash}::bytea, ${r.gen}::int,
+                                 ${uuidv7()}::uuid, ${r.traceId ?? null}::text) r`));
   } catch (error) {
-    if (error instanceof Refusal) return { kind: 'refused', reason: error.reason };
-    throw error;
+    const reason = refusalOf(error);
+    if (reason !== undefined) return { kind: 'refused', reason };
+    throw queuedOnHotRow(error) ? hotRowBusy(r.dropId, error) : error;
   }
+  const created = orderWithProduct(rows, 'fd_record_reservation');
+  return created === undefined ? { kind: 'replay' } : { kind: 'created', ...created };
+}
+
+/** The reason of a refusal `fd_record_reservation` raised, or undefined for any other error. */
+function refusalOf(error: unknown): PostgresRefusal | undefined {
+  const pg = pgErrorOf(error);
+  if (pg?.code !== RESERVATION_REFUSED) return undefined;
+  const reason = Refusal.safeParse(pg.detail);
+  if (!reason.success) {
+    throw new BugError(`fd_record_reservation refused with reason ${String(pg.detail)}`, { cause: error });
+  }
+  return reason.data;
+}
+
+/**
+ * A statement timeout that fired inside `fd_take_stock`, queued on the hot row: Postgres reports the PL/pgSQL
+ * call stack of the error in its context (`where`), innermost function first.
+ */
+function queuedOnHotRow(error: unknown): boolean {
+  const pg = pgErrorOf(error);
+  return pg?.code === STATEMENT_TIMEOUT && pg.where?.includes('PL/pgSQL function fd_take_stock(') === true;
 }
 
 /** A refusal to record as a REJECTED order: the request's identity, and why. */

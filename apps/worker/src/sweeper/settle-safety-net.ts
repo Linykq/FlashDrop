@@ -19,8 +19,8 @@ const TICK_BUDGET_MS = 4_000;
 /**
  * `settle-safety-net` (design §4.6, every 5 s): terminal orders whose outcome Redis has not applied, and
  * that changed more than 10 s ago, are settled directly. It covers a lost, slow or dead-lettered
- * settlement event, and until the settlement consumer exists (M3) it is how stock comes back after expiry:
- * expire-orders (≤ 1 s) + 10 s + this loop (≤ 5 s), about 15 s in all.
+ * settlement event, and it is how stock comes back while the settlement consumers are down: expire-orders
+ * (≤ 1 s) + 10 s + this loop (≤ 5 s), about 15 s in all.
  *
  * It drains rather than taking one page per tick, so a burst of abandoned holds comes back within that
  * bound too: pages of 200, each settled with up to 16 Function calls in flight and recorded in one

@@ -1,4 +1,5 @@
 import { isIdempotencyKey, MAX_ORDER_QTY, MIN_ORDER_QTY } from '@flashdrop/domain';
+import { sessionStore as storage } from './session-store';
 import { uuidv7 } from './uuidv7';
 
 /*
@@ -8,35 +9,6 @@ import { uuidv7 } from './uuidv7';
  */
 
 type PendingReserve = { key: string; qty: number };
-
-// sessionStorage throws where site data is blocked (some private modes). The key then lives in memory: it
-// still covers retries on this page, just not a reload.
-const memory = new Map<string, string>();
-
-const storage = {
-  get(name: string): string | null {
-    try {
-      return sessionStorage.getItem(name);
-    } catch {
-      return memory.get(name) ?? null;
-    }
-  },
-  set(name: string, value: string): void {
-    try {
-      sessionStorage.setItem(name, value);
-    } catch {
-      memory.set(name, value);
-    }
-  },
-  remove(name: string): void {
-    memory.delete(name);
-    try {
-      sessionStorage.removeItem(name);
-    } catch {
-      // Nothing was stored there: `set` fell back to memory, which is already cleared.
-    }
-  },
-};
 
 const storageName = (dropId: string) => `fd:reserve:${dropId}`;
 

@@ -1,3 +1,4 @@
+import { sameBytes } from './bytes';
 import { BugError, type ErrorCode } from './errors';
 import type { CloseReason, OrderStatus } from './statuses';
 
@@ -91,12 +92,6 @@ export function reserveReplay(order: ReplayableOrder, fingerprint: Uint8Array): 
 
 function isRejectReason(reason: CloseReason | null): reason is RejectReason {
   return (REJECT_REASONS as readonly (CloseReason | null)[]).includes(reason);
-}
-
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
 }
 
 /** States of a Redis `rsv` entry (§4.1). */

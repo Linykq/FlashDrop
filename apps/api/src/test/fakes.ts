@@ -1,12 +1,20 @@
 import { createLogger } from '@flashdrop/config';
 import type { AdminDrop, DropListQuery, ProductDetail, SessionUser, StockLevel } from '@flashdrop/contracts';
-import { type NewReservation, type OrderRecord, type RejectedTombstone, toOrderView } from '@flashdrop/db';
-import type { PostgresRefusal } from '@flashdrop/domain';
+import type { NewReservation, OrderRecord, OrderWithProduct, RejectedTombstone } from '@flashdrop/db';
+import {
+  cancelReplay,
+  canTransition,
+  checkoutReplay,
+  HOLD_EXTENSION_SECONDS,
+  type PostgresRefusal,
+} from '@flashdrop/domain';
+import { checkoutFingerprint } from '@flashdrop/domain/identity';
 import type { ReserveInput, ReserveResult } from '@flashdrop/inventory';
 import { type AppOptions, type AppServices, buildApp } from '../app';
 import type { Api } from '../http/api';
 import { createSessionCodec } from '../http/session';
 import type { DropListing } from '../services/catalog';
+import { createOrderService, type OrderPorts } from '../services/orders';
 import { createReservationService, type ReservePorts } from '../services/reserve';
 
 /*
@@ -227,6 +235,87 @@ function fakeReservePorts(state: FakeState): ReservePorts {
   };
 }
 
+/** The fake drop's payment window: a submit moves `expires_at` to the fake clock plus this. */
+export const PAYMENT_SECONDS = 300;
+
+/**
+ * The order CASes of `packages/db/src/checkout.ts` over `state.orders` at the fake clock, classified by the
+ * same domain rules, so the routes and the service run against Postgres-shaped outcomes.
+ */
+function fakeOrderPorts(state: FakeState): OrderPorts {
+  const withProduct = (order: OrderRecord): OrderWithProduct => ({ order, product: LIVE_DROP.product });
+  const own = (orderId: string, userId: string) => {
+    const order = state.orders.get(orderId);
+    return order?.userId === userId ? order : undefined;
+  };
+  const save = (order: OrderRecord) => {
+    state.orders.set(order.id, order);
+    return withProduct(order);
+  };
+  const held = (order: OrderRecord) => order.status === 'RESERVED' && order.expiresAt > NOW;
+
+  return {
+    async submit({ orderId, userId, checkoutKey, shipping, paymentMethod }) {
+      const order = own(orderId, userId);
+      if (order === undefined) return { kind: 'not_found' };
+      const checkoutHash = checkoutFingerprint({ orderId, shipping, paymentMethod });
+      if (held(order)) {
+        const placed = save({
+          ...order,
+          status: 'PENDING_PAYMENT',
+          checkoutKey,
+          checkoutHash,
+          shipping: { ...shipping },
+          paymentMethod,
+          expiresAt: new Date(NOW.getTime() + PAYMENT_SECONDS * 1000),
+          version: order.version + 1,
+        });
+        return { kind: 'submitted', ...placed };
+      }
+      const replay = checkoutReplay(order, checkoutKey, checkoutHash);
+      return replay.kind === 'order' ? { kind: 'replay', ...withProduct(order) } : replay;
+    },
+    async cancel({ orderId, userId, from }) {
+      const order = own(orderId, userId);
+      if (order === undefined) return { kind: 'not_found' };
+      if (canTransition(order.status, 'CANCELLED') && (from === undefined || order.status === from)) {
+        const cancelled = save({
+          ...order,
+          status: 'CANCELLED',
+          closeReason: 'USER',
+          closedAt: NOW,
+          version: order.version + 1,
+        });
+        return { kind: 'cancelled', ...cancelled };
+      }
+      const replay = cancelReplay(order.status);
+      return replay.kind === 'order' ? { kind: 'replay', ...withProduct(order) } : replay;
+    },
+    async extend({ orderId, userId }) {
+      const order = own(orderId, userId);
+      if (order === undefined) return { kind: 'not_found' };
+      if (!held(order) || order.extensions > 0) return { kind: 'refused', code: 'CONFLICT' };
+      const extended = save({
+        ...order,
+        expiresAt: new Date(order.expiresAt.getTime() + HOLD_EXTENSION_SECONDS * 1000),
+        extensions: order.extensions + 1,
+        version: order.version + 1,
+      });
+      return { kind: 'extended', ...extended };
+    },
+    async detail(orderId, userId) {
+      const order = own(orderId, userId);
+      return order === undefined ? undefined : { ...withProduct(order), declineCode: null };
+    },
+    async list(userId, limit) {
+      return [...state.orders.values()]
+        .filter((order) => order.userId === userId && order.status !== 'REJECTED')
+        .slice(0, limit)
+        .map(withProduct);
+    },
+  };
+}
+
 export function fakeServices(state: FakeState): AppServices {
   const adminCall = async (call: string): Promise<AdminDrop> => {
     state.admin.calls.push(call);
@@ -235,7 +324,6 @@ export function fakeServices(state: FakeState): AppServices {
     if (fail !== undefined) throw fail;
     return ADMIN_DROP;
   };
-  const view = (order: OrderRecord) => toOrderView(order, LIVE_DROP.product, NOW);
   return {
     catalog: {
       listDrops: async (query) => {
@@ -261,17 +349,7 @@ export function fakeServices(state: FakeState): AppServices {
       findById: async (id) => state.users.get(id),
     },
     reservations: createReservationService(fakeReservePorts(state), () => NOW),
-    orders: {
-      get: async (orderId, userId) => {
-        const order = state.orders.get(orderId);
-        return order?.userId === userId ? view(order) : undefined;
-      },
-      listForUser: async (userId, limit) =>
-        [...state.orders.values()]
-          .filter((order) => order.userId === userId && order.status !== 'REJECTED')
-          .slice(0, limit)
-          .map(view),
-    },
+    orders: createOrderService(fakeOrderPorts(state), () => NOW),
     adminDrops: {
       create: () => adminCall('create'),
       patch: (dropId) => adminCall(`patch ${dropId}`),

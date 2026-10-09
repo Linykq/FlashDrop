@@ -22,7 +22,7 @@ import { uploadRoutes } from './routes/uploads';
 import type { AdminDropService } from './services/admin-drops';
 import type { CatalogStore } from './services/catalog';
 import type { DependencyCheck } from './services/health';
-import type { OrderReader } from './services/orders';
+import type { OrderService } from './services/orders';
 import type { ReservationService } from './services/reserve';
 import type { StockReader } from './services/stock';
 import type { TestRouteService } from './services/testing';
@@ -33,7 +33,7 @@ export interface AppServices {
   readonly stock: StockReader;
   readonly users: UserStore;
   readonly reservations: ReservationService;
-  readonly orders: OrderReader;
+  readonly orders: OrderService;
   readonly adminDrops: AdminDropService;
   /** The fixed-window counter behind the rate limits: the `fd_rl_hit` Function (§11). */
   readonly rateLimitCounter: RateLimitCounter;
@@ -125,7 +125,7 @@ export async function buildApp(options: AppOptions): Promise<Api> {
         authRoutes(api, { users: services.users, sessions });
         catalogRoutes(api, { catalog: services.catalog, stock: services.stock, now });
         reservationRoutes(api, { reservations: services.reservations, limits });
-        orderRoutes(api, { orders: services.orders, now });
+        orderRoutes(api, { orders: services.orders });
         adminRoutes(api, { adminDrops: services.adminDrops });
         if (options.testRoutes !== undefined) testRoutes(api, { ...options.testRoutes, sessions });
       }

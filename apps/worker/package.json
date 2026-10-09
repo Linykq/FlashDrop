@@ -1,17 +1,20 @@
 {
   "name": "@flashdrop/worker",
   "private": true,
-  "description": "Background roles via WORKER_ROLES: sweeper and reconciler (M2); relay and settlement (M3), payment (M4), dashboard (M7), listing (M8).",
+  "description": "Background roles via WORKER_ROLES: relay, sweeper and reconciler (worker); payment and settlement consumers (consumers); dashboard (M7), listing (M8).",
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=../../.env src/main.ts",
+    "dlq:replay": "tsx --env-file-if-exists=../../.env src/dlq-replay.ts",
     "typecheck": "tsc"
   },
   "dependencies": {
     "@flashdrop/config": "workspace:*",
+    "@flashdrop/contracts": "workspace:*",
     "@flashdrop/db": "workspace:*",
     "@flashdrop/domain": "workspace:*",
     "@flashdrop/inventory": "workspace:*",
+    "@flashdrop/messaging": "workspace:*",
     "pg": "catalog:",
     "zod": "catalog:"
   },

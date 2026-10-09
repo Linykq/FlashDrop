@@ -6,9 +6,12 @@ import {
   holdAnnouncement,
   holdClock,
   holdState,
+  judgeReading,
   liveHold,
   liveHoldsFirst,
+  offersExtension,
   rejectionText,
+  showsExtensionRow,
 } from './hold';
 
 const created = '2026-10-02T19:00:00.000Z';
@@ -148,5 +151,86 @@ describe('rejectionText', () => {
     expect(rejectionText('LIMIT')).toBe("You've already claimed the limit for this drop.");
     expect(rejectionText('NOT_LIVE')).toBe("The drop wasn't open when your request arrived.");
     expect(rejectionText('ORPHANED')).toBe("Your request didn't finish, so nothing was reserved.");
+  });
+});
+
+describe('the one-time extension', () => {
+  const clock = holdClock(created, expires);
+
+  it('is offered in the last minute of a hold that was never extended', () => {
+    expect(offersExtension(holdState(at(57), clock), 0)).toBe(false);
+    expect(offersExtension(holdState(at(58), clock), 0)).toBe(true);
+    expect(offersExtension(holdState(at(58), clock), 1)).toBe(false);
+    expect(offersExtension(holdState(clock.deadline, clock), 0)).toBe(false);
+  });
+
+  it('is mentioned at 1:00 while it can still be used, and plainly once it was', () => {
+    expect(holdAnnouncement(61, 60, { canExtend: true })).toBe('1 minute left. You can add 1 more minute.');
+    expect(holdAnnouncement(61, 60, { canExtend: false })).toBe('1 minute left.');
+    expect(holdAnnouncement(31, 30, { canExtend: true })).toBe('30 seconds left.');
+  });
+
+  it('says nothing when the extension lifts the countdown back over a threshold', () => {
+    expect(holdAnnouncement(45, 105)).toBeNull();
+    expect(holdAnnouncement(105, 104)).toBeNull();
+    expect(holdAnnouncement(61, 60)).toBe('1 minute left.');
+  });
+});
+
+describe('the extension row', () => {
+  const clock = holdClock(created, expires);
+
+  it('shows with the offer, and keeps the answer to it until the hold ends', () => {
+    expect(showsExtensionRow(holdState(at(57), clock), 0, false)).toBe(false);
+    expect(showsExtensionRow(holdState(at(58), clock), 0, false)).toBe(true);
+    // Extended: the countdown is back above a minute, and the row says so.
+    expect(showsExtensionRow(holdState(at(10), clock), 1, true)).toBe(true);
+    // Extended in another tab: no offer, and nothing was answered here.
+    expect(showsExtensionRow(holdState(at(70), clock), 1, false)).toBe(false);
+    expect(showsExtensionRow(holdState(clock.deadline, clock), 1, true)).toBe(false);
+  });
+});
+
+describe('judgeReading', () => {
+  const hold = { expiresAt: expires };
+  const reading = (status: OrderView['status'], expiresAt = expires, extensions = 0) => ({
+    status,
+    expiresAt,
+    extensions,
+    serverNow: '2026-10-02T19:01:58.500Z',
+  });
+
+  it('never calls a hold that ran out on the clock expired when it was placed elsewhere', () => {
+    // A stale tab whose order was submitted, and paid, in another tab: the order page, not "expired".
+    expect(judgeReading(hold, reading('PAID'), { clockEnded: true })).toEqual({
+      kind: 'closed',
+      end: 'placed',
+    });
+    expect(judgeReading(hold, reading('PENDING_PAYMENT'), { clockEnded: true })).toEqual({
+      kind: 'closed',
+      end: 'placed',
+    });
+    expect(judgeReading(hold, reading('PAYMENT_FAILED'))).toEqual({ kind: 'closed', end: 'placed' });
+    expect(judgeReading(hold, reading('CANCELLED'), { clockEnded: true })).toEqual({
+      kind: 'closed',
+      end: 'left',
+    });
+  });
+
+  it('expires a hold the server expired, or one still held to the deadline that ran out', () => {
+    expect(judgeReading(hold, reading('EXPIRED'))).toEqual({ kind: 'expired' });
+    // Postgres ends it within the UI's 2 s margin.
+    expect(judgeReading(hold, reading('RESERVED'), { clockEnded: true })).toEqual({ kind: 'expired' });
+    expect(judgeReading(hold, reading('RESERVED'))).toEqual({ kind: 'held' });
+  });
+
+  it('takes a later deadline, extended elsewhere, even after the clock ran out', () => {
+    const later = '2026-10-02T19:03:00.000Z';
+    const moved = {
+      kind: 'moved',
+      change: { expiresAt: later, extensions: 1, serverNow: Date.parse('2026-10-02T19:01:58.500Z') },
+    };
+    expect(judgeReading(hold, reading('RESERVED', later, 1), { clockEnded: true })).toEqual(moved);
+    expect(judgeReading(hold, reading('RESERVED', later, 1))).toEqual(moved);
   });
 });

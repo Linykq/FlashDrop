@@ -4,6 +4,7 @@ import {
   DomainError,
   ERROR_CODES,
   ERROR_STATUS,
+  InvariantViolation,
   isDomainError,
   NotFoundError,
   RetryError,
@@ -27,6 +28,19 @@ describe('DomainError', () => {
     ['RETRY', 503],
   ] as const)('answers %s with %i, as §5.1 specifies', (code, status) => {
     expect(new DomainError(code).status).toBe(status);
+  });
+
+  it('names the breached invariant of an InvariantViolation', () => {
+    const error = new InvariantViolation('INV-8', 'Redis holds the opposite terminal state');
+
+    expect(error).toBeInstanceOf(DomainError);
+    expect(error).toMatchObject({
+      name: 'InvariantViolation',
+      invariant: 'INV-8',
+      code: 'INTERNAL',
+      status: 500,
+    });
+    expect(error.message).toBe('INV-8: Redis holds the opposite terminal state');
   });
 
   it('keeps the cause and the subclass identity', () => {

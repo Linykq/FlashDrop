@@ -1,6 +1,6 @@
-# CI overrides of compose.yaml (design §13), for the e2e and load-smoke jobs:
-# `COMPOSE_FILE=compose.yaml:compose.ci.yaml`. The design's other overrides (PSP latency, the LLM fixture
-# provider) arrive with the milestones that build what they configure. Hold and payment windows are not
+# CI overrides of compose.yaml (design §13), for the e2e, load-smoke and system jobs:
+# `COMPOSE_FILE=compose.yaml:compose.ci.yaml`. The design's other override (the LLM fixture provider)
+# arrives with the milestone that builds what it configures. Hold and payment windows are not
 # overridden: every spec and load script creates its own drop with its own windows (POST /test/drops).
 
 x-ci-api-env: &ci-api-env
@@ -26,3 +26,9 @@ services:
 
   api-2:
     environment: *ci-api-env
+
+  # A fixed 50 ms PSP (§13): runs finish sooner, and the error and timeout-after-success rates stay as in
+  # compose.yaml, so CI still exercises retries and unknown outcomes.
+  payment-mock:
+    environment:
+      PSP_LATENCY_MS: '50'

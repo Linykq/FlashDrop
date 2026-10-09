@@ -12,18 +12,11 @@ const untouchable = new Proxy(
 ) as RoleContext;
 
 describe('startRoles', () => {
-  it('fails fast on a role that is not implemented yet, naming its milestone', () => {
-    expect(() => startRoles(['sweeper', 'relay', 'listing'], untouchable)).toThrow(RoleNotImplementedError);
-    expect(() => startRoles(['sweeper', 'relay', 'listing'], untouchable)).toThrow(
-      'WORKER_ROLES enables roles that are not implemented yet: relay (until M3), listing (until M8).',
+  it('fails fast on a role that is not implemented yet, naming its milestone', async () => {
+    const start = startRoles(['sweeper', 'relay', 'listing', 'dashboard'], untouchable);
+    await expect(start).rejects.toThrow(RoleNotImplementedError);
+    await expect(start).rejects.toThrow(
+      'WORKER_ROLES enables roles that are not implemented yet: listing (until M8), dashboard (until M7).',
     );
-  });
-
-  it.each([
-    ['settlement', 'M3'],
-    ['payment', 'M4'],
-    ['dashboard', 'M7'],
-  ] as const)('names %s as coming in %s', (role, milestone) => {
-    expect(() => startRoles([role], untouchable)).toThrow(`${role} (until ${milestone})`);
   });
 });

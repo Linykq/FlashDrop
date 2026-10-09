@@ -23,9 +23,9 @@ type HeldOrderNoticeProps = {
 
 /**
  * The buyer's live hold on this drop, above the Buy row (design-system §9.13): what is held, the time left on
- * the shared clock, and the way back to its checkout. Leaving checkout keeps the hold until it expires, so
- * without this a buyer back on the product page would hold units they can't see, and with a limit of 1 meet
- * only a refusal. The digits change every second, so they are hidden from assistive technology, which reads
+ * the shared clock, and the way back to its checkout. "Leave checkout" releases a hold, but Back or a closed
+ * tab keeps it until it expires, so without this a buyer back on the product page would hold units they can't
+ * see, and with a limit of 1 meet only a refusal. The digits change every second, so they are hidden from assistive technology, which reads
  * the deadline as a time instead. Calm, like the hold card: no motion, no warning colour.
  */
 export function HeldOrderNotice({ order, serverNow, link, onEnd, className }: HeldOrderNoticeProps) {

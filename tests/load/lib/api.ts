@@ -1,6 +1,6 @@
 import http from 'k6/http';
-import { API, BASE_URL, ORIGIN, TEST_SECRET } from './config.ts';
-import type { ReserveAnswer } from './verdict.ts';
+import { API, BASE_URL, ORIGIN, PSP_URL, TEST_SECRET } from './config.ts';
+import type { OrderAnswer } from './verdict.ts';
 
 /*
  * The api as k6 sees it (design §5.1), with the shapes of `@flashdrop/contracts` checked by hand: k6 runs
@@ -167,8 +167,116 @@ export function reserveCopies(dropId: string, request: ReserveRequest, copies: n
   return http.batch(Array.from({ length: copies }, () => reserveRequest(dropId, request)));
 }
 
-/** The order of a 201/200 `OrderResponse`; undefined for any other shape. */
-function orderOf(response: http.Response): ReserveAnswer['order'] {
+/**
+ * Different reserves in flight at once (`http.batch`; the script's `batchPerHost` option caps how many),
+ * answered in request order.
+ */
+export function reserveMany(dropId: string, requests: readonly ReserveRequest[]): http.Response[] {
+  return http.batch(requests.map((request) => reserveRequest(dropId, request)));
+}
+
+/** Where a paid order would ship: `ShippingAddress` of `@flashdrop/contracts`. */
+export const SHIPPING = {
+  name: 'Load Test Buyer',
+  line1: '1 Market Street',
+  city: 'San Francisco',
+  state: 'CA',
+  postalCode: '94105',
+  country: 'US',
+} as const;
+
+/** What a checkout submit is: whose session, which order, which key (one per order), which payment method. */
+export interface CheckoutRequest {
+  readonly token: string;
+  readonly orderId: string;
+  readonly idempotencyKey: string;
+  readonly paymentMethod: string;
+}
+
+/** 409 and 410 are answers the verdict judges, not failures of the request. */
+const CHECKOUT_EXPECTED = http.expectedStatuses(200, 202, 409, 410);
+
+/** `POST /orders/:orderId/checkout` (§5.2): one CAS plus an outbox row; 202 PENDING_PAYMENT. */
+export function checkout(request: CheckoutRequest): http.Response {
+  return http.post(
+    `${API}/orders/${request.orderId}/checkout`,
+    JSON.stringify({ shipping: SHIPPING, paymentMethod: request.paymentMethod }),
+    {
+      headers: { ...JSON_HEADERS, 'idempotency-key': request.idempotencyKey },
+      cookies: { fd_session: request.token },
+      tags: { name: 'checkout' },
+      timeout: '10s',
+      responseCallback: CHECKOUT_EXPECTED,
+    },
+  );
+}
+
+/**
+ * `POST /orders/:orderId/cancel`: no body and so no content type, which api would otherwise require to be
+ * JSON with a body; 200 CANCELLED, 409 CONFLICT when the order ended otherwise first.
+ */
+export function cancel(token: string, orderId: string): http.Response {
+  return http.post(`${API}/orders/${orderId}/cancel`, null, {
+    headers: { origin: ORIGIN },
+    cookies: { fd_session: token },
+    tags: { name: 'cancel' },
+    timeout: '10s',
+    responseCallback: http.expectedStatuses(200, 409),
+  });
+}
+
+/** `GET /orders/:orderId` as its owner: the order's current status, or undefined without an answer. */
+export function readOrderStatus(token: string, orderId: string): string | undefined {
+  const response = http.get(`${API}/orders/${orderId}`, {
+    cookies: { fd_session: token },
+    tags: { name: 'order' },
+    timeout: '10s',
+  });
+  return response.status === 200 ? orderOf(response)?.status : undefined;
+}
+
+/** `GET /me/orders`: the ids and statuses of the buyer's orders (REJECTED attempts are left out). */
+export function listOrders(token: string): { readonly id: string; readonly status: string }[] {
+  const response = http.get(`${API}/me/orders`, {
+    cookies: { fd_session: token },
+    tags: { name: 'my-orders' },
+    timeout: '10s',
+  });
+  const answer = expectStatus(response, 200, 'GET /me/orders');
+  const orders = isRecord(answer) && Array.isArray(answer.orders) ? answer.orders : [];
+  return orders.flatMap((order) =>
+    isRecord(order) && typeof order.id === 'string' && typeof order.status === 'string'
+      ? [{ id: order.id, status: order.status }]
+      : [],
+  );
+}
+
+export interface PspCharge {
+  readonly id: string;
+  readonly status: string;
+  readonly amountCents: number;
+}
+
+/**
+ * `GET /v1/charges?reference=<orderId>` on payment-mock (§6.5): the PSP's own book for one order. The PSP is
+ * not behind Caddy; the Compose k6 service reaches it on the Compose network (`PSP_URL`).
+ */
+export function pspCharges(reference: string): PspCharge[] {
+  const response = http.get(`${PSP_URL}/v1/charges?reference=${encodeURIComponent(reference)}`, {
+    tags: { name: 'psp-charges' },
+    timeout: '10s',
+  });
+  const answer = expectStatus(response, 200, `GET ${PSP_URL}/v1/charges`);
+  const charges = isRecord(answer) && Array.isArray(answer.charges) ? answer.charges : [];
+  return charges.flatMap((charge) =>
+    isRecord(charge) && typeof charge.id === 'string' && typeof charge.status === 'string'
+      ? [{ id: charge.id, status: charge.status, amountCents: Number(charge.amountCents) }]
+      : [],
+  );
+}
+
+/** The order of a 2xx `OrderResponse` or `OrderDetailResponse`; undefined for any other shape. */
+function orderOf(response: http.Response): OrderAnswer['order'] {
   const answer = body(response);
   const order = isRecord(answer) ? answer.order : undefined;
   if (!isRecord(order) || typeof order.id !== 'string' || typeof order.status !== 'string') return undefined;
@@ -187,8 +295,8 @@ export function header(response: http.Response, name: string): string | undefine
   return typeof value === 'string' ? value : undefined;
 }
 
-/** What a reserve answer says, in the shape `verdict.ts` judges. */
-export function answerOf(response: http.Response): ReserveAnswer {
+/** What an order answer (reserve, checkout, cancel) says, in the shape `verdict.ts` judges. */
+export function answerOf(response: http.Response): OrderAnswer {
   return {
     status: response.status,
     order: orderOf(response),

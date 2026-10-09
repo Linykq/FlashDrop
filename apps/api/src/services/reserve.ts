@@ -38,7 +38,9 @@ import type { PgBreaker } from './pg-breaker';
  *   1. `fd_reserve` checks the window, the per-user limit and the stock and takes a hold, atomically with
  *      its idempotency record (`rsv[rid]`). Losers end here after one read-only call.
  *   2. The winner's Postgres transaction records the order under the generation Lua admitted it with
- *      (`recordReservation`: order, quota, outbox, then the hot inventory row last).
+ *      (`recordReservation`: order, quota, outbox, then the hot inventory row last). It is one call of a
+ *      server-side function that commits in the same round trip, so no winner holds the hot row while its
+ *      COMMIT waits for this process's event loop (§5.2 "Hot row").
  *   3. A rid that already has an order is a replay, answered with the order's current representation.
  *
  * Ordering rule (§4.3): Redis takes stock first and gives it back only after Postgres committed an outcome.

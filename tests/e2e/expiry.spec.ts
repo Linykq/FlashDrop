@@ -4,15 +4,16 @@ import { stockLinePattern } from './support/text';
 /*
  * An abandoned hold (design §4.6, §8.3; design-system §10.4): a 10 s hold on the only unit runs out on the
  * checkout page, which swaps the hold for the expired card and moves focus to it. Postgres expires the order
- * (`expire-orders`, every second) and, with no settlement consumer before M3, the sweeper's
- * `settle-safety-net` returns the unit to Redis about 10 to 15 s later, which another visitor's product page
- * picks up from its live stock. "Try again" then leads back to a product page that can reserve.
+ * (`expire-orders`, every second), and the settlement consumer returns the unit to Redis on `order.expired`
+ * (the sweeper's `settle-safety-net` would, 10 to 15 s later, without it), which another visitor's product
+ * page picks up from its live stock. "Try again" then leads back to a product page that can reserve.
  */
 
 test.use({ dropSettings: { stock: 1, perUserLimit: 1, holdSeconds: 10 } });
 
 /*
- * How long after `expiresAt` the unit is back in Redis at the latest. The sweeper's schedule, mirrored from
+ * How long after `expiresAt` the unit is back in Redis at the latest, even without the consumers: the
+ * sweeper's schedule, mirrored from
  * apps/worker/src/sweeper/index.ts and packages/db/src/sweeper.ts: expire-orders runs every 1 s; the
  * settle-safety-net, every 5 s, settles orders that changed more than 10 s ago. Each loop starts its next tick
  * a period after the last one started, so a slow tick on a busy runner adds to that: the margin covers it and
@@ -40,7 +41,7 @@ test('an abandoned hold expires on screen and its unit goes back on sale', async
   const checkoutUrl = page.url();
   const orderId = new URL(checkoutUrl).pathname.split('/').at(-1) ?? '';
   await expect(page.getByRole('region', { name: 'Reserved for you' })).toBeVisible();
-  const leave = page.getByRole('link', { name: 'Leave checkout' });
+  const leave = page.getByRole('button', { name: 'Leave checkout' });
   await expect(leave).toBeVisible();
   const { expiresAt } = await orderOf(page.request, orderId);
 
@@ -102,5 +103,5 @@ test('an abandoned hold expires on screen and its unit goes back on sale', async
   // Loaded again, checkout renders the expired order as such from the server, with nothing to leave.
   await page.goto(checkoutUrl);
   await expect(page.getByRole('heading', { name: 'Reservation expired' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Leave checkout' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leave checkout' })).toHaveCount(0);
 });

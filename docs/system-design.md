@@ -231,6 +231,11 @@ CREATE TABLE payments (
 -- SUCCEEDED: written by the PAID CAS. FAILED: by the PAYMENT_FAILED CAS. REFUNDED: when close-by-reference
 -- refunds a charge for an order that ended unpaid (lost CAS, late charge), ON CONFLICT (order_id) DO NOTHING.
 
+-- Orders whose PSP reference was closed; written with the REFUNDED row, if any, in one statement (§6.5). The
+-- close-unpaid loop closes every order that ended EXPIRED or CANCELLED after checkout without one.
+CREATE TABLE psp_closures (order_id uuid PRIMARY KEY REFERENCES orders, closed_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX orders_close_owed ON orders (closed_at) WHERE checkout_key IS NOT NULL AND status IN ('EXPIRED','CANCELLED');
+
 CREATE TABLE outbox (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   event_id uuid NOT NULL UNIQUE,                             -- uuidv7, the consumer dedupe key
@@ -270,6 +275,7 @@ CREATE SCHEMA psp;
 CREATE TABLE psp.charges (id text PRIMARY KEY, idempotency_key text UNIQUE NOT NULL, reference text NOT NULL,
   amount_cents int NOT NULL, method text NOT NULL, status text NOT NULL CHECK (status IN ('succeeded','declined','refunded')),
   created_at timestamptz NOT NULL DEFAULT now(), refunded_at timestamptz);
+CREATE INDEX charges_reference_idx ON psp.charges (reference);   -- a close reads and refunds its reference's charges
 CREATE TABLE psp.references (reference text PRIMARY KEY, closed_at timestamptz);   -- closed: future charges rejected
 ```
 
@@ -532,7 +538,7 @@ Postgres stays as the backstop.
 | — | REJECTED | `api` (Postgres refusal: `SOLD_OUT`, `LIMIT` or `NOT_LIVE`) or sweeper (`ORPHANED`) | outbox `order.rejected`, written by the same statement as the tombstone, so only if the insert won. No counters: Postgres never granted stock |
 | RESERVED | PENDING_PAYMENT | `api` checkout submit | `expires_at = now() + payment_seconds`, outbox `order.placed` |
 | RESERVED, PENDING_PAYMENT | EXPIRED | sweeper | quota −q, `reserved` −q, outbox `order.expired` |
-| RESERVED, PENDING_PAYMENT | CANCELLED | `api` cancel | quota −q, `reserved` −q, outbox `order.cancelled` |
+| RESERVED, PENDING_PAYMENT | CANCELLED | `api` cancel (one statement, `fd_cancel_order`, §5.2) | quota −q, `reserved` −q, outbox `order.cancelled` |
 | PENDING_PAYMENT | PAID | payment consumer | payments SUCCEEDED, `reserved` −q / `sold` +q, outbox `order.paid` (quota unchanged: bought units still count toward the limit) |
 | PENDING_PAYMENT | PAYMENT_FAILED | payment consumer (PSP `declined` or `reference_closed`) | payments FAILED, quota −q, `reserved` −q, outbox `order.payment_failed` |
 
@@ -671,7 +677,7 @@ The rule is: **lower Redis promptly on evidence** (a Postgres refusal, or two st
 | `POST /drops/:dropId/reservations` + `Idempotency-Key`, body `{qty}` | Reserve | **201** new · **200** replay · **409** `SOLD_OUT` / `LIMIT_REACHED` / `DROP_NOT_LIVE` · **410** `RESERVATION_EXPIRED` (replay of an expired order) · **422** `IDEMPOTENCY_KEY_REUSED` · **429** · **503** `RETRY` (drop reconciling or not yet rebuilt) |
 | `POST /orders/:orderId/checkout` + `Idempotency-Key`, body `{shipping, paymentMethod}` | Submit | **202** `PENDING_PAYMENT` · **200** replay · **409** `ALREADY_SUBMITTED` (the UI then opens the order page) · **410** `RESERVATION_EXPIRED` · **422** |
 | `POST /orders/:orderId/extend` | One-time +60 s hold extension (WCAG 2.2.1). CAS `status='RESERVED' AND extensions=0 AND expires_at > now()` | 200 · 409 |
-| `POST /orders/:orderId/cancel` | CAS from RESERVED or PENDING_PAYMENT to CANCELLED | 200 · 409 |
+| `POST /orders/:orderId/cancel[?from=RESERVED]` | CAS from RESERVED or PENDING_PAYMENT to CANCELLED. With `from=RESERVED` (the checkout page's Leave) only a hold is cancelled, so a stale tab can't cancel an order another tab placed and is paying | 200 · 409 |
 | `GET /orders/:orderId` · `GET /me/orders` | Owner only. Other users' orders return 404, not 403 | 200 · 404 |
 | `GET /ws` (also `/ws/1`, `/ws/2` through Caddy) | WebSocket (§7) | 101 |
 | `POST /admin/drops` · `PATCH /admin/drops/:id` (DRAFT only) · `POST /admin/drops/:id/{arm,pause,resume,end,reconcile}` | Drop admin. `arm` (DRAFT → SCHEDULED) and `reconcile` run `syncDropFromPostgres`. Every one of these takes the drop lock (§4.7) | 200 · 409 `DROP_ARMED` / `DROP_BUSY` |
@@ -770,13 +776,34 @@ Two same-key requests can race: A rolls back with SOLD_OUT while B (`EXISTING`) 
 
 **Hot row.** Every winner updates `drop_inventory` for its drop. The update is the **last** statement, so the row lock is held only for one statement plus the commit flush. The join reads `drops` through MVCC and locks nothing there. The reserve transaction sends no `NOTIFY` (§5.4).
 
+**Since M3 the reserve transaction runs server-side** (escalation step 1 below; migration `0006_reserve_function`). M2 measured why: the api sent `COMMIT` after `takeStock` returned, so every winner held the row for a round trip through an event loop that a burst keeps busy (about 95 commits/s under burst against 800 in isolation).
+
+- `recordReservation` sends one statement, `SELECT … FROM fd_record_reservation(…)`, outside any explicit transaction. The function runs the statements above unchanged and in lock order (`fd_insert_reserved_order`, `fd_claim_quota`, the `order.reserved` outbox row, `fd_take_stock` last). Postgres commits when it returns, in the same round trip, so no winner holds the row while waiting on the api.
+- A refusal raises SQLSTATE `FD001` with the reason as `DETAIL`. The error rolls back the whole statement, so the winners' path needs no subtransaction.
+- `statement_timeout` (2 s) now bounds the whole transaction. A timeout counts as hot-row contention (`HotRowBusyError`) only when its PL/pgSQL context names `fd_take_stock`.
+- Tests that hold a reserve transaction open between steps call the same functions one at a time.
+- **Cancel runs the same way** (migration `0009_cancel_function`): `fd_cancel_order` locks the order, CASes it to CANCELLED, gives back quota, writes `order.cancelled` and releases the stock last, in one statement. Cancels come from the same saturated apis, and in a sale where many winners cancel during the burst (k6 `ci`: 20%), each would otherwise hold the row across that event-loop delay. It sends no `NOTIFY` (§5.4).
+- The payment transitions (PAID, PAYMENT_FAILED) stay statement by statement, inventory last: they run in the `consumers` processes, which no HTTP burst saturates, and the race matrix stops the PAID CAS inside its transaction (`paid.locked`, §13). They move server-side too if a full-mode measurement shows reserves waiting on them.
+
 **The Postgres breaker** (`pgBreaker`) opens after 3 consecutive failures that say Postgres itself is unavailable: a lost, refused or timed-out connection, a server shutting down or starting, `too_many_connections`, or a statement or transaction timeout that did not queue on the hot row. Contention from this service's own burst is transient (503 `RETRY`) but never counts: the api's own pool being full, a `takeStock` that timed out queued on the hot row, serialization failures and deadlocks. While open it refuses before Lua; one `SELECT 1` probe a second is the only thing that closes it. Each opening and closing starts an epoch, and a call's outcome counts only in the epoch it was admitted in, so a reserve that started before the breaker opened can't close it, and stale failures can't reopen it. The `pg_breaker_open` alert fires at most once a minute; a reopening within it is a warning (M2: counting the api's own pool timeouts and closing on any success, a healthy laptop run opened and closed it 19 times in 250 ms).
 
-- At about 1 ms per lock hold, that is roughly 1,000 winners per second on one row. A 1,000-unit drop costs about 1 s of serialized Postgres time, spread over the sell-out window.
+- At about 1 ms per lock hold, that is roughly 1,000 winners per second on one row. A 1,000-unit drop costs about 1 s of serialized Postgres time, spread over the sell-out window. The laptop's `fdatasync` takes 0.42–0.53 ms (`pg_test_fsync` on the Postgres volume), so a hold of just the update and the flush would allow about 2,000 commits/s.
+- **Measured in M3**, before and after step 1, two runs of each. The setup is a 12-thread laptop running Docker Desktop, with the whole stack (Caddy, two apis, Postgres, Redis) and k6 on one machine. "Commits/s" is how fast the row's `reserved` rose while the drop sold, sampled every 20 ms.
+
+  | k6 burst | Hot row commits/s | First to last winner commit | Winners (201) p50 / p95 | All reserves p95 / p99 |
+  |---|---|---|---|---|
+  | `ci`: 300 buyers at the same instant, 100 units | 91–112 → 452–457 | 0.9–1.1 s → 0.22 s | 0.58–0.85 / 0.90–1.15 s → 0.15–0.17 / 0.25 s | 285–597 / 775–1,060 ms → 97–159 / 545 ms |
+  | `laptop`: 2,000 reserves/s for 30 s, 1,000 units | 32–35 → 62–102 | 28–31 s → 10–16 s | 3.0–4.2 / 7.1–8.6 s → 1.7–2.9 / 3.4–5.7 s | 5.0 / 6.8–7.0 s → 2.9–4.7 / 5.6–7.5 s |
+
+  - **Before step 1**, 6–11% of the api's backend samples showed a holder `idle in transaction`, waiting for its `COMMIT`. **After**, none did.
+  - **`ci`:** the opening is no longer bound by Postgres. About 2 api backends are busy during the sell-out instead of about 40 queued, and the winners commit as fast as Lua admits them.
+  - **`laptop`:** this profile saturates all 12 threads. The holder spends its hold mostly runnable but not running, or in `WALSync` (several ms per commit under the burst, against 0.5 ms idle). The other winners queue on it: 84% of samples are `Lock:transactionid` or `Lock:tuple`. Retried 5xx answers fell from 727–804 to 14–111 per run.
+  - **p99:** this is the losers' queueing in the saturated apis and Caddy, not Postgres, and step 1 doesn't move it.
+  - **Without HTTP** (a benchmark of 64 connections and 2,000 winners), both paths reach 300–770 commits/s, inside this machine's run-to-run noise. One in-network round trip is small next to the flush. What step 1 removes is the api's event-loop delay inside the hold, and only a loaded api has that delay.
 - `fd_pg_reserve_txn_seconds` is measured and published in `docs/perf.md`.
 - Escalation path if measurements disappoint:
-  1. Move the transaction into one PL/pgSQL function, so the lock is held across zero network round trips.
-  2. Shard the inventory row into N rows.
+  1. ~~Move the transaction into one PL/pgSQL function, so the lock is held across zero network round trips.~~ Done in M3, above.
+  2. Shard the inventory row into N rows. This is the next step, needed only if one drop must sell faster than one row allows on the target hardware. On the laptop, what still bounds the row is CPU contention and the fsync while the lock is held, and N rows would spread both.
 
   `synchronous_commit = off` is **not** acceptable, because it can lose acknowledged reservations and their events.
 
@@ -826,16 +853,17 @@ The payment, settlement and dashboard consumers are specified in §6.
 
 Every status change writes its event into `outbox` **in the same transaction**.
 
-**NOTIFY only on low-rate paths.** Committing a transaction that has queued notifications takes a database-wide lock on the notification queue, so every notifying commit is serialized. A `NOTIFY` in every reserve or payment transaction would add a second global serialization point to the burst, next to the hot `drop_inventory` row. So only checkout submit, cancel and the expiry batches call `pg_notify('outbox','')` (delivered on commit); reserve, payment and tombstone events wait for the 250 ms poll. The cost is measured in `docs/perf.md` and listed in §17.
+**NOTIFY only on low-rate paths.** Committing a transaction that has queued notifications takes a database-wide lock on the notification queue, so every notifying commit is serialized. A `NOTIFY` in every reserve or payment transaction would add a second global serialization point to the burst, next to the hot `drop_inventory` row. So only checkout submit and the expiry batches call `pg_notify('outbox','')` (delivered on commit); reserve, payment, cancel and tombstone events wait for the 250 ms poll. Cancel was on the list until M4: a notifying commit holds the notification lock through its flush, so a cancel queued there behind the burst's submits with the hot row still locked, and k6 `ci` cancels 20% of the winners during the burst. The cost is measured in `docs/perf.md` and listed in §17.
 
 ```
 LISTEN outbox (dedicated connection)
 relay session: idle_in_transaction_session_timeout = 30s, transaction_timeout = 20s
 producer: message.timeout.ms = 10000, socket.timeout.ms = 10000      -- a send settles (acked or failed) within ~10 s
 loop: wait for a notification or 250 ms
+  await producer connected (bounded at 8 s; on failure back off, no transaction was opened)
   BEGIN
     if not pg_try_advisory_xact_lock(hashtext('fd.relay')): ROLLBACK; continue     -- one publisher at a time, fenced per batch
-    rows = SELECT … FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT 500 FOR UPDATE SKIP LOCKED
+    rows = SELECT … FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT 500 FOR UPDATE
     await producer.send(rows → {topic, key: partition_key, value: payload,
                                 headers: {event-id, event-type, schema-version, trace-id}})     -- resolves on broker acks
     UPDATE outbox SET published_at = now() WHERE id = ANY($ids)                      -- $ids = sql.param(ids) (M0 delta 11)
@@ -847,6 +875,8 @@ hourly: delete published rows older than 7 days, in batches of 5,000
 - **Status-based polling, not an id cursor.** Identity order is not commit order. A `WHERE id > last` cursor would skip a row that commits late, which is a lost event. A row that is still `published_at IS NULL` is picked up by the next poll.
 - **Single publisher, fenced.** The advisory lock is *transaction-scoped on the batch connection itself*. If that connection dies, the batch aborts and the lock disappears with it. `message.timeout.ms` (10 s) is below the relay's `transaction_timeout` (20 s), so every send settles before Postgres could end the transaction, and a failed send leaves no queued copies behind. Two relays therefore alternate batches and **rarely interleave**: only if a relay loses its Postgres session while its send is still in flight (a partition from Postgres, not from Kafka) can the standby re-send rows that the first relay's producer delivers a moment later. That is harmless, because consumers dedupe.
 - **Per-order ordering holds.** Each transition of an order happens in a transaction that starts after the previous transition committed (the CAS needs the previous state). So event N+1 of an order is created only after event N is visible, gets a higher `id`, and is published in the same batch or a later one. Events of *different* orders of the same product may swap, and no consumer depends on their order.
+- **`FOR UPDATE`, not `SKIP LOCKED`.** The advisory lock already admits one publisher, so skipping would buy nothing, and it would break the point above: a row another session happens to lock (a probe, a `psql` `FOR UPDATE`) would be passed over while the same order's later row went out first (M4 review: `order.expired` before `order.placed`). A locked row delays the batch instead.
+- **Connect before `BEGIN`.** The client's own connect gives up only after 30 s against an unreachable broker, longer than `transaction_timeout`, so the relay connects its producer (bounded at 8 s) before it opens a batch: a relay starting in a Kafka outage, or replacing a producer after a fatal error, holds no rows and no xmin horizon while it waits.
 - **Crash after send, before mark.** The batch is republished. The idempotent producer doesn't cover a restart, so **consumers dedupe** (§6.4).
 - **Kafka down.** Checkout keeps working, because it only writes Postgres. Each relay attempt holds its transaction for at most about 10 s before it rolls back, so an outage doesn't pin the xmin horizon for minutes, and vacuum keeps up with the hot `drop_inventory` row. The outbox grows, and `fd_outbox_oldest_unpublished_seconds > 10` raises an alert. Stock still returns through the safety net (§4.6).
 - **Why not Debezium/CDC.** It needs Kafka Connect, `wal_level=logical`, and replication-slot monitoring (a stalled slot grows WAL without limit). That is too much to operate for one developer, and harder to test. The outbox *table* stays the same, so switching to CDC later only replaces the relay.
@@ -868,6 +898,8 @@ hourly: delete published rows older than 7 days, in batches of 5,000
 ### 6.2 Event envelope (Zod, `packages/contracts/src/events.ts`)
 
 Envelopes are validated before the outbox insert and again on consume. A contract test round-trips every event type.
+
+**Exception: two envelopes are built in SQL.** `order.reserved` (`fd_record_reservation`, §5.2) and `order.cancelled` (`fd_cancel_order`) are written by server-side functions, because their whole transaction is one statement, so Zod never sees them before the insert. An integration test pins each to the row the TypeScript producer path writes, which `outboxRow` validates with `OrderEvent`: `reserve-function.int.test.ts` and `checkout.int.test.ts` in `packages/db` (§13). Drift there would dead-letter the event in every group, since the runner decodes each message before dispatch.
 
 ```ts
 const Base = z.object({
@@ -920,9 +952,13 @@ This is safe because correctness rests on the orders CAS and on PSP idempotency,
 - The partition assignor is cooperative-sticky.
 - **Validation failure** (Zod), unknown `type`, or `InvariantViolation` (a Lua `CONFLICT`): produce to `orders.v1.dlq`, alert, and treat the message as done.
 - **Transient failure** (Postgres or Redis connection errors, PSP 5xx or timeout, Lua `RETRY`): pause the partition, `seek()` explicitly to the first unfinished offset, and resume after exponential backoff with full jitter (100 ms → 30 s). The explicit seek matters: the client's automatic seek-back starts after the highest resolved offset, which skips a failed message when later ones finished first. Backoff is `pause()` and return, never a sleep inside the handler. The deferred `resume()` sits on one timer per partition, cleared when the partition is revoked and before `disconnect()`, because a `resume()` that fires after disconnect throws and kills the process (M0 delta 4). This repeats **indefinitely, and the message never goes to the DLQ**: stalling beats reordering or dropping. An alert fires if a partition is stuck for more than 5 minutes.
+- **Unclassified failure** (anything else, typically a bug, or an outage the classifiers don't know): retried like a transient one but on a slower schedule (1 s → 30 s), and dead-lettered only once it has failed 5 times **and** for at least 60 s. A deterministic bug must not stall every product of the partition forever (a stuck message pins the partition: batches restart at it, so nothing more than one batch past it is ever reached), and an unknown outage must not flood the DLQ within a second. Postgres's own outage classes are transient, not unclassified: 08 (connection), 53 (insufficient resources: disk full, out of memory, too many connections) and 58 (system error, I/O).
+- **A failure ends only its own order.** The rest of that order's messages wait for it, while the batch keeps starting other orders' messages until its deadline; after 3 failed messages in one batch nothing new starts, so an outage isn't hit by every unit. The commit is the contiguous finished prefix either way, and the partition resumes at the first unfinished offset. (Stopping the whole batch at the first failure cost the payment group most of its concurrency: with about 3% of charges failing transiently on their first try, nearly every batch of about 85 charges stopped early.)
+- **Commits are confirmed.** `commitOffsets` resolves once librdkafka has queued the commit, and a commit sent during a cooperative rebalance is refused without a callback the runner can see. So every 5 s the runner reads its group's committed offsets through its own consumer (`committed()`, never the admin `fetchOffsets`, whose in-flight request a broker restart turns into a SIGABRT in client 1.10.1) and commits again where its finished prefix is ahead. It only ever moves an offset forward.
+- **Batch size.** The payment group reads up to 256 messages per batch (the client default is 32): a sale is one partition, a batch's messages run one after another per order, and with 32 messages, about a third of them `order.placed`, only about 10 charges ran at once (M4: 9 s from submit to PAID at p50 in a CI burst).
 - **Bounded batches.** In client 1.10.1 the slowest in-flight batch gates the whole consumer instance, whatever `partitionsConsumedConcurrently` is: while any batch is in flight it fetches nothing new, and pauses, seeks and rebalances wait until that batch returns. `partitionsConsumedConcurrently` (3, the partitions one of two replicas owns) only runs batches from the same fetch in parallel, so it adds throughput but never isolates a slow partition. Every batch's wall time is therefore bounded: hard client-side PSP timeouts, plus a per-batch deadline after which the runner starts no new message, waits for those in flight, resolves the contiguous prefix and returns. A batch's worst case is the deadline plus the PSP timeout, so the 300 s `max.poll.interval.ms` is never approached. Each group has its own consumer instance, so one group's slow batch doesn't stall another (M0 delta 5).
-- **A DLQ'd event never leaks stock or money.** The order still expires through the Postgres sweeper. Settlement happens through the safety net. An expiry still triggers close-by-reference, which refunds any charge.
-- `pnpm dlq:replay` reads DLQ messages and runs the handler named in their `x-consumer` header directly, with the same idempotency checks. It never re-produces to `orders.v1`: that would re-feed every group, and a group whose dedupe record had aged out could apply the event twice (the dashboard would double-count). As defense in depth, `processed_events` is kept 45 days, longer than the DLQ's 30-day retention.
+- **A DLQ'd event never leaks stock or money.** The order still expires through the Postgres sweeper. Settlement happens through the safety net. And every order that expired or was cancelled after checkout is closed at the PSP even if its event never reached the payment group: the `close-unpaid` loop (§6.5) closes, from Postgres, each one without a recorded closure, so a charge that raced the order's end is refunded either way.
+- `pnpm dlq:replay` reads DLQ messages and runs the handler named in their `x-consumer` header directly, with the same idempotency checks. A letter of a type its consumer no longer handles is reported as unhandled, not replayed. It never re-produces to `orders.v1`: that would re-feed every group, and a group whose dedupe record had aged out could apply the event twice (the dashboard would double-count). As defense in depth, `processed_events` is kept 45 days, longer than the DLQ's 30-day retention. It stops at the first letter that fails again and exits 1, naming its offset, so the operator fixes the cause and resumes there (`--from-offset N`; also `--only payment|settlement` and `--dry-run`). Against the Compose stack it runs inside the stack's network, as a one-off of the `consumers` service (`pnpm dlq:replay` is `docker compose --profile app run --rm --no-deps consumers node apps/worker/dist/dlq-replay.js`), because `payment-mock` publishes no host port: from the host, a payment letter's close could never reach the PSP. `pnpm dlq:replay:dev` runs the source with tsx against the `pnpm dev` processes, whose `payment-mock` listens on `127.0.0.1:4100`.
 - **Zombies and rebalances** (two consumers briefly processing the same partition) are serialized by the orders CAS, the atomic Lua Functions, PSP idempotency keys and `processed_events`.
 - Kafka exactly-once transactions were rejected: they cover Kafka→Kafka only, and every effect here lands in Postgres, Redis or the PSP.
 
@@ -935,7 +971,8 @@ const TERMINAL_UNPAID = new Set(['PAYMENT_FAILED', 'EXPIRED', 'CANCELLED']);   /
 async function onOrderPlaced(e: OrderPlaced) {
   const o = await db.getOrder(e.orderId);
   if (o.status === 'PAID') return;                                   // duplicate delivery
-  if (TERMINAL_UNPAID.has(o.status)) return closeAndRecord(o.id);    // e.g. redelivered after expiry: refund any orphan charge
+  if (o.status === 'PAYMENT_FAILED') return;                         // duplicate: declined or refused under the one key, nothing captured
+  if (TERMINAL_UNPAID.has(o.status)) return closeIfOpen(o.id);       // e.g. redelivered after expiry: refund any orphan charge
   if (o.status !== 'PENDING_PAYMENT') throw new InvariantViolation(o.status);   // RESERVED, REJECTED: DLQ + alert
   const r = await psp.charge({ idempotencyKey: `charge:${o.id}`, reference: o.id,
                                amountCents: o.totalCents, paymentMethod: o.paymentMethod });   // 5 s timeout; timeout/5xx → TransientError
@@ -951,12 +988,17 @@ async function onOrderPlaced(e: OrderPlaced) {
   await redis.publish(`fd:ch:user:${o.userId}`, statusMsg(await db.getOrder(o.id)));   // best effort, UI also polls
 }
 async function onOrderEndedUnpaid(e: OrderExpired | OrderCancelled) {
-  await closeAndRecord(e.orderId);       // refunds a charge that raced the expiry, fences future charges
+  if (e.data.fromStatus === 'RESERVED') return;   // never reached checkout: no charge exists or can be made
+  await closeIfOpen(e.orderId);          // refunds a charge that raced the expiry, fences future charges
+}
+async function closeIfOpen(orderId: string) {
+  if (await db.hasPspClosure(orderId)) return;   // already fenced, its refund recorded: a redelivery (§6.4 seeks back over
+  await closeAndRecord(orderId);                 // finished messages) must not cost the PSP another call
 }
 async function closeAndRecord(orderId: string) {
   const c = await psp.closeReference(orderId);                       // idempotent (key close:<orderId>)
-  if (c.refundedChargeId) await db.recordRefund(orderId, c.refundedChargeId, c.amountCents);
-}                                                                     // payments REFUNDED, ON CONFLICT (order_id) DO NOTHING
+  await db.recordClose(orderId, c.refundedChargeId, c.amountCents);  // one statement: psp_closures row, and the
+}                                                                     // REFUNDED payments row if a charge was refunded
 
 // inventory-settlement group, also called directly by the sweeper's safety net and orphan-scan
 async function settleRedis(orderId: string, opts: { force?: boolean } = {}) {
@@ -974,6 +1016,10 @@ async function settleRedis(orderId: string, opts: { force?: boolean } = {}) {
   await db.markRedisSettled(o.id);              // OK, NOOP or MISSING; SET redis_settled_at = now() WHERE redis_settled_at IS NULL
 }
 ```
+
+- **An order that ended while RESERVED is not closed.** It has no `order.placed`, and the checkout CAS needs RESERVED, which it can never be again, so no charge exists or can be made; a close would cost the PSP one call per abandoned hold, most of a sale's holds.
+- **`close-unpaid`** (payment role, every 30 s, under its own loop lock): the orders that ended EXPIRED or CANCELLED after checkout (`checkout_key IS NOT NULL`) more than 60 s ago with no `psp_closures` row, 200 at a time, get `closeAndRecord`, exactly as the consumer would have run it. It is the money counterpart of settle-safety-net: it covers an `order.expired` or `order.cancelled` the payment group dead-lettered (a PSP refusing the close, a bug) or never got. A PSP or Postgres outage ends the tick: after the first transient failure no new close starts, so a hung PSP costs one round of 8 calls (one per lane, each bounded by the 5 s client timeout), and the tick fails with the outage for the next one to retry. No close starts after 30 s either, half the 60 s `transaction_timeout` of the transaction that holds the loop lock: a longer tick would lose the lock mid-run, let the other replica start a second round, and fail at COMMIT. Any other failure quarantines the order in `sweeper_quarantine` with an alert.
+- **PSP answers are tolerant readers.** The consumer parses charge and close answers with `z.object`, which drops unknown fields: a field the PSP adds is an additive change, and a strict parse would fail every charge and close. A 4xx other than 408 and 429, or an answer that breaks the contract, is a bug (unclassified, §6.4).
 
 **The PSP mock contract** (`apps/payment-mock`):
 
@@ -1093,7 +1139,7 @@ Keying by `orderId` would spread load more evenly but would give up point 2. Ord
 - **Native semantics.** A native `<form>`, shipping fields in a `<fieldset>`/`<legend>` with `autocomplete` tokens, and the payment method as a native radio group, so arrow keys work for free. Logical DOM order equals visual order. A skip link ("Skip to checkout"). A visible `:focus-visible` ring (≥ 3 px, contrast ≥ 3:1). Targets are at least 24×24 px.
 - **Focus management.**
   - On load, focus moves to `<h1 tabIndex={-1}>`.
-  - On a failed submit, focus moves to an error summary (`role="alert"`) whose links jump to fields. Fields carry `aria-invalid` and `aria-describedby`.
+  - On a failed submit, focus moves to an error summary whose links jump to fields: a region named by its title and described by its list, with no alert role, so the focus event reads it once (an alert inserted and focused at the same time is read twice). Fields carry `aria-invalid` and `aria-describedby`.
   - On success, focus moves to the confirmation heading.
 - **Submit button.** It uses `aria-disabled` and `aria-busy` while in flight, never `disabled`, so focus isn't lost. The in-flight state blocks a double submit, and the idempotency key makes any duplicate harmless.
 - **Countdown.**
@@ -1293,7 +1339,7 @@ The `thinking` parameter is not sent. Sonnet 5.5 and Opus 5.5 run adaptive think
 
 | Layer | Tool | What it proves |
 |---|---|---|
-| Unit | Vitest 5 (`unit` project) | Order state machine table, including every illegal edge. rid and fingerprint canonicalization. Lua-result and refusal-reason → HTTP mapping (§5.2). Zod contracts (round-trip of every event type). Coalescer with fake timers. `(gen, seq)` ordering, and dashboard `version` ordering. `ListingDraft` rules and the repair loop over `Message`-shaped fixtures (repair, refusal, `max_tokens`, invalid JSON, injection). Consumer runner grouping, backoff and commit math. **Drift checker:** reserves and releases interleaved against the stable-sample checker give zero false breaches (§4.7). |
+| Unit | Vitest 5 (`unit` project) | Order state machine table, including every illegal edge. rid and fingerprint canonicalization. Lua-result and refusal-reason → HTTP mapping (§5.2). Zod contracts (round-trip of every event type; the two envelopes built in SQL are pinned by integration tests, §6.2). Coalescer with fake timers. `(gen, seq)` ordering, and dashboard `version` ordering. `ListingDraft` rules and the repair loop over `Message`-shaped fixtures (repair, refusal, `max_tokens`, invalid JSON, injection). Consumer runner grouping, backoff and commit math. **Drift checker:** reserves and releases interleaved against the stable-sample checker give zero false breaches (§4.7). |
 | Integration | Vitest (`integration` project) against Compose Postgres, Kafka and the tests' own Redis (`redis-test`, the stack's configuration on port 6380), so a test run never loads its Functions library under the running stack. Each test file uses a throwaway database and unique drop ids | **Functions under concurrency:** 2,000 concurrent `fd_reserve` calls from 300 users on 100 units with limit 2 give exactly 100 HELD, every `uq` ≤ 2, `avail` = 0, and INV-9 holds. **Same-key storm:** 50 concurrent calls give 1 hold. **Functions on missing and partial keys:** each Function either errors before its first write or doesn't error (§4.2). **fast-check `fc.commands` model test:** random sequences of reserve, confirm, release, rebuild, set-status and duplicate calls against a pure TS model, checking INV-9 and the `uq` sums after every step. **Postgres constraints:** each CHECK, UNIQUE and trigger violation returns the expected SQLSTATE. **Drift injection:** Redis `avail` +10, burst, Postgres refuses, tombstones, `fd_sync` rebuild. **Race matrix** with forced interleavings (see below). **Relay:** crash between send and mark gives duplicates but identical consumer state; a late-committing outbox row is not skipped. **Replay ×3:** every event delivered three times, shuffled per order, gives identical Postgres, Redis and PSP state. **Rebuild:** `FLUSHALL` mid-run (epoch check) and a restart from a truncated AOF copy (`run_id` check, ENDED drops included), then the reconciler restores INV-1 to INV-9. **`checkout-decoupled`:** with Kafka and `payment-mock` stopped, checkout submit still returns 202 and the outbox grows; after a restart the order reaches PAID and INV-5 holds. **`partitioning`:** every `orders.v1` record's partition equals `murmur2(productId) % 6`. **Fresh consumer group:** events produced before the first assignment are processed (earliest offset). |
 | E2E | Playwright 1.63 + `@axe-core/playwright` 4.13, Chromium, against the built Compose stack | **Isolation:** a Playwright fixture calls `POST /test/drops` so that every spec gets its own product and drop, with its own stock, limit, hold and payment window, starting now. No spec shares stock with another. `ssr.spec`: raw `request.get('/p/<slug>')` HTML contains the title and stock number (not a JS-disabled render). It doesn't assert where the `<title>` sits: Next 16.3 streams metadata, so for most user agents the `<title>` arrives in `<body>` (M0, spike §3.6). `live-stock.spec`: contexts pinned to `/ws/1` and `/ws/2` have different `instanceId`s, and both see a decrement within 1 s. `live-room.spec`: the video element reaches `readyState ≥ 2` on the local HLS sample, a captions `<track>` is present, the pinned drop card shows live stock, and the viewer count shows 2 with contexts on `/ws/1` and `/ws/2`. `reconnect.spec`: `setOffline` then a correct snapshot. `checkout-keyboard.spec` (120 s hold): the whole purchase with only Tab, Shift+Tab, Space, Enter and arrow keys, asserting `:focus` and live-region text at each step; `page.clock` fast-forwards to the 2:00, 1:00, 0:30 and 0:10 announcements and to the 60 s extension prompt, and the +60 s extension works. `checkout-expiry.spec` (10 s hold): focused expiry alert, and stock returns in another context. `idempotency.spec`: double click and a `page.route` replay produce one order; a reload of the checkout page resubmits with the same key and gets a replay. `decline.spec`. `a11y.spec` (120 s hold): axe gate of **0 serious or critical** violations in idle, holding, error, expired, paid, admin listing and dashboard states, also with `reducedMotion: 'reduce'`. `listing.spec`: fixture → approve → product page shows the new title. `dashboard.spec`: totals for the spec's own drop. |
 | Load | k6 (`grafana/k6:2.3.0` image; scripts in TypeScript, which k6 runs natively) | `burst.ts`: `ramping-arrival-rate` reserve storm with 30% same-key retries; of the winners, 70% check out (90% `pm_ok`, 10% `pm_decline`), 20% cancel and 10% abandon. A `reserve-only` profile (M2) skips checkout and cancel. `idempotency-storm.ts`: 50 identical reserves give 1 hold; 20 identical checkouts give 1 order and 1 charge. The load profile raises the per-user rate limit, and the script asserts that every response is 201 or 200, never 429, so the result proves that Lua and the primary key serialize same-key requests rather than that the rate limiter dropped them. (The limiter itself has its own integration test.) `ws-fanout.ts`: sockets on one drop during the burst, propagation p95 from the `ts` in each frame, and **≤ 11 frames/s per socket** (proves coalescing). `expiry-soak.ts`: reserve everything, never pay, `avail = total` after TTL + sweep. `setup()` mints sessions through the test route; every mutating request sends an allowed `Origin` header. Latency thresholds are loose in CI; correctness is strict. |
@@ -1457,6 +1503,7 @@ Every service has a healthcheck. `depends_on` uses `service_healthy` and `servic
 
   If the librdkafka prebuild fails on Windows, run `worker` and `consumers` in containers only (`pnpm stack:up --scope workers`).
 - **Full stack:** `pnpm stack:up` (`docker compose --profile app up -d --build --wait`) at `http://127.0.0.1:8080`. Demos, Playwright, k6 and CI use this mode.
+- **Isolated stack, for the system tests** (`tools/system`, `pnpm test:system`). They stop, kill and pause services, Kafka included, which would fail every integration run on the machine against the main stack. So they refuse to start unless `FD_SYSTEM_TESTS=1` says this run may disrupt its stack, and on a shared machine they run against `compose.isolated.yaml`: a second Compose project (`flashdrop-sys`) layered on `compose.ci.yaml` (test routes on, Postgres on tmpfs) with host ports 15433 (Postgres), 16379 (Redis), 19094 (Kafka) and 18080 (Caddy). Its header has the commands: `COMPOSE_FILE=compose.yaml:compose.ci.yaml:compose.isolated.yaml` (`;` on Windows) makes every `docker compose` command act on it, and `DATABASE_URL`, `REDIS_URL`, `KAFKA_BROKERS` and `E2E_BASE_URL` point the tests, `verify:invariants` and Playwright at it. CI's system job gets a stack of its own and sets `FD_SYSTEM_TESTS=1`.
 
 **Key environment variables** (`.env.example`):
 
@@ -1478,6 +1525,10 @@ Every service has a healthcheck. `depends_on` uses `service_healthy` and `servic
 - `pnpm demo:burst` runs k6 against the stack.
 - `pnpm chaos:redis-restart`, `pnpm chaos:relay-kill` and `pnpm chaos:consumer-kill` inject failures.
 - `pnpm verify:invariants` checks the result.
+
+**Operations:**
+
+- `pnpm dlq:replay [--only payment|settlement] [--from-offset N] [--dry-run]` replays dead letters against the Compose stack, as a one-off of the `consumers` service inside its network (§6.4). `pnpm dlq:replay:dev` does the same against the `pnpm dev` processes.
 
 ---
 

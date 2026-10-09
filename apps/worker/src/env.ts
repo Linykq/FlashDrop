@@ -1,4 +1,13 @@
-import { CoreEnv, type EnvSource, loadEnv, PostgresEnv, RedisEnv, WorkerEnv } from '@flashdrop/config';
+import {
+  CoreEnv,
+  type EnvSource,
+  KafkaEnv,
+  loadEnv,
+  PostgresEnv,
+  RedisEnv,
+  TestHooksEnv,
+  WorkerEnv,
+} from '@flashdrop/config';
 import { z } from 'zod';
 
 /**
@@ -16,9 +25,12 @@ export const HealthEnv = z.object({
     .default(4200),
 });
 
-/** Everything the worker reads from the environment. */
+/**
+ * Everything the worker reads from the environment. `FD_TEST_HOOKS` is read by `@flashdrop/db` at the first
+ * hook point, inside a payment or expiry transaction; validated here, a bad value fails the start instead.
+ */
 export function loadWorkerEnv(source?: EnvSource) {
-  return loadEnv([CoreEnv, PostgresEnv, RedisEnv, WorkerEnv, HealthEnv], source);
+  return loadEnv([CoreEnv, PostgresEnv, RedisEnv, KafkaEnv, WorkerEnv, HealthEnv, TestHooksEnv], source);
 }
 
 export type WorkerConfig = ReturnType<typeof loadWorkerEnv>;

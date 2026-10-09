@@ -9,6 +9,8 @@ import { configDefaults, defineConfig } from 'vitest/config';
 const dotenv = fileURLToPath(new URL('.env', import.meta.url));
 if (existsSync(dotenv)) process.loadEnvFile(dotenv);
 
+// The system tests read the running stack's Redis; they never load the Functions library into it.
+const stackRedisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 // Tests use their own Redis (`redis-test` in compose.yaml), never the one the running stack uses: the
 // Functions library is global to a Redis, so a run from an edited working tree would otherwise load its Lua
 // under the stack's containers, or be served the stack's copy instead of its own (design §4.2).
@@ -16,6 +18,7 @@ process.env.REDIS_URL = process.env.REDIS_TEST_URL || 'redis://127.0.0.1:6380';
 
 const exclude = [...configDefaults.exclude, '**/.next/**', '**/dist/**', '**/.turbo/**'];
 const integrationTests = '**/*.int.test.{ts,tsx}';
+const systemTests = '**/*.sys.test.{ts,tsx}';
 
 export default defineConfig({
   test: {
@@ -24,7 +27,7 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['**/*.test.{ts,tsx}'],
-          exclude: [...exclude, integrationTests],
+          exclude: [...exclude, integrationTests, systemTests],
         },
       },
       {
@@ -35,6 +38,19 @@ export default defineConfig({
           globalSetup: ['packages/test-utils/src/global-setup.ts'],
           testTimeout: 60_000,
           hookTimeout: 60_000,
+        },
+      },
+      {
+        // Against the running stack (`ENABLE_TEST_ROUTES=true pnpm stack:up`), one file at a time: they stop and
+        // start shared services (tools/system/support.ts).
+        test: {
+          name: 'system',
+          include: [systemTests],
+          exclude,
+          env: { REDIS_URL: stackRedisUrl },
+          fileParallelism: false,
+          testTimeout: 300_000,
+          hookTimeout: 300_000,
         },
       },
     ],

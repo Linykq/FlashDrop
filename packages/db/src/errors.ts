@@ -49,12 +49,18 @@ const TRANSIENT_SQLSTATES = new Set([
   '25P04', // transaction_timeout (observed in the M0 spike)
   '40001', // serialization_failure
   '40P01', // deadlock_detected
-  '53300', // too_many_connections
   '57014', // query_canceled, including statement_timeout
   '57P01', // admin_shutdown
   '57P02', // crash_shutdown
   '57P03', // cannot_connect_now (starting up)
 ]);
+
+/**
+ * SQLSTATE classes that describe the server's state, not the request: 08 connection_exception, 53
+ * insufficient_resources (disk full, out of memory, too_many_connections) and 58 system_error (I/O error).
+ * A consumer must stall on them rather than dead-letter an event that a healthy server would apply.
+ */
+const TRANSIENT_SQLSTATE_CLASSES = ['08', '53', '58'];
 
 /** `pg-pool` giving up after `connectionTimeoutMillis` waiting for a free connection of its full pool. */
 const POOL_EXHAUSTED_MESSAGE = 'timeout exceeded when trying to connect';
@@ -97,7 +103,7 @@ export function isTransientDbError(error: unknown): boolean {
       const code = cause.code ?? '';
       return (
         TRANSIENT_SQLSTATES.has(code) ||
-        code.startsWith('08') || // connection_exception
+        TRANSIENT_SQLSTATE_CLASSES.some((sqlClass) => code.startsWith(sqlClass)) ||
         cause.severity === 'FATAL' ||
         cause.severity === 'PANIC'
       );

@@ -10,7 +10,7 @@ import {
   SYNC_CHANNEL,
   withDropLock,
 } from '@flashdrop/inventory';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createLeaderLease } from '../leader';
 import {
   alertsNamed,
@@ -170,6 +170,37 @@ describe('structural checks', () => {
     }
     await reconciler.tick(running);
     await expectRebuilt(dropId);
+  });
+
+  // The M2 red team measured the reconciler taking every tracked drop's lock every 2 s: a connection and
+  // an advisory-lock round trip per drop per tick, for drops that were fine.
+  it('take no drop lock for drops that look fine without it, and still repair one that does not', async () => {
+    // A database of its own, so the only tracked drops are this test's.
+    const own = await createWorkerTestEnv();
+    const ownIdentity = testIdentityStore(own);
+    try {
+      const reconciler = createReconciler(own.deps, ownIdentity);
+      await reconciler.tick(running); // records the identity: no keyspace loss from here on
+      const [healthy = '', broken = ''] = [await createDrop(own), await createDrop(own)];
+      await armDrop(own, healthy);
+      await armDrop(own, broken);
+      const connect = vi.spyOn(own.deps.lock.pool, 'connect');
+
+      await reconciler.tick(running);
+      expect(connect).not.toHaveBeenCalled();
+
+      await own.db.execute(
+        sql`UPDATE drop_inventory SET redis_gen = redis_gen + 1 WHERE drop_id = ${broken}`,
+      );
+      await reconciler.tick(running);
+
+      expect(connect).toHaveBeenCalledTimes(1);
+      const [inventory, stock] = await Promise.all([inventoryOf(own, broken), readStock(own.redis, broken)]);
+      expect(stock).toMatchObject({ gen: inventory.redis_gen, status: 'LIVE' });
+    } finally {
+      await own.redis.del(ownIdentity.epochKey);
+      await own.close();
+    }
   });
 });
 

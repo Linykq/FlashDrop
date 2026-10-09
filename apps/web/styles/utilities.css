@@ -126,3 +126,23 @@
     }
   }
 }
+
+/* The floating label of a text field or select (§9.4). It rests raised, 12 px over the value (17 px scaled by
+   12/17 from its top-left corner, 8 px higher); over an empty, unfocused input it drops to where a placeholder
+   would sit, centred in the field. The input carries `placeholder=" "` so `:placeholder-shown` means empty, and
+   comes first in the DOM, so the label can follow its state. A select never matches, so its label stays raised.
+   An autofill preview counts as filled. The move animates only with full motion (§6.5). */
+@utility field-label {
+  transform-origin: left top;
+  translate: 0 -0.5rem;
+  scale: calc(12 / 17);
+  @media (prefers-reduced-motion: no-preference) {
+    transition:
+      translate 200ms var(--ease-out),
+      scale 200ms var(--ease-out);
+  }
+  :where(input:placeholder-shown:not(:focus, :autofill)) + & {
+    translate: none;
+    scale: none;
+  }
+}

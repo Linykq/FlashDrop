@@ -1,5 +1,5 @@
 import type { Logger } from '@flashdrop/config';
-import { dropInventory, eq, listTrackedDrops, type TrackedDrop } from '@flashdrop/db';
+import { dropInventory, eq, inArray, listTrackedDrops, type TrackedDrop } from '@flashdrop/db';
 import { type AlertName, alert, BugError } from '@flashdrop/domain';
 import {
   BULK_DEADLINE_MS,
@@ -8,6 +8,7 @@ import {
   keyspaceLoss,
   loadLibrary,
   REDIS_DEADLINE_MS,
+  type RedisStock,
   readStock,
   rebuildDrop,
   type StructuralIssue,
@@ -35,7 +36,7 @@ import type { RedisIdentityStore } from './identity';
  *   2. Structure, per tracked drop, under its drop lock (skipped if busy): `inv` missing, RECONCILING (we hold
  *      the lock, so no live rebuild exists and its holder died), or a generation other than Postgres's.
  *      Holding the lock also keeps the Redis and Postgres reads consistent: no sync can start or finish
- *      between them.
+ *      between them. A lock-free first pass picks the drops that look broken; healthy ones take no lock.
  *
  * A drop RECONCILING for more than 30 s raises an alert (§12): `slow_rebuild` when another session holds
  * its lock (that holder is alive, or the lock would have vanished with it), `rebuild_failed` when this one
@@ -131,19 +132,66 @@ export function createReconciler(deps: WorkerDeps, identity: RedisIdentityStore)
     deps.logger.info({ reason, drops: tracked.length }, 'redis rebuilt from postgres');
   }
 
+  /**
+   * Structure, per tracked drop (§4.7). A first pass compares every drop's Redis `inv` (one pipelined HMGET
+   * each) with Postgres's generations (one query) without any lock, and only a drop that looks broken there
+   * is checked again, and rebuilt if need be, under its drop lock. M2 took every tracked drop's lock every
+   * 2 s, a connection and an advisory-lock round trip per drop per tick, for drops that were almost always
+   * fine.
+   *
+   * The lock-free pass can only cost a lock attempt, never a missed repair: a broken structure (keys gone,
+   * a dead rebuild's RECONCILING, a generation Postgres no longer has) persists until a rebuild repairs it,
+   * so both reads see it. A sync running between the two reads can make a healthy drop look broken (Redis
+   * RECONCILING, or Postgres's generation already bumped), which sends it to the locked check, or make a
+   * broken drop look repaired because it is being repaired. The decision to rebuild is still taken only
+   * under the lock, where no sync can start or finish between the Redis and the Postgres read.
+   */
   async function checkStructure(signal: AbortSignal): Promise<void> {
-    for (const drop of await listTrackedDrops(deps.db)) {
+    const tracked = await listTrackedDrops(deps.db);
+    for (const dropId of await suspectDrops(tracked.map((drop) => drop.id))) {
       if (signal.aborted) return;
-      const log = deps.logger.child({ dropId: drop.id });
+      const log = deps.logger.child({ dropId });
       try {
-        const checked = await tryWithDropLock(deps.lock, drop.id, (lock) => checkDrop(lock, log));
-        if (!checked.acquired) await alertIfReconcilingTooLong(drop.id, log, 'slow_rebuild');
+        const checked = await tryWithDropLock(deps.lock, dropId, (lock) => checkDrop(lock, log));
+        if (!checked.acquired) await alertIfReconcilingTooLong(dropId, log, 'slow_rebuild');
       } catch (err) {
-        await alertIfReconcilingTooLong(drop.id, log, 'rebuild_failed');
+        await alertIfReconcilingTooLong(dropId, log, 'rebuild_failed');
         // One broken drop must not starve the others; an outage ends the tick for all of them.
         if (isTransientError(err)) throw err;
         log.error({ err }, 'structural check failed');
       }
+    }
+  }
+
+  /** The drops whose structure looks broken without the lock, in tracked-set order. */
+  async function suspectDrops(dropIds: readonly string[]): Promise<string[]> {
+    if (dropIds.length === 0) return [];
+    const [inventories, issues] = await Promise.all([
+      deps.db
+        .select({ dropId: dropInventory.dropId, redisGen: dropInventory.redisGen })
+        .from(dropInventory)
+        .where(inArray(dropInventory.dropId, [...dropIds])),
+      // Issued together, so node-redis pipelines them on the one command connection.
+      Promise.all(dropIds.map((dropId) => readStructure(dropId))),
+    ]);
+    const gens = new Map(inventories.map((row) => [row.dropId, row.redisGen]));
+    return dropIds.filter((dropId, i) => {
+      const gen = gens.get(dropId);
+      const read = issues[i];
+      // No inventory row is a bug the locked check reports; an unreadable hash is repaired by a rebuild.
+      if (gen === undefined || read === undefined || read === 'MALFORMED') return true;
+      return structuralIssue(read, gen) !== null;
+    });
+  }
+
+  /** The drop's stock, null when Redis has no drop, or MALFORMED for a partial `inv` hash. */
+  async function readStructure(dropId: string): Promise<RedisStock | null | 'MALFORMED'> {
+    try {
+      return await readStock(deps.redis, dropId);
+    } catch (err) {
+      // A partial `inv` hash; the Functions never write one, but a rebuild repairs it all the same.
+      if (err instanceof BugError) return 'MALFORMED';
+      throw err;
     }
   }
 
@@ -154,14 +202,9 @@ export function createReconciler(deps: WorkerDeps, identity: RedisIdentityStore)
       .where(eq(dropInventory.dropId, lock.dropId));
     if (inventory === undefined) throw new BugError(`tracked drop ${lock.dropId} has no inventory`);
 
-    let issue: StructuralIssue | 'MALFORMED' | null;
-    try {
-      issue = structuralIssue(await readStock(deps.redis, lock.dropId), inventory.redisGen);
-    } catch (err) {
-      // A partial `inv` hash; the Functions never write one, but a rebuild repairs it all the same.
-      if (!(err instanceof BugError)) throw err;
-      issue = 'MALFORMED';
-    }
+    const read = await readStructure(lock.dropId);
+    const issue: StructuralIssue | 'MALFORMED' | null =
+      read === 'MALFORMED' ? read : structuralIssue(read, inventory.redisGen);
     if (issue === null) return;
     log.warn({ issue }, 'drop structure broken; rebuilding');
     const outcome = await rebuildDrop(deps, lock);

@@ -30,7 +30,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   FORBIDDEN: 403,
   // Also for other users' orders: §11 answers 404, never 403, so ids cannot be probed.
   NOT_FOUND: 404,
-  // A compare-and-set that lost, without a more specific reason (extend, cancel).
+  // A compare-and-set that lost, without a more specific reason (extend, cancel, checkout of a closed order).
   CONFLICT: 409,
   SOLD_OUT: 409,
   LIMIT_REACHED: 409,
@@ -95,6 +95,16 @@ export class RetryError extends DomainError {
 }
 
 /**
+ * A failure that says nothing about the input, only that a dependency cannot answer now (a PSP timeout, a
+ * drop still rebuilding): retry the same work later. A consumer pauses the partition and retries the
+ * message forever; it is never dead-lettered for it (design §6.4). Postgres and Redis outages are
+ * recognised by their own classifiers instead.
+ */
+export class TransientError extends Error {
+  override name = 'TransientError';
+}
+
+/**
  * A broken internal assumption, e.g. an unvalidated `qty` reaching Lua (§5.2). Answered with 500 and an
  * alert; the message is for logs, never for the caller.
  */
@@ -103,6 +113,25 @@ export class BugError extends DomainError {
 
   constructor(message: string, options?: ErrorOptions) {
     super('INTERNAL', message, options);
+  }
+}
+
+/** The invariants of design §1.1. */
+export type InvariantId = `INV-${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`;
+
+/**
+ * Stored state that breaks one of the §1.1 invariants, found at run time: Redis holding the opposite
+ * terminal state of an order (INV-8, a Lua `CONFLICT`), or a refund to record for an order that was paid or
+ * is still live (INV-4). Consumers dead-letter the event and alert instead of retrying it, because the same
+ * input fails the same way every time (§6.4).
+ */
+export class InvariantViolation extends DomainError {
+  override name = 'InvariantViolation';
+  readonly invariant: InvariantId;
+
+  constructor(invariant: InvariantId, message: string, options?: ErrorOptions) {
+    super('INTERNAL', `${invariant}: ${message}`, options);
+    this.invariant = invariant;
   }
 }
 

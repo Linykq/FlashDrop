@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { loadEnv, RedisEnv } from '@flashdrop/config';
+import { createLogger, KafkaEnv, loadEnv, RedisEnv } from '@flashdrop/config';
+import type { PaymentMethod } from '@flashdrop/contracts';
 import {
   applyDropAction,
   createDb,
@@ -7,14 +8,22 @@ import {
   createTestBuyers,
   createTestDrop,
   type Db,
+  eq,
+  markPaid,
+  markPaymentFailed,
   POOL_PROFILES,
   parseRows,
+  pspCharges,
+  recordRefund,
   recordReservation,
+  relayOutboxBatch,
   sql,
+  submitCheckout,
   sweeperQuarantine,
   transaction,
 } from '@flashdrop/db';
 import { createTestDatabase, type TestDatabase } from '@flashdrop/db/testing';
+import { pspChargeKey } from '@flashdrop/domain';
 import { requestFingerprint, reservationId } from '@flashdrop/domain/identity';
 import {
   connectCommandClient,
@@ -27,16 +36,20 @@ import {
   settleRedis,
   syncDropFromPostgres,
 } from '@flashdrop/inventory';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createConsumerRunner, createKafka, createPublisher, outboxRecord } from '@flashdrop/messaging';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { z } from 'zod';
+import { createEventsProbe } from './event-samples';
 import { type InvariantsReport, verifyInvariants } from './invariant-samples';
 
 /*
- * `verify:invariants` against Compose Postgres and Redis: a consistent drop passes, and every kind of breach
- * the checker exists for is caught. Each test arms its own drop the way the admin route does, in a throwaway
- * database of this file: the running stack's worker schedules, reconciles and sweeps every armed drop of the
- * development database, and would repair a breach before the checker saw it. afterAll deletes the drops'
- * Redis keys and the database.
+ * `verify:invariants` against Compose Postgres, Redis and Kafka: a consistent drop passes, and every kind of
+ * breach the checker exists for is caught. Each test arms its own drop the way the admin route does, in a
+ * throwaway database of this file: the running stack's worker schedules, reconciles and sweeps every armed
+ * drop of the development database, and would repair a breach before the checker saw it. The PSP ledger is
+ * written directly, as payment-mock would. The event pipeline is checked on a throwaway topic and group,
+ * never on `orders.v1`, whose groups belong to the running stack. afterAll deletes the drops' Redis keys and
+ * the database.
  */
 
 const quiet = { info: () => undefined, warn: () => undefined };
@@ -134,6 +147,56 @@ async function expireOrder(rid: string): Promise<void> {
 const settle = (rid: string) =>
   settleRedis({ db, redis, nudger: createSyncNudger({ db, logger: quiet }) }, rid);
 
+/** A reserve and a checkout submit: an order in PENDING_PAYMENT, as the payment consumer finds it. */
+async function place(
+  dropId: string,
+  userId: string,
+  paymentMethod: PaymentMethod = 'pm_ok',
+): Promise<string> {
+  const orderId = await reserve(dropId, userId);
+  const submitted = await submitCheckout(db, {
+    orderId,
+    userId,
+    checkoutKey: randomUUID(),
+    shipping: {
+      name: 'Ada Buyer',
+      line1: '1 Market Street',
+      city: 'San Francisco',
+      postalCode: '94105',
+      country: 'US',
+    },
+    paymentMethod,
+  });
+  expect(submitted.kind).toBe('submitted');
+  return orderId;
+}
+
+/** A charge in the PSP's book for the order's reference, as payment-mock records it (§6.5). */
+async function charge(
+  orderId: string,
+  status: 'succeeded' | 'declined',
+  key = pspChargeKey(orderId),
+): Promise<string> {
+  const id = `ch_${randomUUID().replaceAll('-', '')}`;
+  await db.insert(pspCharges).values({
+    id,
+    idempotencyKey: key,
+    reference: orderId,
+    amountCents: 1_999,
+    method: status === 'succeeded' ? 'pm_ok' : 'pm_decline',
+    status,
+  });
+  return id;
+}
+
+/** What payment-mock's close does to a reference's succeeded charges. */
+async function refund(chargeId: string): Promise<void> {
+  await db
+    .update(pspCharges)
+    .set({ status: 'refunded', refundedAt: new Date() })
+    .where(eq(pspCharges.id, chargeId));
+}
+
 const verify = (dropId: string, timeoutMs = 0) =>
   verifyInvariants({ db, redis }, { dropIds: [dropId], timeoutMs });
 
@@ -163,8 +226,10 @@ describe('verify:invariants', () => {
     expect(messages(report)).toEqual([]);
     expect(report.ok).toBe(true);
     expect(report.quiescence.reached).toBe(true);
-    expect(report.invariants.find((result) => result.id === 'INV-4')?.status).toBe('skipped');
+    expect(report.invariants.find((result) => result.id === 'INV-4')?.status).toBe('pass');
+    // No event probe given: INV-5 is skipped, never reported as passed.
     expect(report.invariants.find((result) => result.id === 'INV-5')?.status).toBe('skipped');
+    expect(report.events).toBeNull();
     expect(report.drops[0]).toMatchObject({
       idle: true,
       postgres: { total: 10, available: 6, reserved: 4, sold: 0, orders: { RESERVED: 3, EXPIRED: 1 } },
@@ -273,5 +338,171 @@ describe('verify:invariants', () => {
     const missing = await verify(dropId);
     expect(messages(missing)).toContain('INV-6 not quiescent: no Redis state');
     expect(missing.drops[0]?.redis).toBeNull();
+  });
+
+  it('checks the money of every order against the PSP ledger (INV-4)', async () => {
+    const dropId = await armedDrop(10);
+    const [a, b, c] = await createTestBuyers(db, 3);
+    if (a === undefined || b === undefined || c === undefined) throw new Error('createTestBuyers');
+    // Paid: the charge succeeded, then the PAID CAS won.
+    const paid = await place(dropId, a.id);
+    const paidCharge = await charge(paid, 'succeeded');
+    expect((await markPaid(db, { orderId: paid, pspChargeId: paidCharge })).kind).toBe('won');
+    await settle(paid);
+    // Declined: the PSP took nothing.
+    const declined = await place(dropId, b.id, 'pm_decline');
+    const declinedCharge = await charge(declined, 'declined');
+    const failed = await markPaymentFailed(db, {
+      orderId: declined,
+      declineCode: 'card_declined',
+      pspChargeId: declinedCharge,
+    });
+    expect(failed.kind).toBe('won');
+    await settle(declined);
+    // A charge that raced the expiry: the sweeper's CAS won, the PSP still captured.
+    const late = await place(dropId, c.id);
+    await expireOrder(late);
+    await settle(late);
+    const lateCharge = await charge(late, 'succeeded');
+
+    const inFlight = await verify(dropId);
+    expect(messages(inFlight)).toEqual([
+      'INV-4 not quiescent: 1 orders that ended unpaid hold a captured charge',
+    ]);
+    expect(
+      inFlight.quiescence.checks.filter((check) => check.status === 'fail').map((check) => check.name),
+    ).toEqual(['No unpaid order holding money, every refund recorded']);
+
+    // The payment consumer closes the reference, which refunds the charge, and records the refund.
+    await refund(lateCharge);
+    expect(messages(await verify(dropId))).toEqual([
+      'INV-4 not quiescent: 1 refunds not yet recorded as REFUNDED payments',
+    ]);
+    expect(await recordRefund(db, { orderId: late, pspChargeId: lateCharge, amountCents: 1_999 })).toBe(true);
+    const settled = await verify(dropId);
+    expect(messages(settled)).toEqual([]);
+    expect(settled.drops[0]).toMatchObject({
+      postgres: { sold: 1, orders: { PAID: 1, PAYMENT_FAILED: 1, EXPIRED: 1 } },
+      ledger: {
+        charges: { succeeded: 1, declined: 1, refunded: 1 },
+        capturedCents: 1_999,
+        refundedCents: 1_999,
+      },
+    });
+
+    // A second capture of the paid order under another key: a double charge.
+    await charge(paid, 'succeeded', `charge:again:${paid}`);
+    const doubled = await verify(dropId);
+    expect(failing(doubled)).toEqual(['INV-4']);
+    expect(messages(doubled)).toEqual([
+      'INV-4 2 succeeded charges for one reference',
+      'INV-4 PSP net captured 3998 for a PAID order of 1999',
+    ]);
+  });
+});
+
+describe('verify:invariants on the event pipeline', () => {
+  it('waits for the relay and every checked consumer group (INV-5)', async () => {
+    const kafka = createKafka({
+      brokers: loadEnv([KafkaEnv]).KAFKA_BROKERS,
+      clientId: 'verify-invariants-test',
+      logLevel: 'error',
+    });
+    const logger = createLogger({ name: 'verify-invariants-test', level: 'silent' });
+    const admin = kafka.admin();
+    await admin.connect();
+    onTestFinished(() => admin.disconnect());
+    const topic = `fdtest.verify.${randomUUID()}`;
+    const dlqTopic = `fdtest.verify-dlq.${randomUUID()}`;
+    const groupId = `fdtest.verify.${randomUUID()}`;
+    await admin.createTopics({
+      topics: [
+        { topic, numPartitions: 2, replicationFactor: 1 },
+        { topic: dlqTopic, numPartitions: 1, replicationFactor: 1 },
+      ],
+    });
+    onTestFinished(async () => {
+      await admin.deleteGroups([groupId]).catch(() => undefined);
+      await admin.deleteTopics({ topics: [topic, dlqTopic] });
+    });
+    const events = createEventsProbe({ db, admin, topic, dlqTopic, groups: [{ name: 'test', groupId }] });
+    const verifyAll = (dropId: string, timeoutMs = 0, maxDeadLetters?: number) =>
+      verifyInvariants({ db, redis, events }, { dropIds: [dropId], timeoutMs, maxDeadLetters });
+
+    const dropId = await armedDrop(10);
+    const [buyer] = await createTestBuyers(db, 1);
+    if (buyer === undefined) throw new Error('createTestBuyers');
+    await reserve(dropId, buyer.id);
+
+    // Its `order.reserved` row, and every earlier test's events, wait for a relay.
+    const unrelayed = await verifyAll(dropId);
+    expect(failing(unrelayed)).toEqual(['INV-5']);
+    expect(messages(unrelayed)).toEqual([
+      expect.stringMatching(/^INV-5 not quiescent: \d+ outbox rows not yet published, the oldest for /),
+    ]);
+
+    // The relay's batches, sent to the test topic instead of orders.v1.
+    const publisher = createPublisher({ kafka, logger });
+    onTestFinished(() => publisher.close());
+    let relayed = 0;
+    for (;;) {
+      const batch = await relayOutboxBatch(db, (rows) =>
+        publisher.publish(rows.map((row) => ({ ...outboxRecord(row), topic }))),
+      );
+      if (batch.kind !== 'published') throw new Error('another relay holds the lock of a throwaway database');
+      if (batch.messages.length === 0) break;
+      relayed += batch.messages.length;
+    }
+    expect(relayed).toBeGreaterThan(0);
+    const unconsumed = await verifyAll(dropId);
+    expect(messages(unconsumed)).toEqual([
+      expect.stringMatching(
+        new RegExp(
+          `^INV-5 not quiescent: test \\(group ${groupId}\\): ${relayed} events not yet processed on partitions .+; ` +
+            'no commits there yet: is the test role running\\?$',
+        ),
+      ),
+    ]);
+
+    // A group that finishes every event (it acts on none of them).
+    const runner = createConsumerRunner({
+      kafka,
+      name: 'test',
+      groupId,
+      topic,
+      dlqTopic,
+      handlers: {},
+      dlq: publisher,
+      logger,
+      concurrency: 4,
+    });
+    onTestFinished(() => runner.stop());
+    await runner.start();
+    const report = await verifyAll(dropId, 30_000);
+    expect(messages(report)).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(report.quiescence.reached).toBe(true);
+    expect(report.invariants.find((result) => result.id === 'INV-5')?.status).toBe('pass');
+    expect(report.events).toMatchObject({
+      outbox: { pending: 0 },
+      groups: [{ name: 'test', groupId, lag: 0, partitions: 2 }],
+      deadLetters: 0,
+      maxDeadLetters: null,
+    });
+
+    // A dead letter leaves every group at lag 0 (the runner commits past it), so only the DLQ shows it:
+    // reported without a ceiling, a breach of INV-5 above one (`--max-dead-letters`, CI's jobs).
+    await publisher.publish([
+      { topic: dlqTopic, key: null, value: '{}', headers: { 'x-consumer': 'test', 'x-error': 'poison' } },
+    ]);
+    const reported = await verifyAll(dropId, 30_000);
+    expect(reported.ok).toBe(true);
+    expect(reported.events).toMatchObject({ deadLetters: 1, maxDeadLetters: null });
+    const gated = await verifyAll(dropId, 30_000, 0);
+    expect(gated.ok).toBe(false);
+    expect(failing(gated)).toEqual(['INV-5']);
+    expect(messages(gated)).toEqual(['INV-5 1 dead letter in the DLQ topic, at most 0 allowed']);
+    expect(gated.quiescence.reached).toBe(true);
+    expect((await verifyAll(dropId, 30_000, 1)).ok).toBe(true);
   });
 });

@@ -43,6 +43,34 @@
       "when": 1790985881695,
       "tag": "0005_drop_scoped_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790988835118,
+      "tag": "0006_reserve_function",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790989514695,
+      "tag": "0007_psp_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791001894377,
+      "tag": "0008_psp_closures",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791530891606,
+      "tag": "0009_cancel_function",
+      "breakpoints": true
     }
   ]
 }

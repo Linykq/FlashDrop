@@ -1,0 +1,298 @@
+import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { KafkaEnv, loadEnv } from '@flashdrop/config';
+import type { OrderEvent } from '@flashdrop/contracts';
+import { cancelOrder, eq, getOrder, payments, recordReservation } from '@flashdrop/db';
+import { holdTestHook, waitForLockWaiters } from '@flashdrop/db/testing';
+import { requestFingerprint, reservationId } from '@flashdrop/domain/identity';
+import { dropKeys, fdReserve, readStock } from '@flashdrop/inventory';
+import {
+  type ConsumerRunner,
+  createKafka,
+  createPublisher,
+  dispatchOrderEvent,
+  type OrderEventHandlers,
+} from '@flashdrop/messaging';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { startConsumer } from './consumers';
+import { paymentHandlers } from './consumers/payment';
+import { createPspClient } from './consumers/psp-client';
+import { expireOrders } from './sweeper/expire-orders';
+import { createOrphanScan } from './sweeper/orphan-scan';
+import { type FakePsp, startFakePsp } from './test/fake-psp';
+import {
+  ageHold,
+  armDrop,
+  createDrop,
+  createUsers,
+  createWorkerTestEnv,
+  eventOf,
+  eventTypesOf,
+  inventoryOf,
+  lapse,
+  placeOrder,
+  type WorkerTestEnv,
+} from './test/harness';
+
+/*
+ * The race matrix of design §13, forced rather than hoped for. `FD_TEST_HOOKS` makes named points in the code
+ * under test wait while the test holds them (`@flashdrop/db` test-hooks): the test stops one side inside its
+ * transaction, row locks held, runs the other side into it, then lets the first side commit. Every case ends
+ * on the money and the stock: the fake PSP's ledger (one charge per order, captured = total if PAID, else 0)
+ * and Postgres's counters.
+ *
+ * The rest of the matrix lives next to the code it races:
+ * - cancel commits between the charge and the PAID CAS (refund): `consumers/payment.int.test.ts`;
+ * - same-key reserves, one rolling back SOLD_OUT, the other committing: `packages/db` reservation tests;
+ * - rebuild vs an in-flight reserve: here for the generation fence's other side, `apps/api` race-matrix for
+ *   the API's 503 and healed retry, `packages/inventory` sync tests for a reserve that passed the fence first;
+ * - rebuild vs rebuild, status changes during a rebuild: `packages/inventory` sync tests.
+ */
+
+// Read once, at the first hook point, which runs inside a test.
+process.env.FD_TEST_HOOKS = 'true';
+
+let env: WorkerTestEnv;
+let psp: FakePsp;
+let payment: OrderEventHandlers;
+
+beforeAll(async () => {
+  env = await createWorkerTestEnv();
+  psp = await startFakePsp();
+  payment = paymentHandlers({ db: env.db, redis: env.redis, psp: createPspClient({ baseUrl: psp.url }) });
+});
+
+afterAll(async () => {
+  await psp?.close();
+  await env?.close();
+});
+
+/** A PENDING_PAYMENT order on a fresh armed drop of 5 units, and its `order.placed` as the relay sends it. */
+async function placed() {
+  const dropId = await createDrop(env, { total: 5, limit: 2 });
+  await armDrop(env, dropId);
+  const [userId = ''] = await createUsers(env.db, 1);
+  const orderId = await placeOrder(env, dropId, userId);
+  return { dropId, userId, orderId, event: await eventOf(env, orderId, 'order.placed') };
+}
+
+/** Delivers `order.placed` to the payment group's handler, as the runner does. */
+async function pay(event: Awaited<ReturnType<typeof placed>>['event']): Promise<void> {
+  expect(await dispatchOrderEvent(payment, event, { logger: env.deps.logger })).toBe(true);
+}
+
+async function paymentRow(orderId: string) {
+  const [row] = await env.db.select().from(payments).where(eq(payments.orderId, orderId));
+  return row;
+}
+
+describe('payment CAS vs expiry (§4.4: the orders row lock decides)', () => {
+  it('expiry first: the PAID CAS queues behind the expiry, loses, and the charge is refunded (net 0)', async () => {
+    const { dropId, orderId, event } = await placed();
+    await lapse(env, orderId);
+    const hook = await holdTestHook(env.pool, 'expired.locked');
+    const expiring = expireOrders(env.deps);
+    await hook.waitForArrivals();
+    // The expiry holds the row, EXPIRED but uncommitted. The payment reads PENDING_PAYMENT (MVCC), the PSP
+    // charges, and the CAS waits on the row lock.
+    const paying = pay(event);
+    await waitForLockWaiters(env.pool);
+    expect(psp.capturedCents(orderId)).toBe(1_999);
+
+    await hook.release();
+    await Promise.all([expiring, paying]);
+
+    expect(await getOrder(env.db, orderId)).toMatchObject({ status: 'EXPIRED', closeReason: 'TIMEOUT' });
+    expect(psp.charges(orderId)).toEqual([expect.objectContaining({ status: 'refunded' })]);
+    expect(psp.capturedCents(orderId)).toBe(0);
+    expect(await paymentRow(orderId)).toMatchObject({ status: 'REFUNDED', amountCents: 1_999 });
+    expect(await eventTypesOf(env, orderId)).toEqual(['order.reserved', 'order.placed', 'order.expired']);
+    expect(await inventoryOf(env, dropId)).toMatchObject({ reserved: 0, sold: 0 });
+  });
+
+  it('payment first: the expiry skips the row the PAID CAS holds, and the payment stands past its deadline', async () => {
+    const { dropId, orderId, event } = await placed();
+    await lapse(env, orderId);
+    const hook = await holdTestHook(env.pool, 'paid.locked');
+    const paying = pay(event);
+    await hook.waitForArrivals();
+
+    // Due by the clock, but locked by the payment: SKIP LOCKED passes it over rather than waiting.
+    await expireOrders(env.deps);
+    await hook.release();
+    await paying;
+    await expireOrders(env.deps);
+
+    expect(await getOrder(env.db, orderId)).toMatchObject({ status: 'PAID' });
+    expect(psp.capturedCents(orderId)).toBe(1_999);
+    expect(psp.isClosed(orderId)).toBe(false);
+    expect(await paymentRow(orderId)).toMatchObject({ status: 'SUCCEEDED', amountCents: 1_999 });
+    expect(await eventTypesOf(env, orderId)).toEqual(['order.reserved', 'order.placed', 'order.paid']);
+    expect(await inventoryOf(env, dropId)).toMatchObject({ reserved: 0, sold: 1 });
+  });
+});
+
+describe('cancel vs payment', () => {
+  it('payment first: a cancel queued behind the PAID CAS is refused (409) and changes nothing', async () => {
+    const { dropId, userId, orderId, event } = await placed();
+    const hook = await holdTestHook(env.pool, 'paid.locked');
+    const paying = pay(event);
+    await hook.waitForArrivals();
+    const cancelling = cancelOrder(env.db, { orderId, userId });
+    await waitForLockWaiters(env.pool);
+
+    await hook.release();
+    await paying;
+
+    expect(await cancelling).toEqual({ kind: 'refused', code: 'CONFLICT' });
+    expect(await getOrder(env.db, orderId)).toMatchObject({ status: 'PAID' });
+    expect(psp.capturedCents(orderId)).toBe(1_999);
+    expect(await eventTypesOf(env, orderId)).toEqual(['order.reserved', 'order.placed', 'order.paid']);
+    expect(await inventoryOf(env, dropId)).toMatchObject({ reserved: 0, sold: 1 });
+  });
+});
+
+describe('duplicate order.placed in one batch', () => {
+  it('runs the copies one after another: one charge, PAID, no refund', async () => {
+    const { KAFKA_BROKERS } = loadEnv([KafkaEnv]);
+    const kafka = createKafka({ brokers: KAFKA_BROKERS, clientId: 'race-matrix-test', logLevel: 'error' });
+    const admin = kafka.admin();
+    const suffix = randomUUID();
+    const topic = `fdtest.race.orders.${suffix}`;
+    const dlqTopic = `fdtest.race.dlq.${suffix}`;
+    const groupId = `fdtest.race.payment.${suffix}`;
+    await admin.connect();
+    await admin.createTopics({
+      topics: [
+        { topic, numPartitions: 1, replicationFactor: 1 },
+        { topic: dlqTopic, numPartitions: 1, replicationFactor: 1 },
+      ],
+    });
+    const publisher = createPublisher({ kafka, logger: env.deps.logger });
+    let runner: ConsumerRunner | undefined;
+    try {
+      const { orderId, event } = await placed();
+      const recordOf = (e: OrderEvent) => ({
+        topic,
+        key: e.productId,
+        value: JSON.stringify(e),
+        headers: { 'event-id': e.eventId, 'event-type': e.type },
+      });
+      // Everything is in the log before the group exists. A new member's first two fetches take one message
+      // each (client 1.10.1 sizes its cache from 1, by the consumption rate it measured one fetch earlier),
+      // so two fillers the payment group ignores go first, and the copies come out of the third fetch
+      // together, as one batch. Checked: with grouping by offset instead of order, this test fails.
+      const filler = recordOf(await eventOf(env, orderId, 'order.reserved'));
+      await publisher.publish([filler, filler, recordOf(event), recordOf(event)]);
+      // A slow charge: a copy run alongside the first would read PENDING_PAYMENT and charge again.
+      psp.beforeCharge(() => sleep(300));
+      runner = await startConsumer(
+        'payment',
+        { ...env.deps, psp: createPspClient({ baseUrl: psp.url }) },
+        { kafka, dlq: publisher, topic, dlqTopic, groupId },
+      );
+
+      await vi.waitFor(
+        async () => expect(await getOrder(env.db, orderId)).toMatchObject({ status: 'PAID' }),
+        { timeout: 30_000, interval: 100 },
+      );
+      await vi.waitFor(
+        async () => {
+          const [lag] = await admin.fetchOffsets({ groupId, topics: [topic] });
+          expect(lag?.partitions[0]?.offset).toBe('4');
+        },
+        { timeout: 30_000, interval: 100 },
+      );
+      // The test only discriminates if both copies (offsets 2 and 3) came in one batch: a copy in a later
+      // batch would read PAID and charge nothing whatever the grouping.
+      const batches = env.logs.filter((line) => line.msg === 'batch received' && line.groupId === groupId);
+      expect(
+        batches.some((line) => Number(line.firstOffset) <= 2 && Number(line.lastOffset) >= 3),
+        JSON.stringify(batches.map(({ firstOffset, lastOffset }) => [firstOffset, lastOffset])),
+      ).toBe(true);
+      expect(psp.attempts(orderId)).toBe(1);
+      expect(psp.charges(orderId)).toEqual([expect.objectContaining({ status: 'succeeded' })]);
+      expect(psp.isClosed(orderId)).toBe(false);
+      expect(await paymentRow(orderId)).toMatchObject({ status: 'SUCCEEDED' });
+      expect(await eventTypesOf(env, orderId)).toEqual(['order.reserved', 'order.placed', 'order.paid']);
+    } finally {
+      psp.beforeCharge(undefined);
+      await runner?.stop();
+      await publisher.close();
+      await admin.deleteGroups([groupId]).catch(() => undefined);
+      await admin.deleteTopics({ topics: [topic, dlqTopic] }).catch(() => undefined);
+      await admin.disconnect();
+    }
+  });
+});
+
+describe('orphan tombstone vs a late reserve insert (§4.6)', () => {
+  /** Lua's half of a reserve, as an api that stalled (or crashed) after Lua leaves it. */
+  async function admitted() {
+    const dropId = await createDrop(env, { total: 3 });
+    await armDrop(env, dropId);
+    const [userId = ''] = await createUsers(env.db, 1);
+    const idempotencyKey = `key_${randomUUID().replaceAll('-', '')}`;
+    const rid = reservationId({ userId, dropId, idempotencyKey });
+    const fingerprint = requestFingerprint({ dropId, qty: 1 });
+    const hold = await fdReserve(env.redis, { dropId, rid, userId, qty: 1, fingerprint, idempotencyKey });
+    if (hold.kind !== 'RESERVED') throw new Error(`fd_reserve answered ${hold.kind}`);
+    await ageHold(env, dropId, rid);
+    const lateInsert = () =>
+      recordReservation(env.db, {
+        id: rid,
+        userId,
+        dropId,
+        qty: 1,
+        idempotencyKey,
+        requestHash: fingerprint,
+        gen: hold.gen,
+      });
+    return { dropId, rid, lateInsert };
+  }
+
+  const rsvState = async (dropId: string, rid: string) => {
+    const raw = await env.redis.hGet(dropKeys(dropId).rsv, rid);
+    return raw === null ? null : (JSON.parse(raw) as { s: string }).s;
+  };
+
+  it('the insert lands first: the tombstone inserts nothing, emits no order.rejected, and the hold stays', async () => {
+    const { dropId, rid, lateInsert } = await admitted();
+    const hook = await holdTestHook(env.pool, 'orphan.unrecorded');
+    // The scan has found no order for the expired hold and is about to tombstone it.
+    const scanning = createOrphanScan(env.deps)(new AbortController().signal);
+    await hook.waitForArrivals();
+    expect((await lateInsert()).kind).toBe('created');
+
+    await hook.release();
+    await scanning;
+
+    const order = await getOrder(env.db, rid);
+    expect(order).toMatchObject({ status: 'RESERVED' });
+    expect(await eventTypesOf(env, rid)).toEqual(['order.reserved']);
+    // The scan followed the winner: a live order's hold is re-scored to its deadline plus the grace.
+    expect(await rsvState(dropId, rid)).toBe('HELD');
+    expect(await env.redis.zScore(dropKeys(dropId).exp, rid)).toBe(
+      (order?.expiresAt.getTime() ?? 0) + 30_000,
+    );
+    expect(await readStock(env.redis, dropId)).toMatchObject({ avail: 2, held: 1 });
+    expect(await inventoryOf(env, dropId)).toMatchObject({ reserved: 1 });
+  });
+
+  it('the tombstone lands first: the late insert replays REJECTED, and the hold is released once', async () => {
+    const { dropId, rid, lateInsert } = await admitted();
+    const hook = await holdTestHook(env.pool, 'orphan.unrecorded');
+    const scanning = createOrphanScan(env.deps)(new AbortController().signal);
+    await hook.waitForArrivals();
+    await hook.release();
+    await scanning;
+
+    expect((await lateInsert()).kind).toBe('replay');
+
+    expect(await getOrder(env.db, rid)).toMatchObject({ status: 'REJECTED', closeReason: 'ORPHANED' });
+    expect(await eventTypesOf(env, rid)).toEqual(['order.rejected']);
+    expect(await rsvState(dropId, rid)).toBe('RELEASED');
+    expect(await readStock(env.redis, dropId)).toMatchObject({ avail: 3, held: 0 });
+    expect(await inventoryOf(env, dropId)).toMatchObject({ reserved: 0 });
+  });
+});

@@ -3,9 +3,10 @@ import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Executor, Tx } from './client';
 import { isTransientDbError, pgErrorOf } from './errors';
-import { insertOutboxEvents, orderEvent } from './outbox';
+import { insertOutboxEvents, notifyOutbox, orderEvent } from './outbox';
 import { PgTimestamp, PgUuid, parseRows } from './rows';
 import { literalList } from './schema/columns';
+import { testHook } from './test-hooks';
 import { transaction } from './transaction';
 
 /*
@@ -14,7 +15,8 @@ import { transaction } from './transaction';
  * stock back.
  */
 
-export const SWEEPER_LOOPS = ['expire-orders', 'settle-safety-net', 'orphan-scan'] as const;
+/** Loops that quarantine orders; `close-unpaid` runs in the payment role (§6.5), the others in the sweeper. */
+export const SWEEPER_LOOPS = ['expire-orders', 'settle-safety-net', 'orphan-scan', 'close-unpaid'] as const;
 export type SweeperLoop = (typeof SWEEPER_LOOPS)[number];
 
 const LIVE = literalList(LIVE_ORDER_STATUSES);
@@ -127,6 +129,7 @@ export async function expireDueOrders(
         FROM due WHERE o.id = due.id
         RETURNING ${EXPIRE_RETURNING}`);
       const batch = parseRows(ExpiredRow, rows, 'expire-orders batch');
+      if (batch.length > 0) await testHook(tx, 'expired.locked');
       await giveBack(tx, batch);
       return batch;
     });
@@ -202,8 +205,8 @@ async function giveBack(tx: Tx, expired: readonly ExpiredOrder[]): Promise<void>
       orderEvent('order.expired', o, { qty: o.qty, fromStatus: o.fromStatus }, { occurredAt: o.closedAt }),
     ),
   );
-  // Queued now, delivered on commit; issued before the inventory update so that update stays the last statement.
-  await tx.execute(sql`SELECT pg_notify('outbox', '')`);
+  // Once per batch: queued now, delivered on commit.
+  await notifyOutbox(tx);
 
   const inventory = [...sumBy(expired, (o) => o.dropId).values()];
   const dropIds = inventory.map((i) => i.order.dropId);

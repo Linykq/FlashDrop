@@ -8,6 +8,7 @@ import {
   listTrackedDrops,
   type OrderRecord,
   sweeperQuarantine,
+  testHook,
 } from '@flashdrop/db';
 import { alert, isTerminalOrderStatus, MAX_ORDER_QTY, MIN_ORDER_QTY, RSV_STATES } from '@flashdrop/domain';
 import {
@@ -170,6 +171,7 @@ export function createOrphanScan(deps: WorkerDeps): (signal: AbortSignal) => Pro
 /** Records an orphan as REJECTED/ORPHANED and returns whatever order now owns the rid. */
 async function tombstone(deps: WorkerDeps, dropId: string, rid: string, log: Log): Promise<OrderRecord> {
   const entry = await readEntry(deps, dropId, rid);
+  await testHook(deps.db, 'orphan.unrecorded');
   const inserted = await insertRejectedTombstone(deps.db, {
     id: rid,
     userId: entry.u,

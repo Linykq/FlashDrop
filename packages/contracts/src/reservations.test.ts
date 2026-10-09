@@ -77,14 +77,14 @@ describe('admin drop DTOs', () => {
 });
 
 describe('test route DTOs', () => {
-  it('bound session minting and default a test drop to one hour at 25.00', () => {
+  it('bound session minting and default a test drop to 30 minutes at 25.00', () => {
     expect(TestSessionsBody.safeParse({ count: 10_001 }).success).toBe(false);
     expect(TestDropBody.parse({ stock: 100, perUserLimit: 2, holdSeconds: 10, paymentSeconds: 30 })).toEqual({
       stock: 100,
       perUserLimit: 2,
       holdSeconds: 10,
       paymentSeconds: 30,
-      durationSeconds: 3600,
+      durationSeconds: 1800,
       priceCents: 2500,
     });
   });

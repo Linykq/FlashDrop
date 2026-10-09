@@ -1,9 +1,13 @@
 /**
- * Reserve burst (design §13): a flash sale opening on a fresh drop. Many buyers reserve at once; about 30%
- * of the requests repeat a key with the same body, either later (a network retry) or concurrently (a
- * double click, both copies in flight together). A retryable answer (no answer, 502, 503, 504) is resent
- * with the same key after `Retry-After`, within the same iteration, as the storefront does: that retry is
- * what heals a hold Lua granted and Postgres never recorded (§4.5).
+ * Burst (design §13): a flash sale opening on a fresh drop. Many buyers reserve at once; about 30% of the
+ * requests repeat a key with the same body, either later (a network retry) or concurrently (a double click,
+ * both copies in flight together). A retryable answer (no answer, 502, 503, 504) is resent with the same key
+ * after `Retry-After`, within the same iteration, as the storefront does: that retry is what heals a hold
+ * Lua granted and Postgres never recorded (§4.5).
+ *
+ * Of the winners, 70% check out (90% `pm_ok`, 10% `pm_decline`; `-e DECLINE_SHARE=0.3` for the M4 demo),
+ * 20% cancel and 10% walk away. A checkout is one submit with its own key, then a poll of the order until
+ * the payment consumer decides it (§5.2, §6.5): that is the submit-to-PAID latency of §1.
  *
  *   pnpm load:burst                          PROFILE=ci: 100 units, 1,000 buyers; an opening spike of 300
  *                                            buyers firing together, then 300 reserves/s for 20 s
@@ -11,25 +15,33 @@
  *   pnpm load:burst -e PROFILE=nightly       300 units, 3,000 buyers; the opening spike, then 600/s for 30 s
  *   pnpm demo:burst                          PROFILE=demo: 2,000 reserves, 500 in flight at a time, from
  *                                            300 buyers on 100 units; then `verify:invariants`
+ *   pnpm load:burst -e PROFILE=demo -e DECLINE_SHARE=0.3 && pnpm verify:invariants
+ *                                            the M4 demo: 30% of checkouts declined, and their stock comes back
+ *   ... -e MODE=reserve-only                 (M2) reserves only: every hold is abandoned
  *
  * The opening spike is what makes the run contended: an arrival rate alone spaces requests a few ms apart,
  * and at a few ms per reserve that sells the stock almost one request at a time.
  *
- * MODE=reserve-only (M2) never checks out, so every hold is abandoned: teardown() then waits for the
- * sweeper and the safety net to give all of the stock back (§4.6). Checkout and cancel join in M3.
- *
- * Correctness thresholds are strict: exactly `units` distinct orders (every request asks for 1 unit), every
- * replay answers with the order it replays, no 429 (the load profile raises the rate limits, §11), nothing
- * unexpected, all stock back. Latency thresholds are loose (ci, laptop) or absent (reported only).
+ * Correctness thresholds are strict. Both modes: every replay answers with the order it replays, no 429 (the
+ * load profile raises the rate limits, §11), nothing unexpected. reserve-only: exactly `units` distinct
+ * orders (every request asks for 1 unit; nothing comes back before the holds expire) and then all of the
+ * stock back. full: every unit sold at least once, never more PAID orders than units, every submit accepted
+ * once, every `pm_ok` order PAID and every `pm_decline` order PAYMENT_FAILED within the deadline, no
+ * cancel answered other than CANCELLED or a counted CONFLICT, and at the end nothing held and `avail + sold = units`: declined, cancelled and
+ * abandoned stock came back. Postgres, the ledger and the event pipeline are `verify:invariants`' to check.
+ * Latency thresholds are loose (ci, laptop) or absent (reported only).
  */
 import { sleep } from 'k6';
 import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
   answerOf,
+  cancel,
+  checkout,
   createTestDrop,
   header,
   mintSessions,
+  readOrderStatus,
   readStock,
   type reserve,
   reserveCopies,
@@ -38,11 +50,20 @@ import {
 import { uuidv7 } from './lib/ids.ts';
 import { count, ms, type SummaryData, stat, summaryOutputs } from './lib/summary.ts';
 import {
+  type BurstPaymentMethod,
   byJudgingOrder,
+  byJudgingOrderWithReturns,
+  type CheckoutState,
   type IntentState,
   isRetryable,
+  judgeCancel,
+  judgeCheckout,
+  judgePayment,
   judgeReserve,
+  pickFate,
+  pickPaymentMethod,
   retryDelaySeconds,
+  SETTLED_PAYMENT_STATUSES,
 } from './lib/verdict.ts';
 
 interface Profile {
@@ -63,13 +84,28 @@ interface Profile {
     | { readonly kind: 'rate'; readonly rate: number; readonly seconds: number; readonly maxVUs: number }
     | { readonly kind: 'count'; readonly requests: number; readonly seconds: number };
   /**
-   * Longer than the opening plus the burst, so no hold expires and is sold again while the run sends:
-   * `units` orders stay exact. Kept short so that teardown sees the stock come back soon.
+   * Longer than the opening plus the burst, so no abandoned hold expires and is sold again while the run
+   * sends: in reserve-only mode `units` orders stay exact. Kept short so that teardown sees the stock come
+   * back soon.
    */
   readonly holdSeconds: number;
   readonly vus: number;
   /** Loose p95 gate on the `burst` scenario's reserves; undefined: reported only (§1 scale targets). */
   readonly p95Ms?: number;
+  /**
+   * Loose p95 gate on submit to PAID; undefined: reported only. §1 targets < 5 s in CI and < 2 s on the
+   * laptop, but every withheld PSP answer (timeout after success, 1% of charges) holds the payment consumer's
+   * whole batch, on the one partition a flash sale lives on, until its 5 s PSP timeout (§6.4 bounded
+   * batches), and every order placed meanwhile waits too: measured p95 about 12 s in the ci profile. The gate
+   * catches a stall beyond a couple of those.
+   */
+  readonly paidP95Ms?: number;
+  /**
+   * How often a buyer polls its order while the payment consumer works: the resolution of submit to PAID.
+   * Every checkout polls at once in a big profile, so it polls less often there, to keep the polls from
+   * loading the api the reserves are measured on.
+   */
+  readonly paymentPollSeconds: number;
 }
 
 const PROFILES: Readonly<Record<string, Profile>> = {
@@ -83,7 +119,9 @@ const PROFILES: Readonly<Record<string, Profile>> = {
     load: { kind: 'rate', rate: 300, seconds: 20, maxVUs: 400 },
     holdSeconds: 40,
     vus: 100,
+    paymentPollSeconds: 0.2,
     p95Ms: 500,
+    paidP95Ms: 20_000,
   },
   nightly: {
     units: 300,
@@ -93,6 +131,7 @@ const PROFILES: Readonly<Record<string, Profile>> = {
     load: { kind: 'rate', rate: 600, seconds: 30, maxVUs: 600 },
     holdSeconds: 50,
     vus: 150,
+    paymentPollSeconds: 0.5,
   },
   laptop: {
     units: 1_000,
@@ -101,6 +140,7 @@ const PROFILES: Readonly<Record<string, Profile>> = {
     load: { kind: 'rate', rate: 2_000, seconds: 30, maxVUs: 1_000 },
     holdSeconds: 40,
     vus: 300,
+    paymentPollSeconds: 0.5,
     p95Ms: 100,
   },
   demo: {
@@ -110,18 +150,24 @@ const PROFILES: Readonly<Record<string, Profile>> = {
     load: { kind: 'count', requests: 2_000, seconds: 10 },
     holdSeconds: 15,
     vus: 500,
+    paymentPollSeconds: 0.2,
   },
 };
 
+const MODES = ['full', 'reserve-only'] as const;
+type Mode = (typeof MODES)[number];
+
 const PROFILE = __ENV.PROFILE || 'ci';
-const MODE = __ENV.MODE || 'reserve-only';
-const profile = PROFILES[PROFILE];
-if (profile === undefined) {
-  throw new Error(`PROFILE=${PROFILE} is unknown; use one of ${Object.keys(PROFILES).join(', ')}`);
-}
-if (MODE !== 'reserve-only') {
-  throw new Error(`MODE=${MODE} is not available yet: checkout and cancel join the burst in M3`);
-}
+const MODE = (__ENV.MODE || 'full') as Mode;
+const profile: Profile = (() => {
+  const selected = PROFILES[PROFILE];
+  if (selected === undefined) {
+    throw new Error(`PROFILE=${PROFILE} is unknown; use one of ${Object.keys(PROFILES).join(', ')}`);
+  }
+  return selected;
+})();
+if (!MODES.includes(MODE)) throw new Error(`MODE=${MODE} is unknown; use one of ${MODES.join(', ')}`);
+const FULL = MODE === 'full';
 
 /** Share of sends that resend a remembered request of the same VU later (a network retry). */
 const RESEND_SHARE = 0.2;
@@ -130,6 +176,16 @@ const DOUBLE_CLICK_SHARE = 0.1;
 /** Each VU remembers its last few requests to resend; a resend follows its original within seconds. */
 const RECENT_REQUESTS = 32;
 const QTY = 1;
+/** What a winner does with its hold (§13). */
+const FATES = { checkout: 0.7, cancel: 0.2 } as const;
+/** Share of checkouts paid with `pm_decline`: 10% (§13); the M4 demo runs 30%. */
+const DECLINE_SHARE = Number(__ENV.DECLINE_SHARE || '0.1');
+if (!(DECLINE_SHARE >= 0 && DECLINE_SHARE <= 1)) throw new Error('DECLINE_SHARE must be between 0 and 1');
+/**
+ * How long a submitted order may take to be decided. Generous: a PSP 503 or a withheld success (timeout
+ * after success) makes the payment consumer pause the partition and retry with backoff (§6.4).
+ */
+const PAYMENT_DEADLINE_SECONDS = 60;
 /** The drop stays open long enough for a slow setup; it is a fresh, isolated drop either way. */
 const DROP_SECONDS = 600;
 /** Every opening VU waits for this moment after setup, so they fire together rather than as VUs start. */
@@ -140,8 +196,11 @@ const ON_TIME_MS = 250;
 const ON_TIME_SHARE = 0.9;
 /** When the `burst` scenario starts after an opening; it overlaps the opening's tail. */
 const OPENING_SECONDS = 5;
-/** Iterations still sending when a scenario ends get this long to finish their retries. */
-const GRACEFUL_STOP_SECONDS = 15;
+/**
+ * Iterations still running when a scenario ends get this long to finish their retries, and in full mode
+ * their payment, so no decided order goes uncounted.
+ */
+const GRACEFUL_STOP_SECONDS = FULL ? PAYMENT_DEADLINE_SECONDS + 15 : 15;
 /** After the last hold expires: expire-orders (1 s), then settle-safety-net (10 s age, 5 s period), §4.6. */
 const RETURN_GRACE_SECONDS = 45;
 /** `RETURN_CHECK=0` skips waiting for the stock to come back, e.g. while iterating on the burst itself. */
@@ -174,15 +233,51 @@ const replayMismatch = new Counter('reserve_replay_mismatch');
 const openingOnTime = new Counter('opening_on_time');
 const stockReturned = new Rate('stock_returned');
 const stockReturnSeconds = new Trend('stock_return_seconds');
+const finalSold = new Trend('final_sold');
+
+const checkoutDuration = new Trend('checkout_duration', true);
+const checkoutSubmitted = new Counter('checkout_submitted');
+const checkoutReplayed = new Counter('checkout_replayed');
+const checkoutRetried = new Counter('checkout_retry');
+const checkoutExpired = new Counter('checkout_expired');
+const checkoutMismatch = new Counter('checkout_mismatch');
+const checkoutUnexpected = new Counter('checkout_unexpected');
+const submitToPaid = new Trend('submit_to_paid', true);
+const submitToDeclined = new Trend('submit_to_declined', true);
+const paymentPaid = new Counter('payment_paid');
+const paymentDeclined = new Counter('payment_declined');
+const paymentWrong = new Counter('payment_wrong');
+const paymentTimeout = new Counter('payment_timeout');
+const cancelDuration = new Trend('cancel_duration', true);
+const cancelled = new Counter('cancel_cancelled');
+const cancelConflict = new Counter('cancel_conflict');
+const cancelUnexpected = new Counter('cancel_unexpected');
+const abandoned = new Counter('abandoned');
 
 const thresholds: Record<string, string[]> = {
-  // Exactly the stock, with qty 1: no oversell, and no admitted hold lost on the way to Postgres. Distinct
-  // orders, not 201s: a winner whose 201 was lost learns its order from the retry's 200 replay.
-  reserve_orders: [`count==${profile.units / QTY}`],
   reserve_replay_mismatch: ['count==0'],
   reserve_unexpected: ['count==0'],
   reserve_rate_limited: ['count==0'],
 };
+if (FULL) {
+  // Returned stock is sold again while the burst runs, so orders exceed the stock; every unit went at
+  // least once, and PAID units can never exceed it (INV-1).
+  thresholds.reserve_orders = [`count>=${profile.units / QTY}`];
+  thresholds.payment_paid = [`count<=${profile.units / QTY}`];
+  thresholds.checkout_mismatch = ['count==0'];
+  thresholds.checkout_unexpected = ['count==0'];
+  // A winner submits right after its reserve, and every profile's hold outlasts its whole load, so a 410
+  // means a hold was lost or expired early, never a buyer who took too long.
+  thresholds.checkout_expired = ['count==0'];
+  thresholds.payment_wrong = ['count==0'];
+  thresholds.payment_timeout = ['count==0'];
+  thresholds.cancel_unexpected = ['count==0'];
+  if (profile.paidP95Ms !== undefined) thresholds.submit_to_paid = [`p(95)<${profile.paidP95Ms}`];
+} else {
+  // Exactly the stock, with qty 1: no oversell, and no admitted hold lost on the way to Postgres. Distinct
+  // orders, not 201s: a winner whose 201 was lost learns its order from the retry's 200 replay.
+  thresholds.reserve_orders = [`count==${profile.units / QTY}`];
+}
 if (RETURN_CHECK) thresholds.stock_returned = ['rate==1'];
 if (profile.p95Ms !== undefined) thresholds['reserve_duration{scenario:burst}'] = [`p(95)<${profile.p95Ms}`];
 if (opening !== undefined) {
@@ -196,7 +291,7 @@ const gracefulStop = `${GRACEFUL_STOP_SECONDS}s`;
 
 export const options = {
   setupTimeout: '180s',
-  teardownTimeout: `${loadSeconds + profile.holdSeconds + RETURN_GRACE_SECONDS + 30}s`,
+  teardownTimeout: `${loadSeconds + GRACEFUL_STOP_SECONDS + profile.holdSeconds + RETURN_GRACE_SECONDS + 30}s`,
   scenarios: {
     ...(opening === undefined
       ? {}
@@ -290,10 +385,10 @@ function nextSend(tokens: readonly string[]): { readonly intent: Intent; readonl
   return { intent, copies: roll < RESEND_SHARE + DOUBLE_CLICK_SHARE ? 2 : 1 };
 }
 
-function report(kind: string, intent: Intent, detail: string): void {
+function report(kind: string, key: string, detail: string): void {
   if (logged >= MAX_LOGGED) return;
   logged += 1;
-  console.error(`${kind}: key ${intent.idempotencyKey} after ${intent.sent} sends: ${detail}`);
+  console.error(`${kind}: key ${key}: ${detail}`);
 }
 
 /** The `opening` scenario: the first iteration waits for the shared instant, so every VU fires together. */
@@ -311,12 +406,35 @@ export default function (data: BurstData): void {
   buy(data);
 }
 
+/** One reserve intent; in full mode, a winner then decides what to do with its hold. */
 function buy(data: BurstData): void {
   const { intent, copies } = nextSend(data.tokens);
+  const orderId = reserveIntent(data.dropId, intent, copies);
+  if (orderId === undefined || !FULL) return;
+  switch (pickFate(Math.random(), FATES)) {
+    case 'checkout':
+      checkoutAndPay(intent.token, orderId);
+      return;
+    case 'cancel':
+      cancelHold(intent.token, orderId);
+      return;
+    case 'abandon':
+      // The hold expires; the sweeper and the settlement consumer give the unit back (§4.6).
+      abandoned.add(1);
+      return;
+  }
+}
+
+/**
+ * Sends the intent (`copies` at once) until every copy has a final answer, and judges them. Returns the
+ * order id when this call is the first to learn of the intent's order: a winner, which acts next.
+ */
+function reserveIntent(dropId: string, intent: Intent, copies: number): string | undefined {
   if (copies > 1) doubleClicks.add(1);
+  const known = intent.orderId;
   let pending = copies;
   for (let attempt = 1; ; attempt += 1) {
-    const responses = reserveCopies(data.dropId, intent, pending);
+    const responses = reserveCopies(dropId, intent, pending);
     intent.sent += pending;
     const answers: ReserveResponse[] = [];
     let delay = 0;
@@ -331,21 +449,31 @@ function buy(data: BurstData): void {
       (response.status === 0 ? transportErrors : retried).add(1);
       delay = Math.max(delay, retryDelaySeconds(header(response, 'Retry-After')));
     }
-    for (const response of answers.sort(byJudgingOrder)) record(intent, response);
+    // Full mode returns stock mid-run, so a refused copy may legitimately precede its twin's creation.
+    for (const response of answers.sort(FULL ? byJudgingOrderWithReturns : byJudgingOrder)) {
+      record(intent, response);
+    }
     pending = responses.length - answers.length;
-    if (pending === 0) return;
+    if (pending === 0) break;
     if (attempt === MAX_ATTEMPTS) {
       gaveUp.add(pending);
-      report('gave up', intent, `${pending} sends still unanswered after ${MAX_ATTEMPTS} attempts`);
-      return;
+      report(
+        'gave up',
+        intent.idempotencyKey,
+        `${pending} sends still unanswered after ${MAX_ATTEMPTS} attempts`,
+      );
+      break;
     }
     sleep(delay);
   }
+  return known === undefined ? intent.orderId : undefined;
 }
 
-/** Counts one final answer by what `judgeReserve` makes of it. */
+/** Counts one final reserve answer by what `judgeReserve` makes of it. */
 function record(intent: Intent, response: ReserveResponse): void {
   const verdict = judgeReserve(intent, answerOf(response));
+  const detail = () =>
+    `after ${intent.sent} sends: ${response.status} ${String(response.body).slice(0, 200)}`;
   switch (verdict.kind) {
     case 'created':
       created.add(1);
@@ -367,33 +495,143 @@ function record(intent: Intent, response: ReserveResponse): void {
       return;
     case 'rate-limited':
       rateLimited.add(1);
-      report('rate limited', intent, '429: raise RATE_LIMIT_IP_PER_SEC and RATE_LIMIT_USER_PER_SEC');
+      report(
+        'rate limited',
+        intent.idempotencyKey,
+        '429: raise RATE_LIMIT_IP_PER_SEC and RATE_LIMIT_USER_PER_SEC',
+      );
       return;
     case 'mismatch':
       replayMismatch.add(1);
-      report(verdict.reason, intent, `${response.status} ${String(response.body).slice(0, 200)}`);
+      report(verdict.reason, intent.idempotencyKey, detail());
       return;
     case 'unexpected':
       unexpected.add(1);
-      report(verdict.reason, intent, `${response.status} ${String(response.body).slice(0, 200)}`);
+      report(verdict.reason, intent.idempotencyKey, detail());
       return;
   }
 }
 
-/** Reserve-only: every hold was abandoned, so all of the stock must come back once they expire. */
+/**
+ * Checkout submit with a fresh key for the order (§8.2: one per order), resent on retryable answers, then a
+ * poll of the order until the payment consumer has decided it.
+ */
+function checkoutAndPay(token: string, orderId: string): void {
+  const method = pickPaymentMethod(Math.random(), DECLINE_SHARE);
+  const request = { token, orderId, idempotencyKey: uuidv7(), paymentMethod: method };
+  const state: CheckoutState = { sent: 0, uncertain: false, submitted: false };
+  const submittedAt = Date.now();
+  for (let attempt = 1; ; attempt += 1) {
+    const response = checkout(request);
+    state.sent += 1;
+    checkoutDuration.add(response.timings.duration);
+    if (isRetryable(response.status) && attempt < MAX_ATTEMPTS) {
+      state.uncertain = true;
+      checkoutRetried.add(1);
+      sleep(retryDelaySeconds(header(response, 'Retry-After')));
+      continue;
+    }
+    const verdict = judgeCheckout(state, orderId, answerOf(response));
+    const detail = `${response.status} ${String(response.body).slice(0, 200)}`;
+    switch (verdict.kind) {
+      case 'submitted':
+        checkoutSubmitted.add(1);
+        break;
+      case 'replayed':
+        checkoutReplayed.add(1);
+        if (verdict.newSubmission) checkoutSubmitted.add(1);
+        break;
+      case 'expired':
+        checkoutExpired.add(1);
+        break;
+      case 'mismatch':
+        checkoutMismatch.add(1);
+        report(`checkout ${verdict.reason}`, request.idempotencyKey, detail);
+        break;
+      case 'unexpected':
+        checkoutUnexpected.add(1);
+        report(`checkout ${verdict.reason}`, request.idempotencyKey, detail);
+        break;
+    }
+    break;
+  }
+  if (state.submitted) awaitPayment(token, orderId, method, submittedAt);
+}
+
+/** Polls the order until the payment consumer decided it, and checks that it decided what the PSP said. */
+function awaitPayment(token: string, orderId: string, method: BurstPaymentMethod, submittedAt: number): void {
+  const deadline = submittedAt + PAYMENT_DEADLINE_SECONDS * 1_000;
+  for (;;) {
+    const status = readOrderStatus(token, orderId);
+    if (status !== undefined && SETTLED_PAYMENT_STATUSES.includes(status)) {
+      const elapsed = Date.now() - submittedAt;
+      if (judgePayment(method, status) === 'wrong') {
+        paymentWrong.add(1);
+        report('payment', orderId, `${method} ended ${status}`);
+      } else if (status === 'PAID') {
+        paymentPaid.add(1);
+        submitToPaid.add(elapsed);
+      } else {
+        paymentDeclined.add(1);
+        submitToDeclined.add(elapsed);
+      }
+      return;
+    }
+    if (Date.now() > deadline) {
+      paymentTimeout.add(1);
+      report(
+        'payment',
+        orderId,
+        `${method} still ${status ?? 'unreadable'} after ${PAYMENT_DEADLINE_SECONDS} s`,
+      );
+      return;
+    }
+    sleep(profile.paymentPollSeconds);
+  }
+}
+
+/** Cancels the hold, resending on retryable answers: a repeated cancel answers 200 CANCELLED again. */
+function cancelHold(token: string, orderId: string): void {
+  for (let attempt = 1; ; attempt += 1) {
+    const response = cancel(token, orderId);
+    cancelDuration.add(response.timings.duration);
+    if (isRetryable(response.status) && attempt < MAX_ATTEMPTS) {
+      sleep(retryDelaySeconds(header(response, 'Retry-After')));
+      continue;
+    }
+    const verdict = judgeCancel(orderId, answerOf(response));
+    if (verdict === 'cancelled') cancelled.add(1);
+    else if (verdict === 'conflict') cancelConflict.add(1);
+    else {
+      cancelUnexpected.add(1);
+      report('cancel', orderId, `${response.status} ${String(response.body).slice(0, 200)}`);
+    }
+    return;
+  }
+}
+
+/**
+ * Once every hold has expired or been decided, the stock must be back (§4.6): reserve-only gives all of it
+ * back; full mode holds nothing and `avail + sold = units`, so declined, cancelled and abandoned units
+ * returned. Whether `sold` is exactly the PAID orders is Postgres's truth, which `verify:invariants` checks.
+ */
 export function teardown(data: BurstData): void {
   // Always one sample: k6 passes a threshold on a metric that never got one, e.g. an opening that never ran.
   openingOnTime.add(0);
   if (!RETURN_CHECK) return;
   const firstExpiry = data.fireAt + profile.holdSeconds * 1_000;
-  const deadline = firstExpiry + (loadSeconds + RETURN_GRACE_SECONDS) * 1_000;
+  const deadline = firstExpiry + (loadSeconds + GRACEFUL_STOP_SECONDS + RETURN_GRACE_SECONDS) * 1_000;
   let last: Stock | undefined;
   for (;;) {
     try {
       last = readStock(data.dropId);
-      if (last.avail === profile.units && last.held === 0 && last.sold === 0) {
+      const settled = FULL
+        ? last.held === 0 && last.avail + last.sold === profile.units
+        : last.avail === profile.units && last.held === 0 && last.sold === 0;
+      if (settled) {
         stockReturned.add(true);
         stockReturnSeconds.add(Math.max(0, (Date.now() - firstExpiry) / 1_000));
+        finalSold.add(last.sold);
         return;
       }
     } catch (error) {
@@ -402,7 +640,7 @@ export function teardown(data: BurstData): void {
     if (Date.now() > deadline) {
       stockReturned.add(false);
       console.error(
-        `stock did not come back: ${JSON.stringify(last)}; is the worker (sweeper role) running?`,
+        `stock did not come back: ${JSON.stringify(last)}; are the worker (sweeper) and consumers running?`,
       );
       return;
     }
@@ -415,21 +653,9 @@ export function handleSummary(data: SummaryData): Record<string, string> {
   const requests = count(data, 'reserve_duration');
   const returned = stat(data, 'stock_returned', 'rate');
   const returnSeconds = stat(data, 'stock_return_seconds', 'max');
-  const counters: [string, string][] = [
-    ['orders', 'reserve_orders'],
-    ['201', 'reserve_created'],
-    ['replayed', 'reserve_replayed'],
-    ['double clicks', 'reserve_double_clicks'],
-    ['sold out', 'reserve_sold_out'],
-    ['limit reached', 'reserve_limit_reached'],
-    ['expired', 'reserve_expired'],
-    ['5xx retried', 'reserve_retry'],
-    ['429', 'reserve_rate_limited'],
-    ['no answer', 'reserve_transport_errors'],
-    ['gave up', 'reserve_gave_up'],
-    ['unexpected', 'reserve_unexpected'],
-    ['replay mismatches', 'reserve_replay_mismatch'],
-  ];
+  const sold = stat(data, 'final_sold', 'max');
+  const counters = (pairs: readonly [string, string][]) =>
+    pairs.map(([label, metric]) => `${label} ${count(data, metric)}`).join(', ');
   const load =
     profile.load.kind === 'rate'
       ? `${profile.load.rate} reserves/s for ${profile.load.seconds} s`
@@ -441,17 +667,71 @@ export function handleSummary(data: SummaryData): Record<string, string> {
         : `opening of ${opening.vus} buyers x ${opening.iterations} (${count(data, 'opening_on_time')} fired within ${ON_TIME_MS} ms), then ${load}`
     }`,
     `  drop ${setup?.dropId ?? '(setup failed)'}: ${profile.units} units, limit ${profile.perUserLimit}, hold ${profile.holdSeconds} s, ${profile.buyers} buyers`,
-    `  ${requests} reserves: ${counters.map(([label, metric]) => `${label} ${count(data, metric)}`).join(', ')}`,
-    `  latency p50 ${ms(stat(data, 'reserve_duration', 'med'))}, p95 ${ms(stat(data, 'reserve_duration', 'p(95)'))}, p99 ${ms(stat(data, 'reserve_duration', 'p(99)'))}; winners p95 ${ms(stat(data, 'reserve_winner_duration', 'p(95)'))}`,
-    `  dropped iterations (VUs exhausted): ${count(data, 'dropped_iterations')}`,
-    RETURN_CHECK
-      ? `  stock back to ${profile.units}: ${returned === 1 ? `${returnSeconds.toFixed(1)} s after the first holds expired` : 'NO'}`
-      : '  stock return: not checked (RETURN_CHECK=0)',
+    `  ${requests} reserves: ${counters([
+      ['orders', 'reserve_orders'],
+      ['201', 'reserve_created'],
+      ['replayed', 'reserve_replayed'],
+      ['double clicks', 'reserve_double_clicks'],
+      ['sold out', 'reserve_sold_out'],
+      ['limit reached', 'reserve_limit_reached'],
+      ['expired', 'reserve_expired'],
+      ['5xx retried', 'reserve_retry'],
+      ['429', 'reserve_rate_limited'],
+      ['no answer', 'reserve_transport_errors'],
+      ['gave up', 'reserve_gave_up'],
+      ['unexpected', 'reserve_unexpected'],
+      ['replay mismatches', 'reserve_replay_mismatch'],
+    ])}`,
+    `  reserve latency p50 ${ms(stat(data, 'reserve_duration', 'med'))}, p95 ${ms(stat(data, 'reserve_duration', 'p(95)'))}, p99 ${ms(stat(data, 'reserve_duration', 'p(99)'))}; winners p95 ${ms(stat(data, 'reserve_winner_duration', 'p(95)'))}`,
   ];
+  if (FULL) {
+    lines.push(
+      `  winners: ${counters([
+        ['checked out', 'checkout_submitted'],
+        ['cancelled', 'cancel_cancelled'],
+        ['abandoned', 'abandoned'],
+      ])} (decline share ${DECLINE_SHARE})`,
+      `  checkout: ${counters([
+        ['202', 'checkout_submitted'],
+        ['replayed', 'checkout_replayed'],
+        ['5xx retried', 'checkout_retry'],
+        ['expired', 'checkout_expired'],
+        ['mismatches', 'checkout_mismatch'],
+        ['unexpected', 'checkout_unexpected'],
+      ])}; p95 ${ms(stat(data, 'checkout_duration', 'p(95)'))}`,
+      `  payment: ${counters([
+        ['PAID', 'payment_paid'],
+        ['declined', 'payment_declined'],
+        ['wrong outcome', 'payment_wrong'],
+        ['undecided', 'payment_timeout'],
+      ])}; submit to PAID p50 ${ms(stat(data, 'submit_to_paid', 'med'))}, p95 ${ms(stat(data, 'submit_to_paid', 'p(95)'))}, max ${ms(stat(data, 'submit_to_paid', 'max'))} (polled every ${profile.paymentPollSeconds * 1_000} ms)`,
+      `  cancel: ${counters([
+        ['cancelled', 'cancel_cancelled'],
+        ['conflict', 'cancel_conflict'],
+        ['unexpected', 'cancel_unexpected'],
+      ])}; p95 ${ms(stat(data, 'cancel_duration', 'p(95)'))}`,
+    );
+  }
+  lines.push(
+    `  dropped iterations (VUs exhausted): ${count(data, 'dropped_iterations')}`,
+    !RETURN_CHECK
+      ? '  stock return: not checked (RETURN_CHECK=0)'
+      : returned !== 1
+        ? '  stock back: NO'
+        : FULL
+          ? `  stock settled ${returnSeconds.toFixed(1)} s after the first holds expired: sold ${sold}, ${count(data, 'payment_paid')} PAID seen by buyers`
+          : `  stock back to ${profile.units}: ${returnSeconds.toFixed(1)} s after the first holds expired`,
+  );
   return summaryOutputs(
     `burst-${PROFILE}`,
     data,
-    { script: 'burst', profile: PROFILE, mode: MODE, dropId: setup?.dropId, settings: profile },
+    {
+      script: 'burst',
+      profile: PROFILE,
+      mode: MODE,
+      dropId: setup?.dropId,
+      settings: { ...profile, fates: FATES, declineShare: DECLINE_SHARE },
+    },
     lines,
   );
 }

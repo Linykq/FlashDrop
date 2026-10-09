@@ -15,6 +15,17 @@ export type AlertName =
   | 'slow_rebuild'
   /** A drop RECONCILING for more than 30 s while the reconciler holds its lock and its rebuild fails (§4.7). */
   | 'rebuild_failed'
+  // relay and consumers (packages/messaging)
+  /** Any write to the dead-letter topic (§6.4). */
+  | 'dlq_write'
+  /** A partition has retried the same message for more than 5 minutes (§6.4). */
+  | 'partition_stuck'
+  /** A group's committed offset is below the log start: retention deleted events it never processed. */
+  | 'offset_below_log_start'
+  /** The oldest unpublished outbox row is older than 10 s (§5.4). */
+  | 'outbox_lag'
+  /** Kafka refuses an outbox record itself (unknown topic, too large): the relay is blocked until fixed. */
+  | 'relay_rejected'
   // api
   /** Postgres refused (SOLD_OUT or LIMIT) what Redis admitted: Redis was optimistic (§4.7, §12). */
   | 'postgres_refusal'

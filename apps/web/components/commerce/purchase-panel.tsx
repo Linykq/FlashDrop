@@ -11,7 +11,6 @@ import {
   WifiOff,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { type ReactNode, type RefObject, useEffect, useEffectEvent, useId, useRef, useState } from 'react';
 import { cx } from '../../lib/cx';
 import { formatCount, formatDuration } from '../../lib/format';
@@ -22,6 +21,7 @@ import { pendingQuantity } from '../../lib/reserve-key';
 import { checkoutHref } from '../../lib/routes';
 import { describeStock, type StockState } from '../../lib/stock';
 import { useMediaQuery } from '../../lib/use-media-query';
+import { useRefreshOnReturn } from '../../lib/use-refresh-on-return';
 import { type ReserveProblem, useReserve } from '../../lib/use-reserve';
 import { announce } from '../ui/announcer';
 import { ButtonLink } from '../ui/button';
@@ -91,21 +91,8 @@ export function PurchasePanel({
     if (pending !== null) setQuantity(pending);
   }, [dropId]);
 
-  // Next reveals a page it kept in a hidden <Activity> (Back, "Leave checkout", "Try again") as it was left,
-  // without asking the server again, and its effects run again. The hold the buyer comes back from is server
-  // data, so a revealed panel asks for the page again; the router keeps this one on screen until it arrives.
-  const router = useRouter();
-  const away = useRef(false);
-  useEffect(() => {
-    if (away.current) router.refresh();
-    away.current = false;
-    // Marked a task later, so React's development-only remount, cleanup and setup in one go, isn't a return.
-    return () => {
-      setTimeout(() => {
-        away.current = true;
-      }, 0);
-    };
-  }, [router]);
+  // The hold the buyer comes back from (Back, "Leave checkout", "Try again") is server data.
+  useRefreshOnReturn();
 
   const barShown = !rowInView;
   const noteFor = (problem: ReserveProblem) => reserveNote(problem, { perUserLimit, stock });

@@ -45,9 +45,9 @@ afterAll(async () => {
 
 describe('the worker roles together', () => {
   it('report healthy once every loop has ticked', async () => {
-    const loops = () => [...sweeper, ...reconciler.loops].map((loop) => loop.health());
+    const components = () => [...sweeper, ...reconciler.loops].map((loop) => loop.health());
     await eventually(
-      async () => healthReport({ roles: ['sweeper', 'reconciler'], loops }).status === 'ok',
+      async () => healthReport({ roles: ['sweeper', 'reconciler'], components }).status === 'ok',
       5_000,
     );
   });

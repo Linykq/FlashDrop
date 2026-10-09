@@ -14,7 +14,7 @@ import { productExists } from './lib/server/product-check';
  *   redirect, and back afterwards (§10.0 "Signed out"). Only the cookie's presence is checked here; an expired
  *   session is caught by the page itself, when api answers 401.
  */
-export const config = { matcher: ['/p/:slug', '/checkout/:orderId', '/orders'] };
+export const config = { matcher: ['/p/:slug', '/checkout/:orderId', '/orders', '/orders/:orderId'] };
 
 export async function proxy(request: NextRequest): Promise<NextResponse> {
   const { pathname, search } = request.nextUrl;

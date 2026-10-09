@@ -134,6 +134,25 @@ export const PspEnv = z.object({
 });
 
 /**
+ * payment-mock's ledger connection, as the PSP's own role `flashdrop_psp` (migration 0007), which may read
+ * and write the `psp` schema and nothing else (§3): never `DATABASE_URL`, whose role owns the orders. The
+ * default is the local Compose server with the development password of `.env.example`.
+ */
+export const PspDatabaseEnv = z.object({
+  PSP_DATABASE_URL: z
+    .url({ protocol: /^postgres(ql)?$/, error: 'must be a postgres:// URL' })
+    .default('postgres://flashdrop_psp:dev-only-psp-db-password@127.0.0.1:5433/flashdrop'),
+});
+
+/**
+ * Read by `db:migrate`: when set, the payment-mock role may log in with this password (migration 0007 creates
+ * it without LOGIN). Unset, the role stays locked, which is right wherever payment-mock does not run.
+ */
+export const PspRoleEnv = z.object({
+  PSP_DB_PASSWORD: secret(16).optional(),
+});
+
+/**
  * Without `LLM_PROVIDER`, the listing generator uses Anthropic when a key is present and the recorded
  * fixtures otherwise, so CI and fresh clones need no secret (§10).
  */
@@ -169,13 +188,32 @@ export const LlmEnv = z
     return { ...env, LLM_PROVIDER: provider };
   });
 
+/**
+ * Makes named race-matrix points block on `pg_advisory_lock(hookId)` (§13); read by `@flashdrop/db`. The
+ * points sit in production code (the PAID CAS, the expiry batch, the orphan scan), and with hooks on, any
+ * session holding a point's lock freezes that transition for every order. So hooks may be on only inside
+ * Vitest, which sets `VITEST=true` in every test worker, and never with `NODE_ENV=production`.
+ */
+export const TestHooksEnv = z
+  .object({
+    FD_TEST_HOOKS: flag.default(false),
+    NODE_ENV: z.string().optional(),
+    VITEST: z.string().optional(),
+  })
+  .superRefine((env, ctx) => {
+    if (!env.FD_TEST_HOOKS) return;
+    const problem = (message: string) => ctx.addIssue({ code: 'custom', path: ['FD_TEST_HOOKS'], message });
+    if (env.NODE_ENV === 'production') problem('must be false when NODE_ENV=production');
+    else if (env.VITEST !== 'true') problem('may be true only in integration tests (VITEST=true)');
+  })
+  // Only the flag: NODE_ENV belongs to CoreEnv, which a raw copy here would overwrite with its default unset.
+  .transform(({ FD_TEST_HOOKS }) => ({ FD_TEST_HOOKS }));
+
 export const TestingEnv = z
   .object({
     /** Mounts `/api/v1/test/*` (§5.1); requests must also carry `x-test-secret`. */
     ENABLE_TEST_ROUTES: flag.default(false),
     TEST_ROUTES_SECRET: secret(16).optional(),
-    /** Makes named race-matrix points block on `pg_advisory_lock(hookId)` (§13). */
-    FD_TEST_HOOKS: flag.default(false),
   })
   .superRefine((env, ctx) => {
     if (env.ENABLE_TEST_ROUTES && env.TEST_ROUTES_SECRET === undefined) {

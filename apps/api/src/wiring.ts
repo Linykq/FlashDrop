@@ -5,7 +5,7 @@ import type { AppServices } from './app';
 import { createAdminDrops } from './services/admin-drops';
 import { createPostgresCatalog } from './services/catalog';
 import { postgresCheck, redisCheck } from './services/health';
-import { createPostgresOrders } from './services/orders';
+import { createOrderService, createPostgresOrderPorts } from './services/orders';
 import { createPgBreaker } from './services/pg-breaker';
 import { createReservationService, createReservePorts } from './services/reserve';
 import { createPostgresStockReader, createRedisStockReader } from './services/stock';
@@ -56,7 +56,7 @@ export function wireServices(infra: Infrastructure): Wired {
       stock: createRedisStockReader({ redis, db, postgres: createPostgresStockReader(db), nudger, logger }),
       users: createPostgresUsers(db),
       reservations: createReservationService(createReservePorts({ db, redis, breaker, nudger }), now),
-      orders: createPostgresOrders(db),
+      orders: createOrderService(createPostgresOrderPorts(db), now),
       adminDrops,
       rateLimitCounter: (key, windowMs) => fdRateLimitHit(redis, key, windowMs),
       checks: { postgres: postgresCheck(pool), redis: redisCheck(redis) },

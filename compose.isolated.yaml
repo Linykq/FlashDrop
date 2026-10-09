@@ -1,0 +1,58 @@
+# A second stack, a Compose project of its own on other host ports, for runs that stop, kill and pause
+# services: the system tests (tools/system). On a machine where others use the main stack, pausing its Kafka
+# fails every integration run against 9092, so run them here instead. Layered on compose.ci.yaml like CI's
+# system job: the test routes are mounted and Postgres lives on a tmpfs. On Windows, separate the files
+# with ';' instead of ':'.
+#
+#   export COMPOSE_FILE=compose.yaml:compose.ci.yaml:compose.isolated.yaml
+#   export TEST_ROUTES_SECRET=sys-only-test-routes-secret
+#   docker compose --profile app up --detach --wait --wait-timeout 300
+#   export DATABASE_URL=postgres://flashdrop:flashdrop@127.0.0.1:15433/flashdrop \
+#     REDIS_URL=redis://127.0.0.1:16379 KAFKA_BROKERS=127.0.0.1:19094 E2E_BASE_URL=http://127.0.0.1:18080
+#   FD_SYSTEM_TESTS=1 pnpm test:system && pnpm verify:invariants && sh tools/check-restarts.sh
+#   docker compose --profile '*' down --volumes    only this project's: `name` below sets it
+#
+# Without COMPOSE_FILE naming this file, every command above acts on the main stack instead.
+
+name: flashdrop-sys
+
+services:
+  postgres:
+    ports: !override
+      - 127.0.0.1:15433:5432
+
+  redis:
+    ports: !override
+      - 127.0.0.1:16379:6379
+
+  # Only the integration tests use it, never this stack.
+  redis-test:
+    ports: !reset []
+
+  kafka:
+    ports: !override
+      - 127.0.0.1:19094:9092
+    environment:
+      # The host listener's advertised address must be the published port, or clients on the host are
+      # redirected to the main stack's broker after their bootstrap.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,EXTERNAL://127.0.0.1:19094
+
+  kafka-ui:
+    ports: !reset []
+
+  # api's CSRF guard admits only this stack's origin on mutating requests (§11), for browsers and k6.
+  api-1:
+    environment:
+      WS_ALLOWED_ORIGINS: http://127.0.0.1:18080
+
+  api-2:
+    environment:
+      WS_ALLOWED_ORIGINS: http://127.0.0.1:18080
+
+  k6:
+    environment:
+      ORIGIN: http://127.0.0.1:18080
+
+  caddy:
+    ports: !override
+      - 127.0.0.1:18080:8080

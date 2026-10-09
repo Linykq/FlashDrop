@@ -1,32 +1,46 @@
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import type { Logger, WorkerRole } from '@flashdrop/config';
-import type { LoopHealth } from './loop';
 
 /*
  * The worker's health endpoint for the Compose healthcheck (`node healthcheck.mjs <url>`, design §15).
- * `GET /health` answers 200 while every loop of every role has completed a tick recently, and 503 before
- * the first ticks and whenever a loop keeps failing (Postgres or Redis unreachable) or hangs. A standby that
- * finds another instance holding a loop's lock still completes its tick, so standbys are healthy too.
+ * `GET /health` answers 200 while every component of every role is healthy, and 503 otherwise:
+ *
+ * - a loop (sweeper, reconciler) has completed a tick recently; it fails when Postgres or Redis stays
+ *   unreachable or a tick hangs. A standby that finds another instance holding a loop's lock still
+ *   completes its tick, so standbys are healthy too;
+ * - the relay has completed a batch (or found another relay holding the publisher lock) recently;
+ * - a consumer group owns at least one partition (§6.4: healthy means assigned), so `up --wait` returns
+ *   only once the consumers can actually receive events.
  */
+
+/** One loop, the relay or one consumer group. Extra fields (a group's partitions, the relay's lag) pass through. */
+export interface ComponentHealth {
+  readonly name: string;
+  readonly healthy: boolean;
+  /** When it last made progress, ISO 8601; null before the first time. */
+  readonly lastOkAt: string | null;
+  readonly consecutiveFailures: number;
+  readonly lastError: string | null;
+}
 
 export interface HealthReport {
   readonly status: 'ok' | 'unhealthy';
   readonly roles: readonly WorkerRole[];
-  readonly loops: readonly LoopHealth[];
+  readonly components: readonly ComponentHealth[];
 }
 
 export interface HealthSource {
   readonly roles: readonly WorkerRole[];
-  loops(): readonly LoopHealth[];
+  components(): readonly ComponentHealth[];
 }
 
 export function healthReport(source: HealthSource): HealthReport {
-  const loops = source.loops();
+  const components = source.components();
   return {
-    status: loops.length > 0 && loops.every((loop) => loop.healthy) ? 'ok' : 'unhealthy',
+    status: components.length > 0 && components.every((c) => c.healthy) ? 'ok' : 'unhealthy',
     roles: source.roles,
-    loops,
+    components,
   };
 }
 

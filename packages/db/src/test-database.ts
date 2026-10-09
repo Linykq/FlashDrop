@@ -5,6 +5,8 @@ import { createDb, type Db } from './client';
 import { migrateDatabase } from './migrate';
 import { createPool, POOL_PROFILES, type PoolOptions } from './pool';
 
+export { type HeldTestHook, holdTestHook, waitForLockWaiters } from './test-hooks';
+
 /*
  * Integration-test helper, exported only as `@flashdrop/db/testing` (never from the package root): a
  * throwaway database on the shared Compose server. Migrations name the `public` schema explicitly, so a

@@ -7,6 +7,12 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "@confluentinc/kafka-javascript": "catalog:"
+    "@confluentinc/kafka-javascript": "catalog:",
+    "@flashdrop/config": "workspace:*",
+    "@flashdrop/contracts": "workspace:*",
+    "@flashdrop/db": "workspace:*",
+    "@flashdrop/domain": "workspace:*",
+    "p-limit": "catalog:",
+    "zod": "catalog:"
   }
 }

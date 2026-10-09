@@ -63,6 +63,9 @@ catalogs:
     next:
       specifier: 16.3.8
       version: 16.3.8
+    p-limit:
+      specifier: 7.3.3
+      version: 7.3.3
     pg:
       specifier: 8.23.1
       version: 8.23.1
@@ -184,6 +187,34 @@ importers:
         specifier: 'catalog:'
         version: 6.3.0
 
+  apps/payment-mock:
+    dependencies:
+      '@flashdrop/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@flashdrop/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@flashdrop/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@flashdrop/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      fastify:
+        specifier: 'catalog:'
+        version: 5.12.5
+      pg:
+        specifier: 'catalog:'
+        version: 8.23.1
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.5
+    devDependencies:
+      '@types/pg':
+        specifier: 'catalog:'
+        version: 8.23.1
+
   apps/web:
     dependencies:
       '@flashdrop/config':
@@ -244,6 +275,9 @@ importers:
       '@flashdrop/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@flashdrop/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@flashdrop/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -253,6 +287,9 @@ importers:
       '@flashdrop/inventory':
         specifier: workspace:*
         version: link:../../packages/inventory
+      '@flashdrop/messaging':
+        specifier: workspace:*
+        version: link:../../packages/messaging
       pg:
         specifier: 'catalog:'
         version: 8.23.1
@@ -367,6 +404,24 @@ importers:
       '@confluentinc/kafka-javascript':
         specifier: 'catalog:'
         version: 1.10.1
+      '@flashdrop/config':
+        specifier: workspace:*
+        version: link:../config
+      '@flashdrop/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@flashdrop/db':
+        specifier: workspace:*
+        version: link:../db
+      '@flashdrop/domain':
+        specifier: workspace:*
+        version: link:../domain
+      p-limit:
+        specifier: 'catalog:'
+        version: 7.3.3
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.5
 
   packages/test-utils:
     dependencies:
@@ -395,6 +450,9 @@ importers:
       '@flashdrop/config':
         specifier: workspace:*
         version: link:../packages/config
+      '@flashdrop/contracts':
+        specifier: workspace:*
+        version: link:../packages/contracts
       '@flashdrop/db':
         specifier: workspace:*
         version: link:../packages/db
@@ -404,6 +462,9 @@ importers:
       '@flashdrop/inventory':
         specifier: workspace:*
         version: link:../packages/inventory
+      '@flashdrop/messaging':
+        specifier: workspace:*
+        version: link:../packages/messaging
       sharp:
         specifier: 'catalog:'
         version: 0.35.5(@types/node@22.20.5)
@@ -2442,6 +2503,10 @@ packages:
     resolution: {integrity: sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA==}
     engines: {node: '>=14.0.0'}
 
+  p-limit@7.3.3:
+    resolution: {integrity: sha512-SKgVvDU5TNIxQ4r30U75BNLC6a+6GOEjngrk/ysM5+Zu3oJuk1SC5ApzIzY/7PjCEjoVPMWJ0zho/4QUiEB7TQ==}
+    engines: {node: '>=20'}
+
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
 
@@ -2895,6 +2960,10 @@ packages:
   yallist@5.0.0:
     resolution: {integrity: sha512-YgvUTfwqyc7UXVMrB+SImsVYSmTS8X/tSrtdNZMImM+n7+QTriRXyXim0mBrTXNeqzVF0KWGgHPeiyViFFrNDw==}
     engines: {node: '>=18'}
+
+  yocto-queue@1.2.2:
+    resolution: {integrity: sha512-4LCcse/U2MHZ63HAJVE+v71o7yOdIe4cZ70Wpf8D/IyjDKYQLV5GD46B+hSTjJsvV5PztjvHoU580EftxjDZFQ==}
+    engines: {node: '>=12.20'}
 
   zod@4.6.5:
     resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
@@ -4285,6 +4354,10 @@ snapshots:
 
   on-exit-leak-free@2.1.2: {}
 
+  p-limit@7.3.3:
+    dependencies:
+      yocto-queue: 1.2.2
+
   pathe@2.0.3: {}
 
   pg-cloudflare@1.4.1:
@@ -4711,5 +4784,7 @@ snapshots:
   xtend@4.0.2: {}
 
   yallist@5.0.0: {}
+
+  yocto-queue@1.2.2: {}
 
   zod@4.6.5: {}

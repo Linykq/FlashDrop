@@ -158,7 +158,10 @@ type ButtonProps = StyleProps &
   Omit<ComponentProps<'button'>, 'className' | 'children' | 'disabled'> & {
     /** Rendered with `aria-disabled`, never `disabled`, so the button stays focusable and can explain itself. */
     disabled?: boolean;
-    /** Spinner and `aria-busy`; pass the progressive label ("Reserving…") as children. */
+    /**
+     * Spinner, `aria-busy`, and `aria-disabled` too, since activation is ignored meanwhile (SD §8.3); the
+     * button keeps its colours and its focus. Pass the progressive label ("Reserving…") as children.
+     */
     loading?: boolean;
   };
 
@@ -191,7 +194,7 @@ export function Button(props: ButtonProps) {
     <button
       {...rest}
       type={type}
-      aria-disabled={disabled || undefined}
+      aria-disabled={disabled || loading || undefined}
       aria-busy={loading || undefined}
       onClick={
         onClick &&

@@ -11,8 +11,9 @@ import { expect, orderOf, reserveViaApi, signInNewBuyer, stockOf, test } from '.
  * Reserving from the product page (design §4.5, §5.2, §8.2; design-system §9.13, §10.4): Buy holds a unit
  * and opens checkout with the hold's countdown. The Idempotency-Key makes every retry of one press safe: a
  * double click, and a press after a reload that lost the first answer, both end on the one order. A buyer
- * back from checkout finds Buy usable and the hold offered back; a press refused on stale stock says what the
- * stock is now, and a press in the phone's buy bar keeps the buyer's focus.
+ * back from checkout (the browser's Back, not "Leave checkout", which cancels: cancel.spec) finds Buy usable
+ * and the hold offered back; a press refused on stale stock says what the stock is now, and a press in the
+ * phone's buy bar keeps the buyer's focus.
  */
 
 const CHECKOUT_URL = /\/checkout\/([0-9a-f-]{36})$/;
@@ -123,7 +124,7 @@ test('Buy holds a unit and checkout counts the hold down', async ({ page, drop, 
 test.describe('with a limit of 1', () => {
   test.use({ dropSettings: { perUserLimit: 1 } });
 
-  test('leaving checkout keeps the hold, and the product page leads back to it', async ({
+  test('going back from checkout keeps the hold, and the product page leads back to it', async ({
     page,
     drop,
     buyer: _,
@@ -132,7 +133,7 @@ test.describe('with a limit of 1', () => {
     await buyButton(page).click();
     await expect(page).toHaveURL(CHECKOUT_URL);
     const orderId = checkoutOrderId(page);
-    await page.getByRole('link', { name: 'Leave checkout' }).click();
+    await page.goBack();
 
     await expect(page).toHaveURL(`/p/${drop.productSlug}`);
     const main = page.getByRole('main');

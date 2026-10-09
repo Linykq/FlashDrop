@@ -1,7 +1,8 @@
 import type { Logger } from '@flashdrop/config';
 import { isTransientDbError } from '@flashdrop/db';
-import { RetryError } from '@flashdrop/domain';
+import { RetryError, TransientError } from '@flashdrop/domain';
 import { isTransientRedisError } from '@flashdrop/inventory';
+import type { ComponentHealth } from './health';
 
 /*
  * The periodic loops every worker role is made of (design §4.6, §4.7). A tick never overlaps the previous
@@ -21,15 +22,6 @@ export interface LoopSpec {
   readonly tick: (signal: AbortSignal) => Promise<void>;
 }
 
-export interface LoopHealth {
-  readonly name: string;
-  readonly healthy: boolean;
-  /** When a tick last completed, ISO 8601; null before the first one. */
-  readonly lastOkAt: string | null;
-  readonly consecutiveFailures: number;
-  readonly lastError: string | null;
-}
-
 export interface Loop {
   readonly name: string;
   /** Runs the first tick now and keeps ticking. */
@@ -38,7 +30,7 @@ export interface Loop {
   wake(): void;
   /** Stops scheduling, aborts the tick in flight and waits for it to finish. */
   stop(): Promise<void>;
-  health(now?: number): LoopHealth;
+  health(now?: number): ComponentHealth;
 }
 
 /** Failures logged in a row before going quiet; one line every this many after that, then one on recovery. */
@@ -49,11 +41,16 @@ const STALE_INTERVALS = 5;
 const MIN_STALE_MS = 15_000;
 
 /**
- * "Postgres or Redis is briefly unavailable" (or a drop lock was lost with its session): warn, not error,
- * and the next tick retries. Never a reason to quarantine anything.
+ * "Postgres, Redis or the PSP is briefly unavailable" (or a drop lock was lost with its session): warn, not
+ * error, and the next tick retries. Never a reason to quarantine anything.
  */
 export function isTransientError(error: unknown): boolean {
-  return error instanceof RetryError || isTransientDbError(error) || isTransientRedisError(error);
+  return (
+    error instanceof RetryError ||
+    error instanceof TransientError ||
+    isTransientDbError(error) ||
+    isTransientRedisError(error)
+  );
 }
 
 export function createLoop(spec: LoopSpec, logger: Logger): Loop {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkoutHref, loginHref, orderHref, safeReturnTo } from './routes';
+import { checkoutHref, loginHref, orderHref, orderPageHref, safeReturnTo } from './routes';
 
 describe('safeReturnTo', () => {
   it('keeps paths on this origin, with their query and hash', () => {
@@ -38,9 +38,10 @@ describe('orderHref', () => {
     expect(checkoutHref(id)).toBe(`/checkout/${id}`);
   });
 
-  it('opens an ended order where its outcome is shown', () => {
-    // Checkout shows EXPIRED and REJECTED until the order status page arrives (M3).
-    expect(orderHref({ id, status: 'EXPIRED' })).toBe(`/checkout/${id}`);
-    expect(orderHref({ id, status: 'REJECTED' })).toBe(`/checkout/${id}`);
+  it('opens every other order on its status page', () => {
+    expect(orderPageHref(id)).toBe(`/orders/${id}`);
+    for (const status of ['PENDING_PAYMENT', 'PAID', 'PAYMENT_FAILED', 'EXPIRED', 'CANCELLED'] as const) {
+      expect(orderHref({ id, status })).toBe(`/orders/${id}`);
+    }
   });
 });

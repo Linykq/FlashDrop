@@ -14,4 +14,12 @@ describe('loadWorkerEnv', () => {
     expect(() => loadWorkerEnv({ WORKER_ROLES: 'sweeper,janitor' })).toThrow(/WORKER_ROLES/);
     expect(() => loadWorkerEnv({ WORKER_ROLES: 'sweeper', HEALTH_PORT: '70000' })).toThrow(/HEALTH_PORT/);
   });
+
+  it('refuses race-matrix hooks at startup outside the tests', () => {
+    expect(() =>
+      loadWorkerEnv({ WORKER_ROLES: 'payment', NODE_ENV: 'production', FD_TEST_HOOKS: '1' }),
+    ).toThrow(/FD_TEST_HOOKS/);
+    expect(() => loadWorkerEnv({ WORKER_ROLES: 'payment', FD_TEST_HOOKS: 'maybe' })).toThrow(/FD_TEST_HOOKS/);
+    expect(loadWorkerEnv({ WORKER_ROLES: 'payment' }).FD_TEST_HOOKS).toBe(false);
+  });
 });

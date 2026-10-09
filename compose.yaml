@@ -6,6 +6,13 @@
 #   pnpm stack:down  removes the application containers; the data stores keep running
 #   docker compose --profile tools up -d kafka-ui    Kafka UI on http://127.0.0.1:8081
 #
+# compose.ci.yaml holds CI's overrides; compose.isolated.yaml adds a second stack on other host ports, for
+# the system tests, which stop and pause services others on the machine use.
+#
+# Replaying dead letters against this stack (design §6.4) runs inside its network, as a one-off of the
+# consumers service, because payment-mock is reachable only there (flags: --only, --from-offset, --dry-run):
+#   pnpm dlq:replay  docker compose --profile app run --rm --no-deps consumers node apps/worker/dist/dlq-replay.js
+#
 # Every published port binds to 127.0.0.1. Images are pinned by tag and multi-arch index digest, except the
 # two built here. The application services run under the "app" profile and depend on `kafka-init` and
 # `migrate` with `condition: service_completed_successfully`, because `up --wait` treats a running one-shot
@@ -23,6 +30,12 @@ x-app-service: &app-service
   init: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
+  # A process that dies by itself comes back instead of leaving payments or expiry stopped until someone
+  # notices: librdkafka can abort the process on a broker restart, and a worker started while Kafka is
+  # unreachable exits 1. `docker compose stop` and `kill` are manual stops, which Docker never undoes, so the
+  # system tests' failure injection stays in place. CI fails a job in which any app container restarted
+  # (tools/check-restarts.sh), so a restart never hides a crash. The one-shot `migrate` opts out.
+  restart: unless-stopped
 
 # Inside the Compose network: service names and the containers' ports, not the host's 127.0.0.1:5433.
 x-app-env: &app-env
@@ -214,6 +227,9 @@ services:
         && exec node tools/dist/seed.js --catalog-dir /app/assets/catalog
     environment:
       <<: *app-env
+      # Lets payment-mock's role log in with this password (migration 0007 creates it without LOGIN); the
+      # same value is in payment-mock's PSP_DATABASE_URL below.
+      PSP_DB_PASSWORD: ${PSP_DB_PASSWORD:-dev-only-psp-db-password}
     volumes:
       - uploads:/data/uploads
     depends_on:
@@ -222,6 +238,7 @@ services:
       # The seed arms its drop through the same service as the admin route, which syncs Redis (§15).
       redis:
         condition: service_healthy
+    # A one-shot job: the app services wait for it to complete.
     restart: 'no'
 
   api-1: &api
@@ -265,8 +282,8 @@ services:
     <<: *api
     hostname: api-2
 
-  # The singleton background loops (design §2, §4.6, §4.7). Each loop elects itself per tick through a
-  # Postgres advisory lock, so a second replica would only stand by.
+  # The singleton background loops (design §2, §4.6, §4.7, §5.4). Each loop elects itself per tick through a
+  # Postgres advisory lock, and the relay fences each batch with one, so a second replica would only stand by.
   worker:
     <<: *app-service
     image: flashdrop/node:${IMAGE_TAG:-dev}
@@ -274,9 +291,8 @@ services:
     command: [node, apps/worker/dist/main.js]
     environment:
       <<: *app-env
-      # Only the roles built so far: relay joins in M3 and listing in M8; the worker refuses to start a role
-      # it does not have. payment, settlement and dashboard will run in `consumers`.
-      WORKER_ROLES: sweeper,reconciler
+      # listing joins in M8; the worker refuses to start a role it does not have.
+      WORKER_ROLES: relay,sweeper,reconciler
       WEB_INTERNAL_URL: http://web:3000
     depends_on:
       # The seed has armed the drops the loops will look after.
@@ -284,10 +300,68 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      # The relay publishes to orders.v1, which only kafka-init creates.
+      kafka-init:
+        condition: service_completed_successfully
     healthcheck:
       <<: *app-healthcheck
-      # Healthy while every loop of every role completes its ticks (apps/worker/src/health.ts).
+      # Healthy while every loop of every role completes its ticks and the relay its batches
+      # (apps/worker/src/health.ts).
       test: [CMD, node, healthcheck.mjs, http://127.0.0.1:4200/health]
+
+  # The consumer groups (design §6.3): the same image and entry as `worker`, other roles. Two replicas share
+  # each group's 6 partitions, so killing one shows a rebalance: `docker kill flashdrop-consumers-1`
+  # (`docker compose kill consumers` kills both). dashboard joins in M7.
+  consumers:
+    <<: *app-service
+    image: flashdrop/node:${IMAGE_TAG:-dev}
+    command: [node, apps/worker/dist/main.js]
+    deploy:
+      replicas: 2
+    environment:
+      <<: *app-env
+      WORKER_ROLES: payment,settlement
+      PAYMENT_MOCK_URL: http://payment-mock:4100
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      payment-mock:
+        condition: service_healthy
+    healthcheck:
+      <<: *app-healthcheck
+      # Healthy only while each of its groups owns a partition (§6.4), so `up --wait` returns once the
+      # consumers can actually receive events.
+      test: [CMD, node, healthcheck.mjs, http://127.0.0.1:4200/health]
+
+  # The simulated PSP (design §6.5), reached by the payment consumers at http://payment-mock:4100. Not
+  # published on the host, where a native `pnpm dev` payment-mock owns 4100 (§15), which is why dead letters
+  # are replayed from inside the network (see the header). No &app-env: it never gets DATABASE_URL, only its
+  # own role, which the migrate job lets log in (PSP_DB_PASSWORD).
+  payment-mock:
+    <<: *app-service
+    image: flashdrop/node:${IMAGE_TAG:-dev}
+    hostname: payment-mock
+    command: [node, apps/payment-mock/dist/main.js]
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      HOST: 0.0.0.0
+      PORT: '4100'
+      PSP_DATABASE_URL: postgres://flashdrop_psp:${PSP_DB_PASSWORD:-dev-only-psp-db-password}@postgres:5432/flashdrop
+      PSP_LATENCY_MS: ${PSP_LATENCY_MS:-100-800}
+      PSP_ERROR_RATE: ${PSP_ERROR_RATE:-0.02}
+      PSP_TIMEOUT_AFTER_SUCCESS_RATE: ${PSP_TIMEOUT_AFTER_SUCCESS_RATE:-0.01}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      <<: *app-healthcheck
+      # Ready while the ledger answers as the PSP role.
+      test: [CMD, node, healthcheck.mjs, http://127.0.0.1:4100/health]
 
   web:
     <<: *app-service
@@ -306,6 +380,8 @@ services:
   caddy:
     image: caddy:2.11.4-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
     profiles: [app]
+    # As the app services (x-app-service).
+    restart: unless-stopped
     ports:
       - 127.0.0.1:8080:8080
     volumes:

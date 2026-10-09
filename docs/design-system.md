@@ -1534,7 +1534,7 @@ A filled lg button that runs the reserve flow of SD §8.2.
 - `rounded-md`, 12 × 16 px padding, tone tint background, a 20 px icon in the tone colour, an optional `text-headline` title, `text-callout` body in `label`, an optional plain sm action or link, an optional dismiss button.
 - Tones: info (`accent-tint`, `Info`), success, warning, danger.
 - A banner appears on page load or as the result of the user's own action. It never pushes content down while the user is reading.
-- `role="alert"` only for an error caused by the user's last action, and the error summary also takes focus (SD §8.3). Other banners are static.
+- `role="alert"` only for an error caused by the user's last action that leaves focus where it is (the failed-submit banner above Pay). An error that takes focus has no alert role: the checkout error summary is a region named by its title and described by its list, so the focus event reads it once, where an alert inserted and focused together reads twice (SD §8.3, §13.3). Other banners are static.
 
 ### 9.16 Skeleton
 
@@ -1571,7 +1571,7 @@ phone    ┌──────────────────────�
 - On the right: "Admin" (admins only, from 735 px), then the account avatar. It is a `size-11` (44 × 44) button with the 28 px avatar centred in it, `aria-label="Account, {name}"`, its initials `aria-hidden`, that opens the **account popover**: a native `popover` (light dismiss, Esc and the expanded state come with it) on `material-thick`, 256 px wide, `rounded-lg`, `elevation-2`, everything in `label`. It shows the 40 px avatar and the name (`text-headline`), a hairline, then 44 px rows in `text-callout`: **Account** (to `/login`, which doubles as the account page, §10.6), **Orders** (to `/orders`), **Admin** (admins only), each ending in `ChevronRight` 16, and **Sign out** with `LogOut` 16 ("Signing out…" with a spinner while it runs; "Couldn't sign out. Try again." as an alert under it if it fails). Signed-out users see "Sign in" instead, styled like the other links (`text-footnote text-label/80`, 44 px tall), on phone too.
 - There is no menu button for navigation: with two links, the phone bar shows everything.
 - The bottom hairline (`separator`) appears only when content is scrolled beneath the bar, toggled by an IntersectionObserver sentinel at the top of `<main>`.
-- Checkout uses a reduced bar: the wordmark (not a link) and a plain neutral-tone "Leave checkout" button (`label` text, §9.1) on the right that opens the leave dialog (§10.4). It shows only while there is a hold to leave: an expired or refused order, loaded or ended on screen, leaves the wordmark alone, since its card has the way back.
+- Checkout uses a reduced bar: the wordmark (not a link) and a plain neutral-tone "Leave checkout" button (`label` text, §9.1) on the right that opens the leave dialog (§10.4). It shows only while there is a hold to leave: an expired or refused order, loaded or ended on screen, leaves the wordmark alone, since its card has the way back. While Pay's submit is in flight the button is disabled (`aria-disabled`, still focusable, §9.1): the submit's answer decides the order, and a leave confirmed meanwhile would race it.
 - The live room renders the bar inside its `data-theme="dark"` subtree (§10.3).
 
 ### 9.19 Large title
@@ -1842,7 +1842,7 @@ Checkout                                                           title-1, h1, 
 │ Total                                                            $258.00   │ Price total
 └────────────────────────────────────────────────────────────────────────────┘
 <form id="checkout-form">
-  [error summary: danger banner, role="alert", focus target, a link per field]
+  [error summary: danger banner, a region named by its title and described by its list, focus target, no alert role, a link per field]
   Shipping                                                         legend, title-3
     Full name                          autocomplete="shipping name"
     Address                            autocomplete="shipping address-line1"
@@ -1874,7 +1874,7 @@ Checkout                                                           title-1, h1, 
 | Network error or 5xx | Danger banner above Pay: "Couldn't place your order. Check your connection and try again." Pay retries with the same key |
 
 - **Expired panel:** at expiry (or a 410) the hold card and the form are replaced by one card: `Hourglass` 40 in a 72 px `fill-tertiary` circle, "Reservation expired" (`text-title-2`, focused, `aria-describedby` on the sentence below it), "Your item went back on sale." and a filled lg "Try again" link to `/p/[slug]` (SD §8.3). Focus moving there reads the heading with its sentence once; there is no alert role, which, inserted with its text and focused at the same time, would read it twice (§13.3). "Leave checkout" leaves the bar at the same moment (§9.18).
-- **Leave checkout:** the alert dialog (§9.14) with "Leave checkout?", "Your reservation will be released.", **Stay** (filled, initial focus) and **Leave** (plain, destructive tone), which calls cancel and then navigates to `/p/[slug]`. If cancel answers 409 (the order was placed or expired in the meantime), the dialog closes and the page navigates to `/orders/[orderId]`.
+- **Leave checkout:** the alert dialog (§9.14) with "Leave checkout?", "Your reservation will be released.", **Stay** (filled, initial focus) and **Leave** (plain, destructive tone), which calls `POST /orders/:orderId/cancel?from=RESERVED` and then navigates to `/p/[slug]`. Leave cancels a hold, never an order being paid: the precondition makes api answer 409 when the order was placed in the meantime (a submit whose answer was lost, another tab or device) or expired, and then the dialog closes and the page navigates to `/orders/[orderId]`, which shows the payment. The bar's button is disabled while Pay's submit is in flight (§9.18).
 - `noindex`.
 
 ### 10.5 Order status `/orders/[orderId]`
@@ -1907,7 +1907,8 @@ Checkout                                                           title-1, h1, 
 | `PAYMENT_FAILED`, decline code `reference_closed` | `Hourglass`, neutral | Payment didn't finish in time | We couldn't confirm your payment in time, so we released your reservation. Any charge is refunded. | Filled "Back to the drop" |
 | `EXPIRED` before checkout | `Hourglass`, neutral | Reservation expired | The hold ended before checkout was finished. | Filled "Back to the drop" |
 | `EXPIRED` after checkout was submitted (the order has shipping and a payment method) | `Hourglass`, neutral | Payment didn't finish in time | We couldn't confirm your payment in time, so we released your reservation. Any charge is refunded. | Filled "Back to the drop" |
-| `CANCELLED` | `Ban`, neutral | Order cancelled | You left checkout, so we released your reservation. | Filled "Back to the drop" |
+| `CANCELLED` before checkout | `Ban`, neutral | Order cancelled | You left checkout, so we released your reservation. | Filled "Back to the drop" |
+| `CANCELLED` after checkout was submitted (a client that cancels without `from=RESERVED`; checkout's Leave never does) | `Ban`, neutral | Order cancelled | We released your reservation. Any charge is refunded. | Filled "Back to the drop" |
 | `REJECTED` | `CircleMinus`, neutral | Not reserved | Reason text from §12.2 | Filled "Back to the drop" |
 | `RESERVED` | n/a | n/a | n/a | Redirect to `/checkout/[orderId]` |
 
@@ -2275,7 +2276,7 @@ Target: WCAG 2.2 AA, enforced by Biome's a11y rules, axe in every checkout state
 | Moment | Focus goes to |
 |---|---|
 | Checkout loads | The `h1` (`tabIndex={-1}`) (SD §8.3) |
-| Failed submit | The error summary (`role="alert"`) |
+| Failed submit | The error summary (a region named by its title and described by its list, no alert role) |
 | Reservation expires | The "Reservation expired" heading in the expired panel |
 | Order page loads after submit | The status heading |
 | Dialog opens | The safe action ("Stay", "Cancel"), or the first field of a sheet |
@@ -2289,7 +2290,7 @@ SD §8.3 sets the policy for checkout and stock; this extends it to the whole ap
 
 1. The `Announcer` in the root layout renders two visually hidden regions that are always in the DOM, one polite (`role="status"`) and one assertive (`role="alert"`). `announce(text, politeness)` clears the region and sets the text on the next frame, so a repeated message is read again. Regions are never inserted together with their text.
 2. Polite announcements: checkout countdown thresholds at 2:00, 1:00, 0:30 and 0:10 (checkout's own region, SD §8.3); stock events (§9.9), except the stock change a buyer's own press brought, which the Buy button's message speaks for (§9.13); that message; order status changes on the order page; listing job status changes; toasts; "1 minute added" and "Couldn't add time…"; "Now selling: {title}"; tags added and removed (§9.28); "Live updates paused" and "Live updates resumed", once each.
-3. Focus moves there, no alert role: reservation expired (the heading, described by its sentence, so the focus event reads both once; an alert inserted and focused together reads twice). Assertive, with focus moved there: the checkout error summary.
+3. Focus moves there, no alert role: reservation expired (the heading, described by its sentence, so the focus event reads both once; an alert inserted and focused together reads twice), and the checkout error summary (a region named by its title, "Fix 2 fields to continue", and described by its list of fields, so the focus event reads the count and every field once).
 4. Never announced: individual stock deltas, viewer counts, countdown ticks, dashboard and health numbers, skeletons being replaced, chart redraws.
 5. At most one announcement per 3 s from any one source, and the latest state wins.
 

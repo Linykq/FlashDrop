@@ -1,6 +1,11 @@
 import {
+  type CheckoutBody,
+  IDEMPOTENCY_KEY_HEADER,
+  type OrderDetail,
+  OrderDetailResponse,
   OrderResponse,
   type OrderView,
+  type PaymentMethod,
   ProductDetail,
   StockSnapshot,
   TEST_SECRET_HEADER,
@@ -108,8 +113,11 @@ export function pollStock(request: APIRequestContext, dropId: string): Promise<S
 }
 
 /** `orderOf` for `expect.poll`: `undefined` while api asks to retry. */
-export async function pollOrder(request: APIRequestContext, orderId: string): Promise<OrderView | undefined> {
-  return (await pollRead(request, `/api/v1/orders/${orderId}`, OrderResponse))?.order;
+export async function pollOrder(
+  request: APIRequestContext,
+  orderId: string,
+): Promise<OrderDetail | undefined> {
+  return (await pollRead(request, `/api/v1/orders/${orderId}`, OrderDetailResponse))?.order;
 }
 
 /** `GET /products/:slug`: the product and its drop, as the product page reads them. */
@@ -186,16 +194,45 @@ export async function reserveViaApi(
 ): Promise<OrderView> {
   const response = await request.post(`/api/v1/drops/${dropId}/reservations`, {
     data: { qty },
-    headers: { origin: origin(baseURL), 'idempotency-key': `e2e_${crypto.randomUUID()}` },
+    headers: { origin: origin(baseURL), [IDEMPOTENCY_KEY_HEADER]: `e2e_${crypto.randomUUID()}` },
   });
   expect(response.status(), `reserve on ${dropId}: ${await response.text()}`).toBe(201);
   return OrderResponse.parse(await response.json()).order;
 }
 
-/** `GET /orders/:orderId` with the owner's session. */
-export async function orderOf(request: APIRequestContext, orderId: string): Promise<OrderView> {
+/** `GET /orders/:orderId` with the owner's session: the order with its checkout details. */
+export async function orderOf(request: APIRequestContext, orderId: string): Promise<OrderDetail> {
   const response = await request.get(`/api/v1/orders/${orderId}`);
   expect(response.status(), `GET order ${orderId}`).toBe(200);
+  return OrderDetailResponse.parse(await response.json()).order;
+}
+
+/** A shipping address the checkout form accepts as typed (a US state, a 5-digit ZIP code). */
+export const TEST_SHIPPING = {
+  name: 'Ada Lovelace',
+  line1: '1 Market Street',
+  city: 'San Francisco',
+  state: 'CA',
+  postalCode: '94105',
+  country: 'US',
+} as const satisfies CheckoutBody['shipping'];
+
+/**
+ * Submits checkout through the api with the session of `request`, as the form does: 202, the order now
+ * PENDING_PAYMENT. For specs that need a placed order before they open a page.
+ */
+export async function checkoutViaApi(
+  request: APIRequestContext,
+  baseURL: string | undefined,
+  orderId: string,
+  paymentMethod: PaymentMethod = 'pm_ok',
+): Promise<OrderView> {
+  const body: CheckoutBody = { shipping: TEST_SHIPPING, paymentMethod };
+  const response = await request.post(`/api/v1/orders/${orderId}/checkout`, {
+    data: body,
+    headers: { origin: origin(baseURL), [IDEMPOTENCY_KEY_HEADER]: `e2e_${crypto.randomUUID()}` },
+  });
+  expect(response.status(), `checkout of ${orderId}: ${await response.text()}`).toBe(202);
   return OrderResponse.parse(await response.json()).order;
 }
 

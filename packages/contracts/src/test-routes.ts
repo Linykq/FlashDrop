@@ -35,11 +35,16 @@ export const TestDropBody = z.object({
   paymentSeconds: PaymentSeconds,
   /** Defaults to the server's now, so the drop is open at once. */
   startsAt: IsoDateTime.optional(),
+  /**
+   * Defaults to 30 minutes, longer than any spec or load run. A test drop is never ended by hand, so its
+   * window alone decides when it stops selling and when it leaves the tracked set (its end + 24 h, §4.1)
+   * that the background loops iterate on a shared stack.
+   */
   durationSeconds: z
     .int()
     .min(60)
     .max(7 * 24 * 60 * 60)
-    .default(60 * 60),
+    .default(30 * 60),
   priceCents: Cents.default(2_500),
 });
 export type TestDropBody = z.output<typeof TestDropBody>;

@@ -11,10 +11,13 @@ import {
   LlmEnv,
   loadEnv,
   PostgresEnv,
+  PspDatabaseEnv,
   PspEnv,
+  PspRoleEnv,
   RedisEnv,
   RevalidateEnv,
   SessionEnv,
+  TestHooksEnv,
   TestingEnv,
   WebEnv,
   WorkerEnv,
@@ -46,7 +49,7 @@ describe('loadEnv', () => {
   });
 
   it('parses lists, numbers, flags and ranges', () => {
-    const env = loadEnv([ApiEnv, WorkerEnv, PspEnv, TestingEnv], {
+    const env = loadEnv([ApiEnv, WorkerEnv, PspEnv, TestingEnv, TestHooksEnv], {
       API_ROLES: ' ws ,http,ws',
       WS_ALLOWED_ORIGINS: 'http://127.0.0.1:8080',
       RATE_LIMIT_USER_PER_SEC: '1000',
@@ -155,9 +158,30 @@ describe('loadEnv', () => {
   });
 
   it('rejects flags that are not booleans', () => {
-    const error = loadError([TestingEnv], { FD_TEST_HOOKS: 'sometimes' });
+    const error = loadError([TestHooksEnv], { FD_TEST_HOOKS: 'sometimes', VITEST: 'true' });
 
     expect(error.issues).toEqual([{ variable: 'FD_TEST_HOOKS', problem: 'must be true or false' }]);
+  });
+
+  it('allows race-matrix hooks only inside Vitest and never in production', () => {
+    expect(loadEnv([TestHooksEnv], { FD_TEST_HOOKS: 'true', VITEST: 'true', NODE_ENV: 'test' })).toEqual({
+      FD_TEST_HOOKS: true,
+    });
+    expect(loadEnv([TestHooksEnv], { FD_TEST_HOOKS: 'false', NODE_ENV: 'production' }).FD_TEST_HOOKS).toBe(
+      false,
+    );
+    for (const value of ['1', 'yes', 'on', 'enabled', 'TRUE', 'y']) {
+      expect(
+        loadError([TestHooksEnv], { FD_TEST_HOOKS: value, NODE_ENV: 'production', VITEST: 'true' }).issues,
+      ).toEqual([{ variable: 'FD_TEST_HOOKS', problem: 'must be false when NODE_ENV=production' }]);
+    }
+    expect(loadError([TestHooksEnv], { FD_TEST_HOOKS: 'true' }).issues).toEqual([
+      { variable: 'FD_TEST_HOOKS', problem: 'may be true only in integration tests (VITEST=true)' },
+    ]);
+  });
+
+  it("keeps CoreEnv's NODE_ENV default when TestHooksEnv comes after it", () => {
+    expect(loadEnv([CoreEnv, TestHooksEnv], {}).NODE_ENV).toBe('development');
   });
 });
 
@@ -214,8 +238,11 @@ describe('.env.example', () => {
     WorkerEnv,
     WebEnv,
     PspEnv,
+    PspDatabaseEnv,
+    PspRoleEnv,
     LlmEnv,
     TestingEnv,
+    TestHooksEnv,
   ] as const;
 
   it('is a valid environment for every schema', () => {
@@ -223,10 +250,12 @@ describe('.env.example', () => {
   });
 
   it('documents exactly the variables the schemas read', () => {
-    const read = schemas.flatMap((schema) => Object.keys('shape' in schema ? schema.shape : schema.in.shape));
-    // NODE_ENV is set by the runtime (Next.js, Vitest, the Docker images), never in .env.
-    const documented = [...Object.keys(example), 'NODE_ENV'];
+    // Set by the runtime (Next.js, Vitest, the Docker images), never in .env.
+    const runtime = new Set(['NODE_ENV', 'VITEST']);
+    const read = new Set(
+      schemas.flatMap((schema) => Object.keys('shape' in schema ? schema.shape : schema.in.shape)),
+    );
 
-    expect(documented.sort()).toEqual(read.sort());
+    expect(Object.keys(example).sort()).toEqual([...read].filter((key) => !runtime.has(key)).sort());
   });
 });

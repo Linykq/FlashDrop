@@ -19,7 +19,7 @@ import type { Options } from 'tsup';
 const APP_DIR = /^[a-z][a-z0-9-]*$/;
 
 /** `APPS`: space-separated directories under `apps/` to bundle (the image's build arg, same default). */
-function appsToBundle(value = process.env.APPS ?? 'api worker'): string[] {
+function appsToBundle(value = process.env.APPS ?? 'api worker payment-mock'): string[] {
   const apps = value.split(/\s+/).filter((app) => app !== '');
   if (apps.length === 0 || !apps.every((app) => APP_DIR.test(app))) {
     throw new Error(`APPS must name directories under apps/, such as "api worker"; got "${value}"`);
@@ -27,9 +27,14 @@ function appsToBundle(value = process.env.APPS ?? 'api worker'): string[] {
   return apps;
 }
 
+const apps = appsToBundle();
+
 export default {
   entry: {
-    ...Object.fromEntries(appsToBundle().map((app) => [`apps/${app}/dist/main`, `apps/${app}/src/main.ts`])),
+    ...Object.fromEntries(apps.map((app) => [`apps/${app}/dist/main`, `apps/${app}/src/main.ts`])),
+    // `dlq:replay` (design §6.4) runs as a one-off of the consumers service (compose.yaml): only inside the
+    // Compose network does payment-mock resolve, so payment letters cannot be replayed from the host.
+    ...(apps.includes('worker') ? { 'apps/worker/dist/dlq-replay': 'apps/worker/src/dlq-replay.ts' } : {}),
     // The one-shot `migrate` service runs both: Drizzle migrations, then the demo seed, which also arms the
     // seeded drops in Redis (compose.yaml).
     'packages/db/dist/cli/migrate': 'packages/db/src/cli/migrate.ts',

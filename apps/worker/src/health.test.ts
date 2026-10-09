@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { healthReport, startHealthServer } from './health';
-import type { LoopHealth } from './loop';
+import { type ComponentHealth, healthReport, startHealthServer } from './health';
 
-const loop = (name: string, healthy: boolean): LoopHealth => ({
+const component = (name: string, healthy: boolean): ComponentHealth => ({
   name,
   healthy,
   lastOkAt: healthy ? '2026-10-02T12:00:00.000Z' : null,
@@ -11,14 +10,16 @@ const loop = (name: string, healthy: boolean): LoopHealth => ({
 });
 
 describe('healthReport', () => {
-  it('is ok only when every loop is healthy', () => {
+  it('is ok only when every component is healthy', () => {
     const roles = ['sweeper'] as const;
-    expect(healthReport({ roles, loops: () => [loop('a', true), loop('b', true)] }).status).toBe('ok');
-    expect(healthReport({ roles, loops: () => [loop('a', true), loop('b', false)] }).status).toBe(
-      'unhealthy',
-    );
+    expect(
+      healthReport({ roles, components: () => [component('a', true), component('b', true)] }).status,
+    ).toBe('ok');
+    expect(
+      healthReport({ roles, components: () => [component('a', true), component('b', false)] }).status,
+    ).toBe('unhealthy');
     // Before the roles have started there is nothing to vouch for the process yet.
-    expect(healthReport({ roles, loops: () => [] }).status).toBe('unhealthy');
+    expect(healthReport({ roles, components: () => [] }).status).toBe('unhealthy');
   });
 });
 
@@ -28,7 +29,7 @@ describe('startHealthServer', () => {
     const server = await startHealthServer({
       host: '127.0.0.1',
       port: 0,
-      source: { roles: ['reconciler'], loops: () => [loop('reconciler', healthy)] },
+      source: { roles: ['reconciler'], components: () => [component('reconciler', healthy)] },
       logger: { info: () => undefined },
     });
     try {
@@ -43,7 +44,7 @@ describe('startHealthServer', () => {
       expect(failing.status).toBe(503);
       expect(await failing.json()).toMatchObject({
         status: 'unhealthy',
-        loops: [{ name: 'reconciler', lastError: 'connection refused' }],
+        components: [{ name: 'reconciler', lastError: 'connection refused' }],
       });
 
       expect((await fetch(`${url}/metrics`)).status).toBe(404);

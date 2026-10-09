@@ -1,4 +1,9 @@
-import { CLOSE_REASONS, LIVE_ORDER_STATUSES, TERMINAL_ORDER_STATUSES } from '@flashdrop/domain';
+import {
+  CLOSE_REASONS,
+  LIVE_ORDER_STATUSES,
+  PSP_CLOSE_ORDER_STATUSES,
+  TERMINAL_ORDER_STATUSES,
+} from '@flashdrop/domain';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
@@ -109,6 +114,10 @@ export const orders = pgTable(
     index('orders_unsettled')
       .on(t.updatedAt)
       .where(sql`${t.redisSettledAt} IS NULL AND ${inList(t.status, TERMINAL_ORDER_STATUSES)}`),
+    // The close-unpaid scan (§6.5): orders that ended unpaid after checkout, by when they ended.
+    index('orders_close_owed')
+      .on(t.closedAt)
+      .where(sql`${t.checkoutKey} IS NOT NULL AND ${inList(t.status, PSP_CLOSE_ORDER_STATUSES)}`),
   ],
 );
 
@@ -127,6 +136,19 @@ export const payments = pgTable(
   },
   (t) => [check('payments_amount_cents_check', sql`${t.amountCents} > 0`)],
 );
+
+/**
+ * Orders whose PSP reference was closed (§6.5): the close refunded any charge that raced the order's end and
+ * fences every later one, and its refund, if any, is recorded in `payments`. Written by the payment consumer
+ * and by the close-unpaid loop, which closes, from Postgres, every expired or cancelled order after checkout
+ * that has no row here: a dead-lettered event never leaks money.
+ */
+export const pspClosures = pgTable('psp_closures', {
+  orderId: uuid('order_id')
+    .primaryKey()
+    .references(() => orders.id),
+  closedAt: timestamptz('closed_at').notNull().defaultNow(),
+});
 
 /** Transactional outbox (§5.4): written in the same transaction as each status change (INV-5). */
 export const outbox = pgTable(

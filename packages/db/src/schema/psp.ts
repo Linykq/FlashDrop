@@ -1,12 +1,12 @@
-import { check, integer, pgSchema, text } from 'drizzle-orm/pg-core';
+import { PSP_CHARGE_STATUSES } from '@flashdrop/domain';
+import { check, index, integer, pgSchema, text } from 'drizzle-orm/pg-core';
 import { inList, timestamptz } from './columns';
 
 /*
  * payment-mock's own schema (design §3). Its ledger is the evidence for INV-4 (no double charge), so the
- * invariant checks read it next to `payments`.
+ * invariant checks read it next to `payments`. payment-mock connects as its own role, which migration 0007
+ * limits to this schema (`PSP_DB_ROLE`).
  */
-
-export const PSP_CHARGE_STATUSES = ['succeeded', 'declined', 'refunded'] as const;
 
 export const psp = pgSchema('psp');
 
@@ -24,7 +24,11 @@ export const pspCharges = psp.table(
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     refundedAt: timestamptz('refunded_at'),
   },
-  (t) => [check('charges_status_check', inList(t.status, PSP_CHARGE_STATUSES))],
+  (t) => [
+    check('charges_status_check', inList(t.status, PSP_CHARGE_STATUSES)),
+    // A close reads and updates its reference's charges, and audits list them, under the reference's lock.
+    index('charges_reference_idx').on(t.reference),
+  ],
 );
 
 /** A closed reference rejects every later charge. */

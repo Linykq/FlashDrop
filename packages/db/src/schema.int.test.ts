@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type CloseReason,
   canTransition,
@@ -9,8 +11,9 @@ import {
 } from '@flashdrop/domain';
 import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { constraintOf } from './errors';
-import { migrateDatabase } from './migrate';
+import { MIGRATIONS_FOLDER, migrateDatabase } from './migrate';
 import { dropInventory, drops, orders, products, rooms, userDropQuota, users } from './schema';
 import { createTestDatabase, type TestDatabase } from './test-database';
 
@@ -38,7 +41,11 @@ async function rejection(statement: Promise<unknown>): Promise<string | undefine
 
 describe('migrations', () => {
   it('are recorded once, and a second run is a no-op', async () => {
-    expect(await migrateDatabase(test.pool)).toEqual({ applied: 0, total: 6 });
+    // Every entry of the committed journal, whoever added it last.
+    const journal = z
+      .object({ entries: z.array(z.unknown()) })
+      .parse(JSON.parse(readFileSync(join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8')));
+    expect(await migrateDatabase(test.pool)).toEqual({ applied: 0, total: journal.entries.length });
   });
 
   it('create every named constraint (§3)', async () => {

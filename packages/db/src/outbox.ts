@@ -8,6 +8,7 @@ import {
 } from '@flashdrop/contracts';
 import { BugError } from '@flashdrop/domain';
 import { uuidv7 } from '@flashdrop/domain/identity';
+import { sql } from 'drizzle-orm';
 import type { Tx } from './client';
 import { outbox } from './schema';
 
@@ -83,4 +84,19 @@ export function outboxRow(event: OrderEvent): typeof outbox.$inferInsert {
 export async function insertOutboxEvents(tx: Tx, events: readonly OrderEvent[]): Promise<void> {
   if (events.length === 0) return;
   await tx.insert(outbox).values(events.map(outboxRow));
+}
+
+/** The channel the relay LISTENs on to publish at once instead of at its next 250 ms poll (§5.4). */
+export const OUTBOX_CHANNEL = 'outbox';
+
+/**
+ * Wakes the relay when the caller's transaction commits (NOTIFY is delivered on commit, and dropped on
+ * rollback). Only the low-rate paths call it: checkout submit and the expiry batches. Committing a
+ * transaction with a queued notification takes a database-wide lock on the notification queue, so a NOTIFY
+ * in every reserve or payment would make every one of their commits queue behind the others (§5.4); those
+ * events wait for the poll. Callers issue it before their `drop_inventory` update, so that update stays the
+ * last statement and the hot row is held for one statement plus the commit.
+ */
+export async function notifyOutbox(tx: Tx): Promise<void> {
+  await tx.execute(sql`SELECT pg_notify(${OUTBOX_CHANNEL}, '')`);
 }

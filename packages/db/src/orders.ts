@@ -1,10 +1,10 @@
-import type { OrderView, ProductSummary } from '@flashdrop/contracts';
-import { CLOSE_REASONS, ORDER_STATUSES } from '@flashdrop/domain';
-import { and, eq } from 'drizzle-orm';
+import { type OrderDetail, type OrderView, type ProductSummary, ShippingAddress } from '@flashdrop/contracts';
+import { BugError, CLOSE_REASONS, isPaymentMethod, ORDER_STATUSES } from '@flashdrop/domain';
+import { and, eq, type SQL, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Executor } from './client';
 import { PgBytea, PgTimestamp, PgUuid, parseRows } from './rows';
-import { orders, products } from './schema';
+import { orders, payments, products } from './schema';
 
 /*
  * Reading orders (design §5.1, §5.2). Owners see their own orders only; another user's order is "not found",
@@ -81,6 +81,37 @@ export function parseOrderRows(rows: readonly unknown[], statement: string): Ord
   return parseRows(OrderRow, rows, statement);
 }
 
+/**
+ * The product summary a hand-written statement selects next to an order's columns, from `products p`, so an
+ * order transition answers with its `OrderView` without a second read.
+ */
+export const ORDER_PRODUCT_COLUMNS: SQL = sql`p.slug AS product_slug, p.title AS product_title,
+  p.image_keys AS product_image_keys`;
+
+const ProductColumns = z.object({
+  product_slug: z.string(),
+  product_title: z.string(),
+  product_image_keys: z.array(z.string()),
+});
+
+/** Maps the rows of `SELECT <orders row>.*, ${ORDER_PRODUCT_COLUMNS} ... JOIN products p`. */
+export function parseOrderWithProductRows(rows: readonly unknown[], statement: string): OrderWithProduct[] {
+  const products = parseRows(ProductColumns, rows, statement);
+  return parseOrderRows(rows, statement).map((order, i) => {
+    const product = products[i];
+    if (product === undefined) throw new BugError(`${statement}: a row without its product`);
+    return {
+      order,
+      product: {
+        id: order.productId,
+        slug: product.product_slug,
+        title: product.product_title,
+        imageKeys: product.product_image_keys,
+      },
+    };
+  });
+}
+
 /** Any order by id. For internal callers (sweeper, consumers); request paths use `getOrderForUser`. */
 export async function getOrder(db: Executor, orderId: string): Promise<OrderRecord | undefined> {
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
@@ -103,6 +134,54 @@ export async function getOrderForUser(
     .where(and(eq(orders.id, orderId), eq(orders.userId, userId)))
     .limit(1);
   return row;
+}
+
+export interface OrderDetailRecord extends OrderWithProduct {
+  /** `payments.decline_code`: set on a PAYMENT_FAILED order. */
+  readonly declineCode: string | null;
+}
+
+/**
+ * The user's own order with its product and payment outcome, for the order page (`OrderDetail`); undefined
+ * for unknown ids and other users' orders.
+ */
+export async function getOrderDetailForUser(
+  db: Executor,
+  orderId: string,
+  userId: string,
+): Promise<OrderDetailRecord | undefined> {
+  const [row] = await db
+    .select({
+      order: orders,
+      product: { id: products.id, slug: products.slug, title: products.title, imageKeys: products.imageKeys },
+      declineCode: payments.declineCode,
+    })
+    .from(orders)
+    .innerJoin(products, eq(products.id, orders.productId))
+    .leftJoin(payments, eq(payments.orderId, orders.id))
+    .where(and(eq(orders.id, orderId), eq(orders.userId, userId)))
+    .limit(1);
+  return row;
+}
+
+/**
+ * The `OrderDetail` DTO. Shipping and the payment method are stored only by the checkout CAS, from a parsed
+ * `CheckoutBody`; a stored value the contract refuses is a bug, not the caller's problem.
+ */
+export function toOrderDetail(detail: OrderDetailRecord, serverNow: Date): OrderDetail {
+  const { order } = detail;
+  const shipping = order.shipping === null ? null : ShippingAddress.safeParse(order.shipping);
+  if (shipping?.success === false) throw new BugError(`order ${order.id} has malformed shipping`);
+  const paymentMethod = order.paymentMethod;
+  if (paymentMethod !== null && !isPaymentMethod(paymentMethod)) {
+    throw new BugError(`order ${order.id} has payment method ${paymentMethod}`);
+  }
+  return {
+    ...toOrderView(order, detail.product, serverNow),
+    shipping: shipping?.data ?? null,
+    paymentMethod,
+    declineCode: detail.declineCode,
+  };
 }
 
 /** The `OrderView` DTO. `serverNow` lets the client correct its countdown for clock offset. */

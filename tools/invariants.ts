@@ -2,27 +2,36 @@ import {
   type DropStatus,
   LIVE_ORDER_STATUSES,
   type OrderStatus,
+  type PaymentStatus,
+  type PspChargeStatus,
   TERMINAL_ORDER_STATUSES,
+  TERMINAL_UNPAID_ORDER_STATUSES,
 } from '@flashdrop/domain';
 import { type RedisDropState, redisDropViolations } from '@flashdrop/inventory';
 
 /*
  * The invariants of design §1.1, checked on one sample of a drop: a REPEATABLE READ snapshot of its Postgres
- * rows next to one MULTI read of its Redis keys. Pure functions, so every rule is unit-tested; reading the
- * stores and waiting for quiescence live in `invariant-samples.ts`.
+ * rows (the PSP ledger included: `psp` is a schema of the same database, so orders, payments and charges are
+ * one consistent snapshot) next to one MULTI read of its Redis keys, plus one sample of the event pipeline
+ * (outbox and consumer lag). Pure functions, so every rule is unit-tested; reading the stores and waiting for
+ * quiescence live in `invariant-samples.ts` and `event-samples.ts`.
  *
  * Which rule may be checked when:
- * - INV-1, INV-2 and INV-3 (Postgres) and INV-9 (Redis) hold at every instant: each store changes its
- *   counters together with the rows they count, and each side is read atomically.
+ * - INV-1, INV-2 and INV-3 (Postgres), the instant half of INV-4 (Postgres with the ledger) and INV-9 (Redis)
+ *   hold at every instant: each store changes its rows together with what counts them, and each side is
+ *   read atomically. A PAID order and its SUCCEEDED payment commit together, after its charge succeeded.
  * - Redis against Postgres is compared only on a **stable sample** (§4.7): neither store changed between
  *   the first and the last read, so both sides describe the same instant. Even then in-flight work leaves
  *   Redis legitimately *lower* (a hold Postgres has not committed yet, an outcome Postgres committed and
  *   Redis has not applied yet), so INV-7 and the instant-wise half of INV-8 only reject the optimistic
  *   direction.
- * - Equality (INV-6, the rest of INV-8) needs the drop to be **idle** as well: no due live order, no terminal
- *   order Redis has not applied, no hold without an order, and a Redis state rebuilt at Postgres's
- *   generation. Every one of those is work some loop still has to do, so it counts as pending, not as a
- *   breach, until the wait for quiescence runs out.
+ * - Equality (INV-6, the rest of INV-8, "net captured is 0 unless PAID" of INV-4, and INV-5) needs the
+ *   system to be **quiescent**: per drop, no due live order, no terminal order Redis has not applied, no
+ *   hold without an order, a Redis state rebuilt at Postgres's generation, no captured charge of an unpaid
+ *   order still to be refunded and recorded; globally, the outbox drained and every checked consumer group
+ *   at the log end. Each of those is work some loop or consumer still has to do, so it counts as pending,
+ *   not as a breach, until the wait for quiescence runs out; then it is a breach of the invariant it would
+ *   break.
  */
 
 export const INVARIANTS = {
@@ -39,17 +48,31 @@ export const INVARIANTS = {
 export type InvariantId = keyof typeof INVARIANTS;
 const INVARIANT_IDS = Object.keys(INVARIANTS) as InvariantId[];
 
-/** Checks whose evidence later milestones build. Reported as skipped, never as passed. */
-export const SKIPPED_INVARIANTS: Readonly<Partial<Record<InvariantId, string>>> = {
-  'INV-4': 'skipped until M4: the payments table and the PSP ledger arrive with payment-mock',
-  'INV-5': 'skipped until M3: the outbox relay and the consumer groups arrive in M3',
-};
+/** What INV-5 covers until the dashboard group exists. Shown with its result. */
+export const INV5_SCOPE =
+  'the outbox and the payment and inventory-settlement groups; sales-dashboard joins in M7';
+
+/** `payments` row of an order (`order_id` is its primary key, so at most one). */
+export interface PgPayment {
+  readonly status: PaymentStatus;
+  readonly pspChargeId: string | null;
+  readonly amountCents: number;
+}
+
+/** A `psp.charges` row whose reference is the order id: the PSP's book, the evidence for INV-4. */
+export interface LedgerCharge {
+  readonly id: string;
+  readonly status: PspChargeStatus;
+  readonly amountCents: number;
+}
 
 export interface PgOrder {
   readonly id: string;
   readonly userId: string;
   readonly qty: number;
   readonly status: OrderStatus;
+  /** `qty * unit_price_cents`: what a PAID order's charge must be. */
+  readonly totalCents: number;
   /** `encode(request_hash, 'hex')`: the `fp` of its `rsv` entry. */
   readonly fp: string;
   readonly idempotencyKey: string;
@@ -59,6 +82,9 @@ export interface PgOrder {
   readonly settled: boolean;
   /** The sweeper loops that quarantined it (§4.6); empty when none did. */
   readonly quarantinedBy: readonly string[];
+  readonly payment: PgPayment | null;
+  /** Every PSP charge of its reference, oldest first. */
+  readonly charges: readonly LedgerCharge[];
 }
 
 export interface PgQuota {
@@ -96,21 +122,59 @@ export interface DropSample {
   readonly stable: boolean;
 }
 
+/** One partition of a consumer group, as the broker sees it. */
+export interface PartitionLag {
+  readonly partition: number;
+  /** The group's committed offset; null when it never committed on this partition. */
+  readonly committed: string | null;
+  /** Records the group has yet to finish. */
+  readonly lag: number;
+}
+
+export interface GroupLag {
+  /** The worker role that runs the group (`payment`, `settlement`). */
+  readonly name: string;
+  readonly groupId: string;
+  readonly partitions: readonly PartitionLag[];
+}
+
+/** The event pipeline at one instant (§5.4, §6.3): what INV-5 is judged on. */
+export interface EventsSample {
+  readonly outbox: { readonly pending: number; readonly oldestSeconds: number | null };
+  readonly groups: readonly GroupLag[];
+  /** The log end of every partition of `orders.v1`: changes whenever the relay publishes anything. */
+  readonly logEnd: readonly string[];
+  /**
+   * Records in `orders.v1.dlq`; null when not counted. Gated only on request (`checkDeadLetters`): the topic
+   * keeps 30 days of every run, so only on a fresh broker does the count belong to one run.
+   */
+  readonly deadLetters: number | null;
+}
+
 export interface Violation {
   readonly invariant: InvariantId;
-  readonly dropId: string;
+  /** Absent for a breach of the event pipeline, which no single drop owns. */
+  readonly dropId?: string;
   readonly orderId?: string;
   readonly message: string;
 }
 
 const LIVE: ReadonlySet<OrderStatus> = new Set(LIVE_ORDER_STATUSES);
 const TERMINAL: ReadonlySet<OrderStatus> = new Set(TERMINAL_ORDER_STATUSES);
+const TERMINAL_UNPAID: ReadonlySet<OrderStatus> = new Set(TERMINAL_UNPAID_ORDER_STATUSES);
 
 const sumQty = (orders: readonly PgOrder[], keep: (order: PgOrder) => boolean): number =>
   orders.reduce((units, order) => (keep(order) ? units + order.qty : units), 0);
 
 /** Postgres's available stock: what Redis `avail` must equal when idle and never exceed (INV-6, INV-7). */
 export const pgAvailable = (pg: PgDropSnapshot): number => pg.total - pg.sold - pg.reserved;
+
+/** What the PSP holds for an order now: its succeeded charges that were not refunded. */
+export const netCaptured = (order: PgOrder): number =>
+  order.charges.reduce(
+    (cents, charge) => (charge.status === 'succeeded' ? cents + charge.amountCents : cents),
+    0,
+  );
 
 /** The Redis state when it can be compared with Postgres at all; null while it is missing or rebuilding. */
 function comparableRedis(sample: DropSample): RedisDropState | null {
@@ -120,15 +184,24 @@ function comparableRedis(sample: DropSample): RedisDropState | null {
   return sample.redis.state;
 }
 
-/** What a drop is still waiting for, by the loop that will do it (§4.6, §4.7). */
+/**
+ * What the system is still waiting for, by the loop or consumer that will do it (§4.6, §4.7, §5.4, §6.5),
+ * and the invariant that work would be breaking if it never came.
+ */
 export const PENDING_KINDS = {
-  expiry: 'No live order past expires_at',
-  settlement: 'Every terminal order applied to Redis',
-  rebuild: 'Redis rebuilt at the Postgres generation',
-  'orphan-scan': 'No Redis hold waiting for the orphan scan',
-  sampling: 'Neither store changed while sampled',
-} as const;
+  expiry: { check: 'No live order past expires_at', invariant: 'INV-6' },
+  settlement: { check: 'Every terminal order applied to Redis', invariant: 'INV-6' },
+  rebuild: { check: 'Redis rebuilt at the Postgres generation', invariant: 'INV-6' },
+  'orphan-scan': { check: 'No Redis hold waiting for the orphan scan', invariant: 'INV-6' },
+  payments: { check: 'No unpaid order holding money, every refund recorded', invariant: 'INV-4' },
+  outbox: { check: 'Outbox drained, nothing published while sampled', invariant: 'INV-5' },
+  consumers: { check: 'Consumer groups caught up (lag 0)', invariant: 'INV-5' },
+  sampling: { check: 'Neither store changed while sampled', invariant: 'INV-6' },
+} as const satisfies Record<string, { readonly check: string; readonly invariant: InvariantId }>;
 export type PendingKind = keyof typeof PENDING_KINDS;
+
+/** The pending kinds only the event pipeline produces; skipped when it is not checked. */
+export const EVENT_PENDING_KINDS: readonly PendingKind[] = ['outbox', 'consumers'];
 
 export interface PendingWork {
   readonly kind: PendingKind;
@@ -136,8 +209,8 @@ export interface PendingWork {
 }
 
 /**
- * Work that some loop still owes this drop; empty when the drop is idle. Quarantined orders are left out:
- * no loop will touch them again, so waiting cannot help, and `checkDrop` reports them.
+ * Work that some loop or consumer still owes this drop; empty when the drop is idle. Quarantined orders are
+ * left out: no loop will touch them again, so waiting cannot help, and `checkDrop` reports them.
  */
 export function pendingWork(sample: DropSample): PendingWork[] {
   const { pg, redis } = sample;
@@ -148,6 +221,7 @@ export function pendingWork(sample: DropSample): PendingWork[] {
   if (due > 0) owe('expiry', `${due} live orders past expires_at`);
   const unsettled = open.filter((order) => TERMINAL.has(order.status) && !order.settled).length;
   if (unsettled > 0) owe('settlement', `${unsettled} terminal orders not yet applied to Redis`);
+  owePayments(open, owe);
 
   if (pg.tracked && redis.kind === 'ok') {
     const { inv, entries } = redis.state;
@@ -176,8 +250,40 @@ export function pendingWork(sample: DropSample): PendingWork[] {
 }
 
 /**
- * Every invariant breach in one sample. `pending` is `pendingWork(sample)`: when it is not empty the wait
- * for quiescence has run out, each item becomes an INV-6 breach, and the equality checks are skipped.
+ * The money still in flight (§6.5). A PENDING_PAYMENT order can hold its charge for the moment between the
+ * PSP's answer and the PAID CAS; an order that ended unpaid holds a charge that raced its end until the
+ * payment consumer closes its reference (refund plus fence), and then until it records the REFUNDED row.
+ */
+function owePayments(orders: readonly PgOrder[], owe: (kind: PendingKind, message: string) => void): void {
+  let charging = 0;
+  let unrefunded = 0;
+  let unrecorded = 0;
+  for (const order of orders) {
+    if (order.status === 'PAID' || netCaptured(order) === 0) {
+      if (TERMINAL_UNPAID.has(order.status) && unrecordedRefund(order) !== undefined) unrecorded += 1;
+      continue;
+    }
+    if (order.status === 'PENDING_PAYMENT') charging += 1;
+    else if (TERMINAL_UNPAID.has(order.status)) unrefunded += 1;
+  }
+  if (charging > 0) owe('payments', `${charging} PENDING_PAYMENT orders hold a captured charge`);
+  if (unrefunded > 0) owe('payments', `${unrefunded} orders that ended unpaid hold a captured charge`);
+  if (unrecorded > 0) owe('payments', `${unrecorded} refunds not yet recorded as REFUNDED payments`);
+}
+
+/** A refunded charge of the order that its `payments` row does not record; undefined when none. */
+function unrecordedRefund(order: PgOrder): LedgerCharge | undefined {
+  return order.charges.find(
+    (charge) =>
+      charge.status === 'refunded' &&
+      !(order.payment?.status === 'REFUNDED' && order.payment.pspChargeId === charge.id),
+  );
+}
+
+/**
+ * Every invariant breach in one drop's sample. `pending` is `pendingWork(sample)`: when it is not empty the
+ * wait for quiescence has run out, each item becomes a breach of the invariant its kind protects, and the
+ * equality checks are skipped.
  */
 export function checkDrop(
   sample: DropSample,
@@ -185,7 +291,7 @@ export function checkDrop(
 ): Violation[] {
   const { dropId, pg } = sample;
   const violations: Violation[] = [];
-  const breach = (invariant: InvariantId, message: string, orderId?: string) => {
+  const breach: Breach = (invariant, message, orderId) => {
     violations.push(
       orderId === undefined ? { invariant, dropId, message } : { invariant, dropId, orderId, message },
     );
@@ -237,13 +343,16 @@ export function checkDrop(
     }
   }
 
+  // INV-4: no double charge, the half that holds at every instant.
+  for (const order of pg.orders) checkMoney(order, breach);
+
   // INV-6, Postgres side: work no loop will ever finish.
   for (const order of pg.orders) {
     if (order.quarantinedBy.length > 0) {
       breach('INV-6', `order ${order.status}, quarantined by ${order.quarantinedBy.join(', ')}`, order.id);
     }
   }
-  for (const item of pending) breach('INV-6', `not quiescent: ${item.message}`);
+  for (const item of pending) breach(PENDING_KINDS[item.kind].invariant, `not quiescent: ${item.message}`);
 
   if (!pg.tracked) return violations;
   const { redis } = sample;
@@ -271,6 +380,58 @@ export function checkDrop(
 }
 
 type Breach = (invariant: InvariantId, message: string, orderId?: string) => void;
+
+/**
+ * INV-4 on one order, against its own `payments` row and the PSP's charges of its reference, all from one
+ * snapshot. Every rule here holds at every instant (§4.4, §6.5): the PSP serializes a reference and keys its
+ * charge `charge:<orderId>`, so it never holds two; PAID commits with its SUCCEEDED row only after the charge
+ * succeeded, and PAID is final, so close-by-reference never touches it; PAYMENT_FAILED commits with its
+ * FAILED row; a REFUNDED row is recorded only after the close that refunded its charge committed. What only
+ * holds once quiet (an unpaid order holding no money, every refund recorded) is pending work instead.
+ */
+function checkMoney(order: PgOrder, breach: Breach): void {
+  const { id, status, payment, charges, totalCents } = order;
+  const succeeded = charges.filter((charge) => charge.status === 'succeeded');
+  if (succeeded.length > 1) {
+    breach('INV-4', `${succeeded.length} succeeded charges for one reference`, id);
+  }
+
+  if (status === 'PAID') {
+    const net = netCaptured(order);
+    if (net !== totalCents) breach('INV-4', `PSP net captured ${net} for a PAID order of ${totalCents}`, id);
+    if (payment?.status !== 'SUCCEEDED') {
+      breach('INV-4', `PAID with a ${payment?.status ?? 'missing'} payment instead of SUCCEEDED`, id);
+    } else {
+      if (payment.amountCents !== totalCents) {
+        breach('INV-4', `SUCCEEDED payment of ${payment.amountCents} for a total of ${totalCents}`, id);
+      }
+      if (!succeeded.some((charge) => charge.id === payment.pspChargeId)) {
+        breach('INV-4', `SUCCEEDED payment names ${payment.pspChargeId}, not a succeeded PSP charge`, id);
+      }
+    }
+    return;
+  }
+
+  if (payment?.status === 'SUCCEEDED') breach('INV-4', `SUCCEEDED payment on a ${status} order`, id);
+  // The payment consumer refuses to charge an order that never reached checkout (§6.5).
+  if ((status === 'RESERVED' || status === 'REJECTED') && charges.length > 0) {
+    breach('INV-4', `${charges.length} PSP charges for a ${status} order`, id);
+  }
+  if ((status === 'PAYMENT_FAILED') !== (payment?.status === 'FAILED')) {
+    breach('INV-4', `${status} order with a ${payment?.status ?? 'missing'} payment`, id);
+  }
+  if (payment?.status === 'REFUNDED') {
+    if (!TERMINAL_UNPAID.has(status)) breach('INV-4', `REFUNDED payment on a ${status} order`, id);
+    const refunded = charges.find((charge) => charge.id === payment.pspChargeId);
+    if (refunded?.status !== 'refunded' || refunded.amountCents !== payment.amountCents) {
+      breach(
+        'INV-4',
+        `REFUNDED payment of ${payment.amountCents} names ${payment.pspChargeId}, which the PSP did not refund for that amount`,
+        id,
+      );
+    }
+  }
+}
 
 /** INV-6, INV-7 and INV-8 on a stable sample whose Redis state is at Postgres's generation. */
 function checkRedisAgainstPostgres(
@@ -337,22 +498,89 @@ function checkRedisAgainstPostgres(
   }
 }
 
+/**
+ * What the event pipeline still owes (§5.4, §6.4), from two samples taken before and after the drops were
+ * sampled: empty only when the outbox was drained and every checked group sat at the log end both times, and
+ * nothing was published in between. Without the second condition an event could have been written, relayed
+ * and consumed while the drops were read, and the drop samples would straddle it.
+ */
+export function pendingEvents(before: EventsSample, after: EventsSample): PendingWork[] {
+  const pending: PendingWork[] = [];
+  const { outbox } = after;
+  if (outbox.pending > 0) {
+    const age = outbox.oldestSeconds === null ? '' : `, the oldest for ${outbox.oldestSeconds.toFixed(1)} s`;
+    pending.push({ kind: 'outbox', message: `${outbox.pending} outbox rows not yet published${age}` });
+  } else if (before.outbox.pending > 0 || before.logEnd.join() !== after.logEnd.join()) {
+    pending.push({ kind: 'outbox', message: 'events were published while the drops were sampled' });
+  }
+  for (const group of after.groups) {
+    const behind = group.partitions.filter((partition) => partition.lag > 0);
+    if (behind.length === 0) continue;
+    const lag = behind.reduce((sum, partition) => sum + partition.lag, 0);
+    const neverCommitted = behind.some((partition) => partition.committed === null);
+    pending.push({
+      kind: 'consumers',
+      message:
+        `${group.name} (group ${group.groupId}): ${lag} events not yet processed on partitions ` +
+        `${behind.map((partition) => partition.partition).join(', ')}` +
+        (neverCommitted ? `; no commits there yet: is the ${group.name} role running?` : ''),
+    });
+  }
+  return pending;
+}
+
+/** INV-5 breaches once the wait has run out: the event pipeline's pending work. */
+export function checkEvents(pending: readonly PendingWork[]): Violation[] {
+  return pending.map((item) => ({
+    invariant: PENDING_KINDS[item.kind].invariant,
+    message: `not quiescent: ${item.message}`,
+  }));
+}
+
+/**
+ * INV-5 on the dead-letter topic, when a ceiling is given (`--max-dead-letters`, §6.4): a dead letter is an
+ * event its consumer gave up on, which lag 0 does not show (the runner commits past it). For settlement the
+ * safety net still returns the stock 10 to 15 s later, so without this a handler that fails every event
+ * would pass every stock check. Only meaningful where the topic holds one run's letters: a fresh broker.
+ */
+export function checkDeadLetters(deadLetters: number | null, max: number | undefined): Violation[] {
+  if (max === undefined) return [];
+  if (deadLetters === null) {
+    return [{ invariant: 'INV-5', message: `dead letters not counted, but at most ${max} are allowed` }];
+  }
+  if (deadLetters <= max) return [];
+  const letters = deadLetters === 1 ? '1 dead letter' : `${deadLetters} dead letters`;
+  return [{ invariant: 'INV-5', message: `${letters} in the DLQ topic, at most ${max} allowed` }];
+}
+
 export type CheckStatus = 'pass' | 'fail' | 'skipped';
 
 export interface InvariantResult {
   readonly id: InvariantId;
   readonly title: string;
   readonly status: CheckStatus;
+  /** Why it was skipped, or what a passing check covers. */
   readonly reason?: string;
   readonly violations: readonly Violation[];
 }
 
-/** One result per invariant, in §1.1 order. */
-export function summarizeInvariants(violations: readonly Violation[]): InvariantResult[] {
+/**
+ * One result per invariant, in §1.1 order. INV-5 is skipped when the event pipeline was not sampled (no
+ * Kafka connection given), never reported as passed.
+ */
+export function summarizeInvariants(
+  violations: readonly Violation[],
+  options: { readonly eventsChecked: boolean },
+): InvariantResult[] {
   return INVARIANT_IDS.map((id) => {
-    const reason = SKIPPED_INVARIANTS[id];
-    if (reason !== undefined) return { id, title: INVARIANTS[id], status: 'skipped', reason, violations: [] };
+    const title = INVARIANTS[id];
+    if (id === 'INV-5' && !options.eventsChecked) {
+      return { id, title, status: 'skipped', reason: 'not checked: no Kafka connection', violations: [] };
+    }
     const own = violations.filter((violation) => violation.invariant === id);
-    return { id, title: INVARIANTS[id], status: own.length === 0 ? 'pass' : 'fail', violations: own };
+    const status = own.length === 0 ? 'pass' : 'fail';
+    return id === 'INV-5'
+      ? { id, title, status, reason: `covers ${INV5_SCOPE}`, violations: own }
+      : { id, title, status, violations: own };
   });
 }

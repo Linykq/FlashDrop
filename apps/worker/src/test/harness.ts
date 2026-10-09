@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createLogger, loadEnv, PostgresEnv, RedisEnv } from '@flashdrop/config';
+import { OrderEvent, type OrderEventOf, type OrderEventType, type PaymentMethod } from '@flashdrop/contracts';
 import {
   createDb,
   createPool,
@@ -11,6 +12,7 @@ import {
   products,
   recordReservation,
   sql,
+  submitCheckout,
   systemState,
   users,
 } from '@flashdrop/db';
@@ -235,6 +237,55 @@ export async function claimedBy(env: WorkerTestEnv, dropId: string, userId: stri
     sql`SELECT claimed FROM user_drop_quota WHERE drop_id = ${dropId} AND user_id = ${userId}`,
   );
   return rows[0]?.claimed ?? 0;
+}
+
+/** The seeded orders' shipping shape. */
+const SHIPPING = {
+  name: 'Ada Buyer',
+  line1: '1 Market Street',
+  city: 'San Francisco',
+  postalCode: '94105',
+  country: 'US',
+} as const;
+
+/** A PENDING_PAYMENT order: reserved as the API does (Redis, then Postgres), then submitted at checkout. */
+export async function placeOrder(
+  env: WorkerTestEnv,
+  dropId: string,
+  userId: string,
+  options: { readonly qty?: number; readonly paymentMethod?: PaymentMethod } = {},
+): Promise<string> {
+  const orderId = await reserve(env, dropId, userId, options.qty);
+  const outcome = await submitCheckout(env.db, {
+    orderId,
+    userId,
+    checkoutKey: `checkout_${randomUUID().replaceAll('-', '')}`,
+    shipping: SHIPPING,
+    paymentMethod: options.paymentMethod ?? 'pm_ok',
+  });
+  if (outcome.kind !== 'submitted') throw new Error(`checkout answered ${JSON.stringify(outcome)}`);
+  return orderId;
+}
+
+/**
+ * The order's event of `type` exactly as the relay would publish it: the outbox payload, validated by the
+ * envelope a consumer validates it with. Throws unless there is exactly one.
+ */
+export async function eventOf<T extends OrderEventType>(
+  env: WorkerTestEnv,
+  orderId: string,
+  type: T,
+): Promise<OrderEventOf<T>> {
+  const { rows } = await env.db.execute<{ payload: unknown }>(
+    sql`SELECT payload FROM outbox WHERE payload->>'orderId' = ${orderId} AND event_type = ${type}`,
+  );
+  const [row, extra] = rows;
+  if (row === undefined || extra !== undefined)
+    throw new Error(`${rows.length} ${type} events for ${orderId}`);
+  const event = OrderEvent.parse(row.payload);
+  if (event.type !== type) throw new Error(`outbox row of type ${type} holds ${event.type}`);
+  // Narrowed by the check above; TypeScript cannot relate the generic T to the union member.
+  return event as OrderEventOf<T>;
 }
 
 export async function eventTypesOf(env: WorkerTestEnv, orderId: string): Promise<string[]> {

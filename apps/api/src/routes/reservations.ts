@@ -2,18 +2,14 @@ import {
   DropIdParams,
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_REPLAYED_HEADER,
-  IdempotencyKey,
   OrderResponse,
   ReserveBody,
 } from '@flashdrop/contracts';
-import { z } from 'zod';
 import type { Api } from '../http/api';
+import { IdempotencyHeaders } from '../http/idempotency';
 import type { ReservationLimits } from '../http/rate-limit';
 import { requireSession, signedIn } from '../http/session';
 import type { ReservationService } from '../services/reserve';
-
-/** Other headers pass through untouched; only the key is required and checked (§4.5: 8–64 of [A-Za-z0-9_-]). */
-const ReserveHeaders = z.looseObject({ [IDEMPOTENCY_KEY_HEADER]: IdempotencyKey });
 
 export interface ReservationDeps {
   readonly reservations: ReservationService;
@@ -32,7 +28,7 @@ export function reservationRoutes(app: Api, { reservations, limits }: Reservatio
       onRequest: [limits.byIp, signedIn, limits.byUser],
       schema: {
         params: DropIdParams,
-        headers: ReserveHeaders,
+        headers: IdempotencyHeaders,
         body: ReserveBody,
         response: { 200: OrderResponse, 201: OrderResponse },
       },

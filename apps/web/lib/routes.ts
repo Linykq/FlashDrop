@@ -9,9 +9,6 @@ import type { OrderStatus, RoomSummary } from '@flashdrop/contracts';
 const LIVE_ROOM_OPEN = false;
 // TODO(M7): true once the admin area exists; turns on "Admin" and "Open admin" for admins.
 const ADMIN_OPEN = false;
-// TODO(M3): true once /orders/[orderId] exists (design-system §10.5). Until then an order is only ever
-// RESERVED, EXPIRED or REJECTED, and checkout shows all three itself.
-const ORDER_PAGE_OPEN = false;
 
 export function productHref(slug: string): string {
   return `/p/${slug}`;
@@ -26,9 +23,12 @@ export function orderPageHref(orderId: string): string {
   return `/orders/${orderId}`;
 }
 
-/** Where an order opens from a list: checkout while it is held, otherwise its status page. */
+/**
+ * Where an order opens from a list: checkout while it is held, otherwise its status page. Each page also
+ * sends an order of the other kind to the other one, so a list rendered a moment ago still lands right.
+ */
 export function orderHref(order: { id: string; status: OrderStatus }): string {
-  return order.status === 'RESERVED' || !ORDER_PAGE_OPEN ? checkoutHref(order.id) : orderPageHref(order.id);
+  return order.status === 'RESERVED' ? checkoutHref(order.id) : orderPageHref(order.id);
 }
 
 export const ORDERS_HREF = '/orders';

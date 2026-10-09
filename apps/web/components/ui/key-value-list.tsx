@@ -1,6 +1,8 @@
+import type { ReactNode } from 'react';
 import { cx } from '../../lib/cx';
 
-export type KeyValueRow = { key: string; value: string | null };
+/** A row; `null` leaves it out. A value is text, or text with a small control after it (a copy button). */
+export type KeyValueRow = { key: string; value: ReactNode | null };
 
 type KeyValueListProps = {
   rows: readonly KeyValueRow[];
@@ -22,7 +24,7 @@ export function KeyValueList({ rows, size = 'callout', className }: KeyValueList
         value === null ? null : (
           <div key={key} className="flex min-h-11 items-baseline justify-between gap-4 py-2.5">
             <dt className="shrink-0 text-label-secondary">{key}</dt>
-            <dd className="text-end">{value}</dd>
+            <dd className="min-w-0 text-end">{value}</dd>
           </div>
         ),
       )}

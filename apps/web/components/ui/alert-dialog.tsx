@@ -18,7 +18,8 @@ type AlertDialogProps = {
 /**
  * A confirmation on a native modal <dialog> (§9.14): `showModal()` brings the focus trap, the inert
  * background and the top layer, and closing returns focus to the opener. It fades and scales in through the
- * CSS dialog motion of base.css.
+ * CSS dialog motion of base.css. It sits on `surface-raised`, white like a card in light mode and lifted to
+ * #2c2c2e in dark mode, so its edge never merges with the #1c1c1e cards under the scrim.
  */
 export function AlertDialog({ open, onCancel, title, description, children }: AlertDialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -47,7 +48,7 @@ export function AlertDialog({ open, onCancel, title, description, children }: Al
         event.preventDefault();
         onCancel();
       }}
-      className="m-auto w-[calc(100%-(--spacing(10)))] max-w-100 rounded-xl bg-surface p-6 text-label elevation-3"
+      className="m-auto w-[calc(100%-(--spacing(10)))] max-w-100 rounded-xl bg-surface-raised p-6 text-label elevation-3"
     >
       <h2 id={titleId} className="text-title-3">
         {title}
